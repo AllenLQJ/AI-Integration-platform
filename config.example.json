@@ -1,0 +1,11 @@
+{
+  "agents": {
+    "codex": {"executable": "C:/path/to/codex.exe"},
+    "claude": {"executable": "C:/path/to/claude.exe"},
+    "muse": {
+      "executable": "D:/path/to/muse-mcp/.venv/Scripts/python.exe",
+      "args": ["-m", "muse_mcp"],
+      "env": {"HTTPS_PROXY": "http://127.0.0.1:7897"}
+    }
+  }
+}

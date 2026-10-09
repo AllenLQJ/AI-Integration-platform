@@ -1,7 +1,7 @@
 # 本地 Agent Hub 开发设计
 
 日期：2026-10-09  
-状态：待用户审阅；尚未开始实现。
+状态：核心已实现；2026-10-09 按用户要求暂停，待最终验收与文档收尾。实际进度以开发进度及暂停交接文档为准。
 
 开发前探针已完成，见 `docs/2026-10-09-preflight-results.md`：Codex/Claude 原生续接、Muse 独立会话、Windows 合成进程取消和 worktree 均有实际证据。当前 Claude 经 CCR 使用 API 模式；Claude 订阅、Mac、DeepSeek Harness、Muse 远端取消尚未验收。
 
