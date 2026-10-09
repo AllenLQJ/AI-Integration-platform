@@ -4,3 +4,10 @@ __pycache__/
 *.log
 cookies*
 *.har
+.venv/
+*.egg-info/
+.superpowers/
+.worktrees/
+build/
+dist/
+.pytest_cache/
