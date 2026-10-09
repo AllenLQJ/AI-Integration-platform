@@ -1,0 +1,6 @@
+.tools/
+muse-mcp/
+__pycache__/
+*.log
+cookies*
+*.har
