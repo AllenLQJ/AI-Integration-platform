@@ -42,19 +42,19 @@ Hub 只提供"查询"，不提供"等待"。`mcp_server.py:30` 的 `get_task` �
 
 把等待语义放进 Hub 自身，经由**既有的对外接口面**暴露，使任何总控平台调用方式一致。
 
-需要说明的是，通用面**已经存在**，不需要新建：
+起草时通用面已存在；当前实现仍复用以下接口：
 
-- `daemon.py:52` 暴露 `POST /rpc`，请求体为 `{tool, arguments}`，转交 `service.call()`
-- `daemon.py:42` 暴露 `GET /health`，`daemon.py:48` 暴露 `POST /shutdown`
-- `mcp_server.py` 是一个 58 行的 stdio 薄壳，7 个工具全部经 `client.call(name, arguments)` 打到 `/rpc`
+- `daemon.py` 暴露 `POST /rpc`，请求体为 `{tool, arguments}`，转交 `service.call()`
+- `daemon.py` 暴露 `GET /health`，`daemon.py` 暴露 `POST /shutdown`
+- `mcp_server.py` 当前暴露八个工具，经 `client.call(name, arguments)` 调用 `/rpc`；wait_for_task 使用异步入口与工作线程
 
 即 **MCP 前端不是唯一入口**。任何能发起回环 HTTP 并持有 `connection.json` 中令牌的调用方 —— Codex 的 shell、Claude Code、DeepSeek Harness、独立脚本 —— 都能调用同一个工具面。这一层天然总控无关。
 
-缺的只是"等"。
+起草时缺少等待工具；现已实现并完成验收。
 
-## 3. 建议接口
+## 3. 接口设计（现已实现）
 
-新增第 8 个工具：
+已新增第 8 个工具：
 
 | 工具 | 必需参数 | 可选参数 | 返回行为 |
 |---|---|---|---|
@@ -136,7 +136,7 @@ TERMINAL = frozenset({'succeeded', 'failed', 'timed_out', 'cancelled',
 
 ## 8. 附：起草阶段的文档状态偏差（历史）
 
-起草时主目录主设计状态栏仍为“尚未开始实现”，与开发 worktree 脱节。本次已更新主目录状态，并在两份主设计中登记第八个工具；主目录代码未合并开发 worktree，不能把文档更新当作主分支已集成代码。
+起草时主目录主设计状态栏仍为“尚未开始实现”，与开发 worktree 脱节。本次已更新主目录状态，并在两份主设计中登记第八个工具；当时主目录代码尚未合并；2026-10-10 发布准备已将开发分支快进合并 main，主目录现已含完整源码。
 
 ## 9. 证据位置
 
