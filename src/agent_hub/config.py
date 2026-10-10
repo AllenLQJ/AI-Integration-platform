@@ -5,6 +5,22 @@ from pathlib import Path
 from .adapters.codex import Codex
 from .adapters.claude import Claude
 from .adapters.muse import Muse
+from .models import HubError
+
+
+def scheduler_options(root):
+    path = Path(root) / 'config.json'
+    config = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+    limits = config.get('concurrency', {})
+    if not isinstance(limits, dict):
+        raise HubError('INVALID_CONFIG', 'concurrency 必须为对象')
+    global_limit = limits.get('global', 2)
+    per_agent = limits.get('per_agent', {})
+    if (type(global_limit) is not int or not 1 <= global_limit <= 32 or
+            not isinstance(per_agent, dict) or
+            any(type(v) is not int or not 1 <= v <= 32 for v in per_agent.values())):
+        raise HubError('INVALID_CONFIG', '并发额度必须为 1–32 的整数')
+    return {'concurrency': global_limit, 'per_agent_concurrency': per_agent}
 
 
 def data_dir():

@@ -4,7 +4,7 @@ import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from .config import adapters, private_dir
+from .config import adapters, private_dir, scheduler_options
 from .models import HubError
 from .service import Service
 
@@ -74,7 +74,7 @@ def run(root):
     descriptor = root / 'connection.json'
     token = secrets.token_urlsafe(32)
     try:
-        service = Service(root, adapters(root))
+        service = Service(root, adapters(root), **scheduler_options(root))
         server = make_server(service, token)
         temporary = root / 'connection.tmp'
         temporary.write_text(json.dumps({'url': 'http://127.0.0.1:' + str(server.server_port),

@@ -1,4 +1,5 @@
 {
+  "concurrency": {"global": 2, "per_agent": {"codex": 1, "claude": 1, "muse": 1}},
   "agents": {
     "codex": {"executable": "C:/path/to/codex.exe"},
     "claude": {"executable": "C:/path/to/claude.exe"},

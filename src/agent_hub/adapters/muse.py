@@ -35,7 +35,10 @@ class Muse:
 
     @staticmethod
     def answer_with_links(events, reply):
-        links = []
+        import re
+        links = list(dict.fromkeys(url.rstrip('.,;:!?。，；：！？') for url in
+                    re.findall(r'https?://[^\s<>\[\]"\x27（）。，；！？)]+', reply['text'])))
+        appended = []
         for item in sorted(events, key=lambda e: e.get('seq') or 0):
             if (item.get('seq') or 0) <= reply['seq']: continue
             if item.get('role') in {'user', 'message.user'}: break
@@ -44,7 +47,8 @@ class Muse:
                 url = payload.get('data', {}).get('url', '')
                 if isinstance(url, str) and url.startswith(('https://', 'http://')) and url not in links:
                     links.append(url)
-        return reply['text'] + ('\n\n' + '\n'.join(links) if links else ''), links
+                    appended.append(url)
+        return reply['text'] + ('\n\n' + '\n'.join(appended) if appended else ''), links
 
     def run(self, task, cancel, event):
         path = Path(task['log_dir']) / 'muse-input.json'
