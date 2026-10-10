@@ -17,8 +17,9 @@ def main():
         result = asyncio.run(adapter.execute(data['task'], threading.Event(), event))
     except Exception as error:
         leaf = adapter.unwrap(error)
-        result = {'error_code': leaf.code if isinstance(leaf, HubError) else 'MUSE_ERROR',
-                  'error': str(leaf) if isinstance(leaf, HubError) else type(leaf).__name__}
+        result = dict(leaf.details) if isinstance(leaf, HubError) else {}
+        result.update({'error_code': leaf.code if isinstance(leaf, HubError) else 'MUSE_ERROR',
+                  'error': str(leaf) if isinstance(leaf, HubError) else type(leaf).__name__})
     print(json.dumps({'hub_result': result}, ensure_ascii=False), flush=True)
 
 if __name__ == '__main__': main()

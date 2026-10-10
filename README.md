@@ -59,6 +59,10 @@ request_id 应为稳定且唯一的请求键。相同键和内容只执行一次
 - Claude：当前本机通过 CCR/apiKeyHelper 调用 DeepSeek API。read_only 禁用所有工具，适合提供上下文后的文本分析；edit_worktree 仅 Read/Glob/Grep/Edit/Write，第一版不允许运行命令。safe-mode 禁用自定义技能/插件，严格空 MCP 配置防止递归。
 - Muse：文本调研，每个初始任务独立会话。结果采用会话、消息序号与最终回答标记关联；不宣称远端工作流已完成。取消/超时仅停止本地等待，远端可能继续。发送状态不确定时不自动重发。
   正文链接与后续 external_link 附件均汇入 source_urls；两次稳定轮询后返回。该列表保留 Muse 返回的来源，不等于 Hub 已核实网页内容。
+  MCP 内层 `ok=false` 作为失败处理并保留上游错误码。仅历史读取遇到临时网关、超时或 VM 不可用时最多尝试三次，间隔为 1、2 秒；受任务期限和取消约束，并记录 retry 事件。认证失败和异常响应格式不重试。会话创建和任务发送不自动重试，避免重复会话或重复执行。
+  completion_evidence 保留最终回复的 reply_to_message_id（可能为空）；非空字段不会排除已完成且带本任务标记的回复。读取失败耗尽后保留远端状态不确定，不将其视为远端已停止。
+  Muse 发送使用 fire_and_forget，只取得派发确认；回复由 Hub 的历史轮询统一回收，不在发送工具内重复等待回复。
+  Hub 专用 Muse 子进程启用 `MUSE_MCP_REUSE_GATEWAY=1`，配套 muse-mcp 支持在锁保护下复用连接，减少重复 HTTPS 认证；连接异常会丢弃缓存，不重放业务操作。普通 Muse 工具默认仍使用独立连接。当前本机配套实现位于 `D:\projects\AI-Integration-platform\muse-mcp`，部署到其他设备时需要同步该实现。
 - 后台重启：queued 继续；running/cancelling 标 interrupted，不按旧 PID 杀进程，也不自动重跑。无法确认旧执行已停止的工作区隔离，拒绝直接续接；需人工核对，在新工作区提交。正常终态使用已保存的 session_id 续接。
 - Mac 与 DeepSeek harness 尚未实机验收。Mac 不使用 Windows lock 文件：创建环境后 `pip install -e .`，按本机路径配置；实际支持需要另行验收。
 
