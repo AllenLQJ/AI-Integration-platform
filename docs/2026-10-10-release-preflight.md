@@ -6,7 +6,7 @@
 
 feature/agent-hub-v1 已快进合并 main，包含 Windows 第一版、Muse 恢复和 wait_for_task。主目录为 D:\projects\AI-Integration-platform。主目录原文档已备份到命名 stash `pre-main-integration original docs 2026-10-10`，整合后的版本作为当前文档；不删除备份。
 
-后续已迁移至 D 盘虚拟环境并切换共享后台，详见 `2026-10-10-d-drive-migration.md`；C 盘旧 worktree 清理仍待所属聊天归档。日常 Muse 仓库及其未提交 cli.py 修改保留。
+后续已迁移至 D 盘虚拟环境并切换共享后台，详见 `2026-10-10-d-drive-migration.md`；C 盘旧 worktree 已归档，用户决定保留残留环境文件。日常 Muse 仓库及其未提交 cli.py 修改保留。
 
 ## 文档和验证
 
