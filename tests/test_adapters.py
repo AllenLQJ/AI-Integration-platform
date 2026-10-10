@@ -52,6 +52,18 @@ class AdapterTests(unittest.TestCase):
         answer, links = Muse.answer_with_links(rows, reply)
         self.assertIn('https://www.sqlite.org/lang_transaction.html', answer)
         self.assertEqual(len(links), 1)
+    def test_muse_completed_reply_can_reference_another_message(self):
+        marker = '[HUB:123]'
+        reply = {'seq': 6216, 'role': 'assistant',
+                 'reply_to_message_id': '0921333e-8294-6620-8a4b-9451a41a2e1f',
+                 'text': 'research complete\n' + marker,
+                 'raw': {'payload': {'status': 'completed', 'display_text_ready': True}}}
+        self.assertEqual(Muse.find_reply([reply], 6186, marker), reply)
+        for changes in ({'seq': 6186}, {'role': 'user'}, {'text': '[HUB:other]'},
+                        {'raw': {'payload': {'status': 'running', 'display_text_ready': True}}},
+                        {'raw': {'payload': {'status': 'completed', 'display_text_ready': False}}}):
+            with self.subTest(changes=changes):
+                self.assertIsNone(Muse.find_reply([dict(reply, **changes)], 6186, marker))
     def test_muse_unwrap_preserves_uncertain_delivery(self):
         from exceptiongroup import ExceptionGroup
         wrapped = ExceptionGroup('outer', [ExceptionGroup('inner', [HubError('DELIVERY_UNKNOWN', 'unknown')])])

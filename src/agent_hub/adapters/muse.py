@@ -27,7 +27,6 @@ class Muse:
     def find_reply(events, baseline, marker):
         if not isinstance(events, list): return None
         replies = [e for e in events if e.get('role') in {'assistant', 'message.assistant'}
-                   and not e.get('reply_to_message_id')
                    and e.get('raw', {}).get('payload', {}).get('display_text_ready', True)
                    and e.get('raw', {}).get('payload', {}).get('status', 'completed') == 'completed'
                    and (e.get('seq') or 0) > baseline and marker in e.get('text', '')]
