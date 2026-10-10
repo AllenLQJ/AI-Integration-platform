@@ -11,11 +11,13 @@
 - 新 stdio MCP 握手列出八个工具，list_agents 可调用，wait_for_task 的缺失任务探针返回 TASK_NOT_FOUND。38 条历史任务记录保留，私有数据和认证不搬入仓库。
 - C 盘旧 .superpowers 中的 11 个验证文件已复制到 D 盘 .superpowers/c-drive-migration-backup，并逐文件核对 SHA-256；该目录不上传。
 
-## 清理状态
+## 归档与残留状态
 
-C 盘旧开发 worktree 为 C:\Users\95439\.codex\worktrees\agent-hub-v1\AI-Integration-platform。批量清理命令被自动审批拒绝，因此没有执行删除或终止旧 MCP 前端。使用受管归档工具时，Codex 报告该 worktree 属于另一聊天，当前聊天不能附加或归档。清理需所属聊天执行；当前旧目录和环境仍保留，不能称为已删除。
+原开发聊天已通过 Codex 受管归档工具保存源码快照，旧 worktree 已从 Git 登记中移除；关闭了旧 MCP 前端。11 个私有验证文件的 D 盘备份已核对。
 
-运行中的共享后台已使用 D 盘环境。其他已打开聊天可能仍持有 C 盘旧 MCP 前端，需重新加载 MCP 或重新打开聊天。私有任务数据库、认证、结果和任务 worktree 有历史价值，保留。
+C 盘旧目录仅剩 `.venv` 的 7 个环境文件及父目录，文件占用阻止完整删除。用户于 2026-10-10 明确决定不再清理，保留这些残留；它们不作为当前运行环境。任务数据库、认证、结果和其他任务 worktree 保留。
+
+本次最终核对：D 盘 Python 和模块路径正确，共享后台健康检查 ok=true；公开 GitHub main 已同步。
 
 ## 发布范围
 
