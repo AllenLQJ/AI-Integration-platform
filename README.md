@@ -1,6 +1,6 @@
 # 本地 Agent Hub
 
-当前进度（2026-10-10）：Windows 第一版及 `wait_for_task` 已实现；本轮完整回归 62/62 通过（93.993 秒）。当前状态见 [docs/开发进度.md](docs/开发进度.md)，验收范围见 [docs/第一版验收.md](docs/第一版验收.md)。
+当前进度（2026-10-10）：Windows 第一版及 `wait_for_task` 已实现；本轮完整回归 62/62 通过（56.863 秒）。当前状态见 [docs/开发进度.md](docs/开发进度.md)，验收范围见 [docs/第一版验收.md](docs/第一版验收.md)。
 
 用一个 MCP 接口提交 Codex、Claude Code 和 Muse 任务。任务由独立后台服务执行，SQLite 保存记录，代码修改放在独立 Git worktree，返回结果与差异供审阅。
 
