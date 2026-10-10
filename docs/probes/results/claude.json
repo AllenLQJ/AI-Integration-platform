@@ -1,0 +1,19 @@
+{
+  "agent": "claude",
+  "marker": "HUB_ff32d1af6614",
+  "cwd_contains_unicode_and_spaces": true,
+  "first_exit": 0,
+  "first_timeout": false,
+  "session_id": "6d3eba18-d132-4b89-97e1-0bad67f694ad",
+  "first_reply": [
+    "HUB_ff32d1af6614"
+  ],
+  "resume_exit": 0,
+  "resume_timeout": false,
+  "resume_reply": [
+    "HUB_ff32d1af6614"
+  ],
+  "resume_pass": true,
+  "error_summary": null,
+  "errors": []
+}

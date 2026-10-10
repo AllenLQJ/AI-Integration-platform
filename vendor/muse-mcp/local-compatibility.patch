@@ -1,0 +1,331 @@
+diff --git a/cli.py b/cli.py
+index 3f5c2d2..50c17cc 100755
+--- a/cli.py
++++ b/cli.py
+@@ -35,7 +35,18 @@ def _browser_run(argv):
+     """Run agent-browser, parsing its JSON envelope. NOTE: it exits 0 even
+     on failure, reporting {"success": false, "error": ...} on stdout."""
+     import subprocess
+-    r = subprocess.run(argv, capture_output=True, text=True)
++    import tempfile
++    # The Windows daemon inherits pipe handles. communicate() would then wait
++    # for the long-lived daemon even after the CLI process has exited.
++    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
++        try:
++            r = subprocess.run(argv, stdout=stdout, stderr=stderr, timeout=25)
++        except subprocess.TimeoutExpired as exc:
++            raise RuntimeError('agent-browser command timed out after 25 seconds') from exc
++        stdout.seek(0)
++        stderr.seek(0)
++        r.stdout = stdout.read().decode('utf-8', errors='replace')
++        r.stderr = stderr.read().decode('utf-8', errors='replace')
+     if r.returncode != 0:
+         raise RuntimeError((r.stderr or r.stdout)[:200] or f"exit {r.returncode}")
+     try:
+diff --git a/muse.py b/muse.py
+index f43338b..0ac161d 100644
+--- a/muse.py
++++ b/muse.py
+@@ -100,8 +100,24 @@ def _require_http():
+     return rq
+ 
+ 
++def _https_setup(method, url, **kwargs):
++    """Retry only transient TLS setup failures before any gateway operation.
++
++    Authentication/session discovery cannot dispatch chat or session mutations.
++    Preserve TLS verification and propagate the final error without logging it.
++    """
++    request = getattr(_require_http(), method)
++    for attempt in range(3):
++        try:
++            return request(url, **kwargs)
++        except OSError as exc:
++            if getattr(exc, "code", None) != 35 or attempt == 2:
++                raise
++            time.sleep(0.5 * (attempt + 1))
++
++
+ def fetch_access_token(cookies):
+-    r = _require_http().post("https://muse.ai/api/auth/check", headers=_hatch_headers(cookies),
++    r = _https_setup("post", "https://muse.ai/api/auth/check", headers=_hatch_headers(cookies),
+                 data=b"", impersonate="chrome", timeout=20)
+     if r.status_code != 200:
+         raise AuthError(f"auth/check -> {r.status_code} {r.text[:120]} (cookies expired? re-export)")
+@@ -109,8 +125,8 @@ def fetch_access_token(cookies):
+ 
+ 
+ def fetch_hatch_token(cookies, access_token, vm_id):
+-    r = _require_http().post(
+-        "https://muse.ai/api/hatch/token",
++    r = _https_setup(
++        "post", "https://muse.ai/api/hatch/token",
+         headers=_hatch_headers(cookies, access_token),
+         json={"vmAddress": f"wss://{vm_id}.metaaivm.com/", "vmName": vm_id},
+         impersonate="chrome", timeout=20,
+@@ -153,7 +169,7 @@ def load_cookies(path):
+ 
+ def fetch_session_info(cookies):
+     """Discover the user's assigned personal VM (id + gateway URL)."""
+-    r = _require_http().get("https://muse.ai/api/session", headers=_hatch_headers(cookies),
++    r = _https_setup("get", "https://muse.ai/api/session", headers=_hatch_headers(cookies),
+                             impersonate="chrome", timeout=20)
+     if r.status_code != 200:
+         raise AuthError(f"api/session -> {r.status_code} (cookies expired? re-export)")
+diff --git a/muse_mcp/client.py b/muse_mcp/client.py
+index 4d7c3d0..a9a3903 100644
+--- a/muse_mcp/client.py
++++ b/muse_mcp/client.py
+@@ -4,6 +4,7 @@ import json
+ import re
+ import os
+ import time
++import threading
+ from contextlib import contextmanager
+ from datetime import datetime, timezone
+ from typing import Any, Callable, Dict, Iterator, List, Optional
+@@ -131,19 +132,35 @@ def _event_row(event: Dict[str, Any]) -> Dict[str, Any]:
+ 
+ 
+ class MuseClient:
+-    """Adapter where each invocation owns one independent Gateway instance.
++    """Adapter with independent Gateway instances by default.
+ 
+     Gateway send/receive locks still protect one Noise connection. No lock is
+     shared across MCP calls, so long-running sends do not block other tools.
++    Dedicated sequential Hub processes may opt into locked connection reuse.
+     """
+ 
+     def __init__(
+         self,
+         config_loader: Callable[[], Dict[str, Any]] = load_config,
+         gateway_factory: Optional[Callable[..., Any]] = None,
++        reuse_gateway: bool = False,
+     ) -> None:
+         self._config_loader = config_loader
+         self._gateway_factory = gateway_factory or Gateway
++        self._reuse_gateway = reuse_gateway
++        self._gateway_lock = threading.RLock()
++        self._cached_gateway = None
++        self._cached_identity = None
++
++    def close(self) -> None:
++        with self._gateway_lock:
++            gateway, self._cached_gateway = self._cached_gateway, None
++            self._cached_identity = None
++            if gateway is not None:
++                try:
++                    gateway.close()
++                except Exception:
++                    pass
+ 
+     @contextmanager
+     def _gateway(self, config: Dict[str, Any]) -> Iterator[Any]:
+@@ -154,6 +171,22 @@ class MuseClient:
+             raise AuthError(f"could not read Muse cookies: {exc}") from exc
+         if not cookies.strip():
+             raise AuthError("Muse cookies are empty")
++        if self._reuse_gateway:
++            # One consumer per Noise connection; opt-in dedicated Hub processes
++            # serialize calls and never replay an operation after a disconnect.
++            with self._gateway_lock:
++                identity = (cookies, config.get("vm_id"))
++                if self._cached_gateway is not None and identity != self._cached_identity:
++                    self.close()
++                if self._cached_gateway is None:
++                    self._cached_gateway = self._gateway_factory(cookies, vm_id=config.get("vm_id"))
++                    self._cached_identity = identity
++                try:
++                    yield self._cached_gateway
++                except BaseException:
++                    self.close()
++                    raise
++            return
+         gateway = self._gateway_factory(cookies, vm_id=config.get("vm_id"))
+         try:
+             yield gateway
+diff --git a/muse_mcp/server.py b/muse_mcp/server.py
+index 252ca7c..2194d39 100644
+--- a/muse_mcp/server.py
++++ b/muse_mcp/server.py
+@@ -1,6 +1,8 @@
+ """Official MCP stdio server exposing a small Muse primitive surface."""
+ 
+ from typing import Any, Dict, Optional
++import atexit
++import os
+ 
+ from mcp.server.fastmcp import FastMCP
+ 
+@@ -8,11 +10,12 @@ from .client import MuseClient
+ 
+ 
+ mcp = FastMCP("muse-mcp")
+-_client = MuseClient()
++_client = MuseClient(reuse_gateway=os.environ.get("MUSE_MCP_REUSE_GATEWAY") == "1")
++atexit.register(_client.close)
+ 
+ 
+ def get_client() -> MuseClient:
+-    """Return the client; each invocation uses an independent Gateway."""
++    """Return the client; dedicated Hub processes can opt into serialized reuse."""
+     return _client
+ 
+ 
+diff --git a/tests/test_gateway_reuse.py b/tests/test_gateway_reuse.py
+new file mode 100644
+index 0000000..d8df216
+--- /dev/null
++++ b/tests/test_gateway_reuse.py
+@@ -0,0 +1,92 @@
++import tempfile
++import unittest
++import threading
++import time
++from pathlib import Path
++from unittest.mock import Mock
++
++from muse import GatewayError
++from muse_mcp.client import MuseClient
++
++
++class GatewayReuseTests(unittest.TestCase):
++    def setUp(self):
++        self.root = tempfile.TemporaryDirectory()
++        self.cookie = Path(self.root.name) / "cookies.txt"
++        self.cookie.write_text("hatch_sess=test; other=test")
++        self.gateway = Mock()
++        self.gateway.call_json.return_value = {"chat_events": []}
++        self.factory = Mock(return_value=self.gateway)
++
++    def tearDown(self):
++        self.root.cleanup()
++
++    def client(self):
++        return MuseClient(config_loader=lambda: {"cookies_file": str(self.cookie), "node_id": "test-node"},
++                          gateway_factory=self.factory, reuse_gateway=True)
++
++    def test_sequential_reads_reuse_connection_and_explicit_close(self):
++        client = self.client()
++        self.assertEqual(client.history(), [])
++        self.assertEqual(client.history(), [])
++        self.assertEqual(self.factory.call_count, 1)
++        self.gateway.close.assert_not_called()
++        client.close()
++        self.gateway.close.assert_called_once()
++
++    def test_failure_discards_connection_without_replaying_operation(self):
++        client = self.client()
++        self.gateway.call_json.side_effect = [GatewayError(500, "test"), {"chat_events": []}]
++        self.assertFalse(client.history()["ok"])
++        self.assertEqual(self.gateway.call_json.call_count, 1)
++        self.gateway.close.assert_called_once()
++        self.assertEqual(client.history(), [])
++        self.assertEqual(self.factory.call_count, 2)
++        client.close()
++
++    def test_default_still_closes_each_connection(self):
++        client = MuseClient(config_loader=lambda: {"cookies_file": str(self.cookie)}, gateway_factory=self.factory)
++        client.history()
++        client.history()
++        self.assertEqual(self.factory.call_count, 2)
++        self.assertEqual(self.gateway.close.call_count, 2)
++
++    def test_cookie_change_discards_old_connection(self):
++        client = self.client()
++        client.history()
++        self.cookie.write_text("hatch_sess=changed; other=test")
++        client.history()
++        self.assertEqual(self.factory.call_count, 2)
++        self.gateway.close.assert_called_once()
++        client.close()
++
++    def test_mutation_failure_is_not_replayed(self):
++        client = self.client()
++        self.gateway._open.side_effect = GatewayError(500, "test")
++        result = client.send("test", fire_and_forget=True)
++        self.assertFalse(result["ok"])
++        self.gateway._open.assert_called_once()
++        self.assertEqual(self.factory.call_count, 1)
++        self.gateway.close.assert_called_once()
++        client.close()
++        self.gateway.close.assert_called_once()
++
++    def test_concurrent_calls_have_one_consumer(self):
++        client = self.client()
++        active = maximum = 0
++        def operation(*args, **kwargs):
++            nonlocal active, maximum
++            active += 1
++            maximum = max(maximum, active)
++            time.sleep(0.02)
++            active -= 1
++            return {"chat_events": []}
++        self.gateway.call_json.side_effect = operation
++        threads = [threading.Thread(target=client.history) for _ in range(3)]
++        for thread in threads: thread.start()
++        for thread in threads: thread.join(2)
++        self.assertTrue(all(not thread.is_alive() for thread in threads))
++        self.assertEqual(self.gateway.call_json.call_count, 3)
++        self.assertEqual(maximum, 1)
++        self.assertEqual(self.factory.call_count, 1)
++        client.close()
+diff --git a/tests/test_https_recovery.py b/tests/test_https_recovery.py
+new file mode 100644
+index 0000000..ac03bbc
+--- /dev/null
++++ b/tests/test_https_recovery.py
+@@ -0,0 +1,53 @@
++import unittest
++from unittest.mock import Mock, patch
++
++from curl_cffi.requests.exceptions import SSLError
++import muse
++
++
++class HTTPSRecoveryTests(unittest.TestCase):
++    def test_session_recovers_transient_tls_failure(self):
++        response = Mock(status_code=200)
++        response.json.return_value = {"vm_id": "test-vm"}
++        with patch.object(muse.rq, "get", side_effect=[SSLError("private", code=35), response]) as request, patch.object(muse.time, "sleep"):
++            self.assertEqual(muse.fetch_session_info("test-cookie"), {"vm_id": "test-vm"})
++            self.assertEqual(request.call_count, 2)
++            self.assertNotIn("verify", request.call_args.kwargs)
++
++    def test_tls_retry_is_bounded(self):
++        with patch.object(muse.rq, "get", side_effect=SSLError("private", code=35)) as request, patch.object(muse.time, "sleep") as sleep:
++            with self.assertRaises(SSLError):
++                muse.fetch_session_info("test-cookie")
++            self.assertEqual(request.call_count, 3)
++            self.assertEqual([call.args[0] for call in sleep.call_args_list], [0.5, 1.0])
++
++    def test_certificate_failure_is_not_retried(self):
++        with patch.object(muse.rq, "get", side_effect=SSLError("private", code=60)) as request:
++            with self.assertRaises(SSLError):
++                muse.fetch_session_info("test-cookie")
++            self.assertEqual(request.call_count, 1)
++
++    def test_authentication_posts_recover_and_preserve_arguments(self):
++        for operation, payload, expected in [
++            (lambda: muse.fetch_access_token("test-cookie"), {"access_token": "test-access"}, "test-access"),
++            (lambda: muse.fetch_hatch_token("test-cookie", "test-access", "test-vm"), {"token": "test-hatch"}, "test-hatch"),
++        ]:
++            response = Mock(status_code=200)
++            response.json.return_value = payload
++            with patch.object(muse.rq, "post", side_effect=[SSLError("private", code=35), response]) as request, patch.object(muse.time, "sleep"):
++                self.assertEqual(operation(), expected)
++                self.assertEqual(request.call_count, 2)
++                self.assertEqual(request.call_args_list[0], request.call_args_list[1])
++                self.assertNotIn("verify", request.call_args.kwargs)
++
++    def test_unrelated_error_is_not_retried(self):
++        with patch.object(muse.rq, "get", side_effect=ValueError("bad response")) as request:
++            with self.assertRaises(ValueError):
++                muse.fetch_session_info("test-cookie")
++            self.assertEqual(request.call_count, 1)
++
++    def test_auth_rejection_is_not_retried(self):
++        with patch.object(muse.rq, "get", return_value=Mock(status_code=401)) as request:
++            with self.assertRaises(muse.AuthError):
++                muse.fetch_session_info("test-cookie")
++            self.assertEqual(request.call_count, 1)

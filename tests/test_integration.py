@@ -43,7 +43,8 @@ class IntegrationTests(unittest.TestCase):
                 async with ClientSession(reader, writer) as session:
                     await session.initialize()
                     names = {t.name for t in (await session.list_tools()).tools}
-                    self.assertEqual(len(names), 7)
+                    self.assertEqual(len(names), 8)
+                    self.assertIn('wait_for_task', names)
                     self.assertIn('continue_task', names)
                     response = await session.call_tool('list_agents', {})
                     self.assertFalse(response.isError)

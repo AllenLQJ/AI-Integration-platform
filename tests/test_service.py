@@ -119,6 +119,41 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 'DIRTY_WORKSPACE')
         # Git worktrees live only inside this disposable test directory.
 
+    def test_untracked_files_are_preserved_and_excluded_from_head_worktree(self):
+        repo = self.root / '原仓库'
+        repo.mkdir()
+        def git(*args):
+            return subprocess.run(['git', '-C', str(repo), *args], capture_output=True, check=True).stdout
+        git('init'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@localhost')
+        (repo / 'a.txt').write_text('base')
+        git('add', '.'); git('commit', '-m', 'base')
+        name = '未跟踪 space.txt'
+        (repo / name).write_text('local only', encoding='utf-8')
+        before = git('status', '--porcelain', '-z')
+        task = self.submit(cwd=str(repo), mode='edit_worktree')
+        self.assertEqual(self.wait(task['id'])['state'], 'succeeded')
+        result = self.service.call('get_result', {'task_id': task['id']})
+        artifacts = result['artifacts']
+        self.assertEqual(artifacts['baseline'], git('rev-parse', 'HEAD').decode().strip())
+        self.assertEqual(artifacts['excluded_untracked_files'], [name])
+        self.assertFalse((Path(artifacts['workspace']) / name).exists())
+        self.assertEqual((repo / name).read_text(encoding='utf-8'), 'local only')
+        self.assertEqual(git('status', '--porcelain', '-z'), before)
+        self.assertEqual(artifacts['diff'], '')
+        child = self.service.call('continue_task', dict(request_id='untracked-child', task_id=task['id'], prompt='next'))
+        self.assertEqual(self.wait(child['id'])['state'], 'succeeded')
+        child_result = self.service.call('get_result', {'task_id': child['id']})
+        self.assertEqual(child_result['artifacts']['excluded_untracked_files'], [name])
+        self.assertEqual(child_result['artifacts']['workspace'], artifacts['workspace'])
+        (repo / 'a.txt').write_text('dirty')
+        with self.assertRaises(HubError) as error:
+            self.service.workspaces.prepare(dict(id='blocked', cwd=str(repo), mode='edit_worktree'))
+        self.assertEqual(error.exception.code, 'DIRTY_WORKSPACE')
+        git('add', 'a.txt')
+        with self.assertRaises(HubError) as error:
+            self.service.workspaces.prepare(dict(id='staged-blocked', cwd=str(repo), mode='edit_worktree'))
+        self.assertEqual(error.exception.code, 'DIRTY_WORKSPACE')
+
     def test_configurable_concurrency_and_workspace_exclusion(self):
         self.service.close()
         self.service = Service(self.root / 'limits', {'fake': self.fake},

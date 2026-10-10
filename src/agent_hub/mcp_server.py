@@ -1,3 +1,5 @@
+import asyncio
+from pydantic import StrictFloat, StrictInt
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from .client import Client
@@ -35,6 +37,16 @@ def get_task(task_id: str) -> dict:
 def get_events(task_id: str, after_seq: int = 0, limit: int = 50) -> dict:
     """按游标读取任务事件，上限 200 条。"""
     return invoke('get_events', locals())
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
+async def wait_for_task(task_id: str, after_seq: StrictInt = 0, timeout_seconds: StrictFloat = 10) -> dict:
+    """等待六种终态之一或本次等待超时（0–10 秒）；超时不取消任务。
+
+    用 next_seq 续接，has_more=true 时继续取事件；响应丢失按 seq 去重。
+    终态后调用 get_result 获取回答。持续等待需要总控再次调用本工具。
+    """
+    return await asyncio.to_thread(invoke, 'wait_for_task', locals())
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
