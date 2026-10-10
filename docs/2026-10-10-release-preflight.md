@@ -6,7 +6,7 @@
 
 feature/agent-hub-v1 已快进合并 main，包含 Windows 第一版、Muse 恢复和 wait_for_task。主目录为 D:\projects\AI-Integration-platform。主目录原文档已备份到命名 stash `pre-main-integration original docs 2026-10-10`，整合后的版本作为当前文档；不删除备份。
 
-既有 Codex MCP 仍使用开发 worktree 虚拟环境，保留该环境和目录；本轮不迁移配置或重启后台。日常 Muse 仓库及其未提交 cli.py 修改保留。
+后续已迁移至 D 盘虚拟环境并切换共享后台，详见 `2026-10-10-d-drive-migration.md`；C 盘旧 worktree 清理仍待所属聊天归档。日常 Muse 仓库及其未提交 cli.py 修改保留。
 
 ## 文档和验证
 
@@ -18,7 +18,7 @@ README、开发进度、第一版验收、等待设计与实施计划已按当�
 
 ## 公开范围
 
-目标：AllenLQJ/AI-Integration-platform，公开仓库，用户已选择名称与可见性，最终上传仍待确认。只上传 main 的已提交源码、测试、脚本、文档、依赖锁和配套补丁。
+目标：AllenLQJ/AI-Integration-platform，公开仓库，用户已选择名称与可见性，公开上传已获用户明确授权。只上传 main 的已提交源码、测试、脚本、文档、依赖锁和配套补丁。
 
 .tools、Muse 克隆、虚拟环境、cookies、认证配置、私有运行数据库与日志不纳入。根目录三个未跟踪认证/诊断脚本不上传，本地保留。文档保留测试任务 ID 和历史本机路径，均不是认证材料；Mac、DeepSeek Harness、Claude 订阅及 Muse 远端取消仍未验收。
 

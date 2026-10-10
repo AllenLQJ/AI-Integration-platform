@@ -1,6 +1,6 @@
 # 本地 Agent Hub
 
-当前进度（2026-10-10）：Windows 第一版及 `wait_for_task` 已实现；本轮完整回归 62/62 通过（56.863 秒）。当前状态见 [docs/开发进度.md](docs/开发进度.md)，验收范围见 [docs/第一版验收.md](docs/第一版验收.md)。
+当前进度（2026-10-10）：Windows 第一版及 `wait_for_task` 已实现；本轮完整回归 62/62 通过（53.817 秒）。当前状态见 [docs/开发进度.md](docs/开发进度.md)，验收范围见 [docs/第一版验收.md](docs/第一版验收.md)。
 
 用一个 MCP 接口提交 Codex、Claude Code 和 Muse 任务。任务由独立后台服务执行，SQLite 保存记录，代码修改放在独立 Git worktree，返回结果与差异供审阅。
 
@@ -29,7 +29,7 @@ MCP 使用 stdio：command 为虚拟环境 python.exe 的绝对路径，args 为
 
 ## 总控接入
 
-在 Codex 的 MCP 设置中登记 `agent_hub`，command 使用本机项目虚拟环境 Python 的绝对路径，args 为 `["-m", "agent_hub", "mcp"]`。重新加载 MCP 或打开新聊天后应看到八个工具。移动源码或环境后需同步修改 MCP 注册路径；本机既有注册仍引用开发 worktree，合并源码不自动迁移运行环境。
+在 Codex 的 MCP 设置中登记 `agent_hub`，command 使用本机项目虚拟环境 Python 的绝对路径，args 为 `["-m", "agent_hub", "mcp"]`。重新加载 MCP 或打开新聊天后应看到八个工具。移动源码或环境后需同步修改 MCP 注册路径；本机现已迁移到 D 盘主目录虚拟环境，详见 `docs/2026-10-10-d-drive-migration.md`。
 
 Claude Code 可以作为总控连接同一服务，例如保存下述本机 MCP 配置（换成自己的 Python 绝对路径）：
 
