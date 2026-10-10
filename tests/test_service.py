@@ -119,4 +119,89 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 'DIRTY_WORKSPACE')
         # Git worktrees live only inside this disposable test directory.
 
+    def test_configurable_concurrency_and_workspace_exclusion(self):
+        self.service.close()
+        self.service = Service(self.root / 'limits', {'fake': self.fake},
+                               concurrency=2, per_agent_concurrency={'fake': 2})
+        other = self.root / 'other'
+        other.mkdir()
+        a = self.submit(request_id='limit-a', prompt='wait')
+        b = self.submit(request_id='limit-b', prompt='wait', cwd=str(other))
+        same = self.submit(request_id='limit-same', prompt='wait')
+        deadline = time.time() + 3
+        while time.time() < deadline and self.fake.calls < 2:
+            time.sleep(.03)
+        self.assertEqual(self.fake.calls, 2)
+        self.assertEqual(self.service.store.get(same['id'])['state'], 'queued')
+        self.assertEqual(len(self.service.active), 2)
+        self.service.call('cancel_task', {'task_id': a['id']})
+        self.wait(a['id'])
+        deadline = time.time() + 3
+        while time.time() < deadline and self.fake.calls < 3:
+            time.sleep(.03)
+        self.assertEqual(self.fake.calls, 3)
+        for task in (b, same):
+            self.service.call('cancel_task', {'task_id': task['id']})
+
+    def test_invalid_concurrency_config(self):
+        from agent_hub.config import scheduler_options
+        path = self.root / 'config.json'
+        path.write_text('{"concurrency":{"global":0}}', encoding='utf-8')
+        with self.assertRaises(HubError) as error:
+            scheduler_options(self.root)
+        self.assertEqual(error.exception.code, 'INVALID_CONFIG')
+
+    def test_failed_edit_preserves_partial_diff_and_logs(self):
+        repo = self.root / 'failed repo'
+        repo.mkdir()
+        def git(*args):
+            subprocess.run(['git', '-C', str(repo), *args], capture_output=True, check=True)
+        git('init'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@localhost')
+        (repo / 'a.txt').write_text('base')
+        git('add', '.'); git('commit', '-m', 'base')
+        def fail(task, cancel, event):
+            (Path(task['workspace']) / 'a.txt').write_text('partial edit')
+            raise HubError('CLI_FAILED', 'executor failed',
+                           {'exit_code': 7, 'artifacts': {'logs': {'stderr': 'private-log'}}})
+        self.fake.run = fail
+        task = self.submit(cwd=str(repo), mode='edit_worktree')
+        self.assertEqual(self.wait(task['id'])['state'], 'failed')
+        result = self.service.call('get_result', {'task_id': task['id']})
+        self.assertEqual(result['exit_code'], 7)
+        self.assertEqual(result['artifacts']['logs']['stderr'], 'private-log')
+        self.assertIn('partial edit', result['artifacts']['diff'])
+        self.assertEqual((repo / 'a.txt').read_text(), 'base')
+
+    def test_dynamic_worktree_is_reserved_for_entire_execution(self):
+        self.service.close()
+        self.service = Service(self.root / 'dynamic', {'fake': self.fake},
+                               concurrency=2, per_agent_concurrency={'fake': 2})
+        repo = self.root / 'dynamic repo'
+        repo.mkdir()
+        def git(*args):
+            subprocess.run(['git', '-C', str(repo), *args], capture_output=True, check=True)
+        git('init'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@localhost')
+        (repo / 'a.txt').write_text('base')
+        git('add', '.'); git('commit', '-m', 'base')
+        task = self.submit(request_id='dynamic-edit', cwd=str(repo), mode='edit_worktree', prompt='wait')
+        deadline = time.time() + 5
+        workspace = None
+        while time.time() < deadline:
+            workspace = self.service.store.get(task['id']).get('workspace')
+            if workspace and self.fake.calls:
+                break
+            time.sleep(.03)
+        self.assertTrue(workspace)
+        reader = self.submit(request_id='dynamic-read', cwd=workspace, prompt='wait')
+        time.sleep(.2)
+        self.assertEqual(self.service.store.get(reader['id'])['state'], 'queued')
+        self.assertEqual(self.fake.calls, 1)
+        self.service.call('cancel_task', {'task_id': task['id']})
+        self.wait(task['id'])
+        deadline = time.time() + 3
+        while time.time() < deadline and self.fake.calls < 2:
+            time.sleep(.03)
+        self.assertEqual(self.fake.calls, 2)
+        self.service.call('cancel_task', {'task_id': reader['id']})
+
 if __name__ == '__main__': unittest.main()

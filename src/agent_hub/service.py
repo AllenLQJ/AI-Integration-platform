@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -8,7 +9,7 @@ from .workspaces import Workspaces
 
 
 class Service:
-    def __init__(self, data_dir, adapters, concurrency=2):
+    def __init__(self, data_dir, adapters, concurrency=2, per_agent_concurrency=None):
         self.root = Path(data_dir)
         self.root.mkdir(parents=True, exist_ok=True)
         self.store = Store(self.root / 'tasks.db')
@@ -16,6 +17,7 @@ class Service:
         self.workspaces = Workspaces(self.root)
         self.adapters = adapters
         self.concurrency = concurrency
+        self.per_agent_concurrency = dict(per_agent_concurrency or {})
         self.lock = threading.RLock()
         self.active = {}
         self.stopping = threading.Event()
@@ -116,19 +118,24 @@ class Service:
     def schedule(self):
         while not self.stopping.wait(.05):
             with self.lock:
-                used_agents = {a['agent'] for a in self.active.values()}
+                from collections import Counter
+                used_agents = Counter(a['agent'] for a in self.active.values())
                 used_workspaces = {a['workspace'] for a in self.active.values()}
                 for task in self.store.list({'queued'}):
                     if len(self.active) >= self.concurrency:
                         break
-                    if task['agent'] in used_agents or task.get('workspace', task['cwd']) in used_workspaces:
+                    actual_workspace = task.get('workspace') or (
+                        str(self.workspaces.root / task['id']) if task['mode'] == 'edit_worktree' else task['cwd'])
+                    workspace_key = os.path.normcase(str(Path(actual_workspace).resolve()))
+                    if (used_agents[task['agent']] >= self.per_agent_concurrency.get(task['agent'], 1)
+                            or workspace_key in used_workspaces):
                         continue
                     cancel = threading.Event()
                     worker = threading.Thread(target=self.execute, args=(task, cancel), daemon=True)
-                    self.active[task['id']] = dict(agent=task['agent'], workspace=task.get('workspace', task['cwd']),
+                    self.active[task['id']] = dict(agent=task['agent'], workspace=workspace_key,
                                                    cancel=cancel, thread=worker)
-                    used_agents.add(task['agent'])
-                    used_workspaces.add(task.get('workspace', task['cwd']))
+                    used_agents[task['agent']] += 1
+                    used_workspaces.add(workspace_key)
                     self.store.update(task['id'], state='running')
                     worker.start()
 

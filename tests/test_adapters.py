@@ -56,6 +56,17 @@ class AdapterTests(unittest.TestCase):
         from exceptiongroup import ExceptionGroup
         wrapped = ExceptionGroup('outer', [ExceptionGroup('inner', [HubError('DELIVERY_UNKNOWN', 'unknown')])])
         self.assertEqual(Muse.unwrap(wrapped).code, 'DELIVERY_UNKNOWN')
+
+    def test_muse_inline_links_are_returned_without_duplicates(self):
+        reply = {'seq': 10, 'text': '官方 [事务](https://www.sqlite.org/lang_transaction.html)。'}
+        rows = [reply, {'seq': 11, 'event_name': 'delta.presentation',
+                'raw': {'payload': {'kind': 'external_link',
+                'data': {'url': 'https://www.sqlite.org/lang_transaction.html'}}}}]
+        answer, links = Muse.answer_with_links([reply], reply)
+        self.assertEqual(links, ['https://www.sqlite.org/lang_transaction.html'])
+        answer, links = Muse.answer_with_links(rows, reply)
+        self.assertEqual(len(links), 1)
+        self.assertEqual(answer.count(links[0]), 1)
     def test_muse_disconnect_after_send_is_remote_unknown(self):
         events = []
         class Session:
