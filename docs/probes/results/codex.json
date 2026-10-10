@@ -1,0 +1,18 @@
+{
+  "agent": "codex",
+  "marker": "HUB_37bdfa39113f",
+  "cwd_contains_unicode_and_spaces": true,
+  "first_exit": 0,
+  "first_timeout": false,
+  "session_id": "01a12094-ee56-78b1-b116-b70fe91179a3",
+  "first_reply": [
+    "HUB_37bdfa39113f"
+  ],
+  "resume_exit": 0,
+  "resume_timeout": false,
+  "resume_reply": [
+    "HUB_37bdfa39113f"
+  ],
+  "resume_pass": true,
+  "errors": []
+}

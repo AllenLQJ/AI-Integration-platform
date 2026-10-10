@@ -93,10 +93,35 @@ class Store:
     def finish(self, task_id, state, result):
         if state not in TERMINAL:
             raise ValueError('not terminal')
-        changed = self.update(task_id, state=state, result=result)
-        if changed:
-            self.event(task_id, 'state', {'state': state})
-        return changed
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
+            if not row:
+                raise HubError('TASK_NOT_FOUND', '任务不存在')
+            if row['state'] in TERMINAL:
+                return False
+            data = json.loads(row['data'])
+            data['result'] = result
+            now = time.time()
+            db.execute('UPDATE tasks SET state=?, data=?, updated=? WHERE id=?',
+                       (state, json.dumps(data, ensure_ascii=False), now, task_id))
+            db.execute('INSERT INTO events(task_id,kind,data,timestamp) VALUES (?,?,?,?)',
+                       (task_id, 'state', json.dumps({'state': state}), now))
+            return True
+
+    def wait_snapshot(self, task_id, after_seq):
+        with self.connection() as db:
+            db.execute('BEGIN')
+            row = db.execute('SELECT state FROM tasks WHERE id=?', (task_id,)).fetchone()
+            if not row:
+                raise HubError('TASK_NOT_FOUND', '任务不存在')
+            rows = db.execute('SELECT * FROM events WHERE task_id=? AND seq>? ORDER BY seq LIMIT 201',
+                              (task_id, after_seq)).fetchall()
+            events = [dict(seq=r['seq'], kind=r['kind'], data=json.loads(r['data']),
+                           timestamp=r['timestamp']) for r in rows[:200]]
+            return {'state': row['state'], 'events': events,
+                    'next_seq': events[-1]['seq'] if events else after_seq,
+                    'has_more': len(rows) > 200}
 
     def event(self, task_id, kind, data):
         with self.connection() as db:

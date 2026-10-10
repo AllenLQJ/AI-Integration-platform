@@ -1,0 +1,38 @@
+{
+  "session_start": {
+    "ok": true,
+    "method": "session.start",
+    "result": {
+      "ok": true,
+      "result": {
+        "created": true,
+        "root_agent_id": "1e286833-aad5-47d2-bbe8-38af9fe5297c",
+        "session_id": "4dd26f4b-bbc3-4164-ae36-db4cd77b525f"
+      }
+    }
+  },
+  "session_id": "4dd26f4b-bbc3-4164-ae36-db4cd77b525f",
+  "baseline": 0,
+  "sent_ok": true,
+  "marker": "MUSE_HUB_11c8ec2d05",
+  "reply_seq": 5953,
+  "reply_text": "MUSE_HUB_11c8ec2d05",
+  "reply_to_message_id": "",
+  "marker_pass": true,
+  "events": [
+    {
+      "seq": 5952,
+      "role": "user",
+      "message_id": "bf9f1f38-fe58-4a62-9c45-7419806ee950",
+      "reply_to_message_id": "",
+      "text": "这是连接验证，请只回复 MUSE_HUB_11c8ec2d05，不要使用工具或创建任务。"
+    },
+    {
+      "seq": 5953,
+      "role": "assistant",
+      "message_id": "assistant-msg-9bddce94-12b4-4b7d-97a8-499b2d8957d6",
+      "reply_to_message_id": "",
+      "text": "MUSE_HUB_11c8ec2d05"
+    }
+  ]
+}

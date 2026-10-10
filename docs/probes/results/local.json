@@ -1,0 +1,21 @@
+{
+  "worktree": {
+    "unicode_spaces": true,
+    "base": "20fb8528097322970310a464f333cc1153736fbf",
+    "main_unchanged": true,
+    "main_status": "",
+    "worktree_diff_present": true
+  },
+  "cancel": {
+    "parent_pid": 21488,
+    "child_pid": 16348,
+    "remaining_count": 0,
+    "pass": true
+  },
+  "timeout_cleanup": {
+    "parent_pid": 29596,
+    "child_pid": 32296,
+    "remaining_count": 0,
+    "pass": true
+  }
+}

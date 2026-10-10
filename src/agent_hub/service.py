@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import threading
 import time
@@ -25,6 +26,10 @@ class Service:
         self.thread.start()
 
     def call(self, tool, arguments):
+        if tool == 'wait_for_task':
+            if not isinstance(arguments, dict) or set(arguments) - {'task_id', 'after_seq', 'timeout_seconds'} or 'task_id' not in arguments:
+                raise HubError('INVALID_ARGUMENT', '等待参数不正确')
+            return self.wait_for_task(**arguments)
         with self.lock:
             if tool == 'list_agents':
                 return {name: adapter.diagnose() for name, adapter in self.adapters.items()}
@@ -50,6 +55,26 @@ class Service:
             if tool == 'cancel_task':
                 return self.cancel(**arguments)
             raise HubError('UNKNOWN_TOOL', '未知工具')
+
+    def wait_for_task(self, task_id, after_seq=0, timeout_seconds=10):
+        if not isinstance(task_id, str) or not task_id:
+            raise HubError('INVALID_ARGUMENT', 'task_id 需要非空字符串')
+        if type(after_seq) is not int or not 0 <= after_seq <= 9223372036854775807:
+            raise HubError('INVALID_ARGUMENT', 'after_seq 需要非负 SQLite 整数游标')
+        if (type(timeout_seconds) not in (int, float) or not 0 <= timeout_seconds <= 10
+                or not math.isfinite(timeout_seconds)):
+            raise HubError('INVALID_ARGUMENT', '单次等待须在 0–10 秒内')
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            if self.stopping.is_set():
+                raise HubError('SERVICE_STOPPING', '服务正在停止，请稍后按原游标续接')
+            snapshot = self.store.wait_snapshot(task_id, after_seq)
+            terminal = snapshot['state'] in TERMINAL
+            remaining = deadline - time.monotonic()
+            if terminal or remaining <= 0:
+                return dict(snapshot, timed_out=not terminal)
+            # Neither the global service lock nor a DB transaction is held here.
+            self.stopping.wait(min(.1, remaining))
 
     @staticmethod
     def public(task):
@@ -82,10 +107,13 @@ class Service:
 
     def continue_task(self, request_id, task_id, prompt, timeout_seconds=1800):
         parent = self.store.get(task_id)
+        workspace_metadata = ({'excluded_untracked_files': parent['excluded_untracked_files']}
+                              if 'excluded_untracked_files' in parent else {})
         if self.store.by_request(request_id):
             return self.submit(request_id, parent['agent'], prompt, parent['cwd'], parent['mode'],
                                timeout_seconds, parent_id=task_id, workspace=parent.get('workspace'),
-                               baseline=parent.get('baseline'), resume_session=parent.get('session_id'))
+                               baseline=parent.get('baseline'), resume_session=parent.get('session_id'),
+                               **workspace_metadata)
         if parent.get('workspace_quarantined'):
             raise HubError('WORKSPACE_UNCERTAIN', '旧执行状态不确定，工作区已隔离；请人工核对后在新工作区提交')
         if parent['agent'] == 'muse' and parent['state'] in {'interrupted', 'delivery_unknown'}:
@@ -101,7 +129,8 @@ class Service:
                 raise HubError('WORKSPACE_BUSY', '工作区已有另一轮任务')
         return self.submit(request_id, parent['agent'], prompt, parent['cwd'], parent['mode'],
                            timeout_seconds, parent_id=task_id, workspace=parent['workspace'],
-                           baseline=parent.get('baseline'), resume_session=parent['session_id'])
+                           baseline=parent.get('baseline'), resume_session=parent['session_id'],
+                           **workspace_metadata)
 
     def cancel(self, task_id, reason='用户取消'):
         task = self.store.get(task_id)

@@ -1,9 +1,9 @@
 # 本地 Agent Hub 开发设计
 
 日期：2026-10-09  
-状态：2026-10-10 完成 Windows 第一版核心与验收收尾；最终范围和证据见 `docs/第一版验收.md`，Mac / DeepSeek Harness 等保留后续验收。
+状态：2026-10-10 完成 Windows 第一版核心与验收收尾；最终范围和证据见 `../../第一版验收.md`，Mac / DeepSeek Harness 等保留后续验收。
 
-开发前探针已完成，见 `docs/2026-10-09-preflight-results.md`：Codex/Claude 原生续接、Muse 独立会话、Windows 合成进程取消和 worktree 均有实际证据。当前 Claude 经 CCR 使用 API 模式；Claude 订阅、Mac、DeepSeek Harness、Muse 远端取消尚未验收。
+开发前探针已完成，见 `../../2026-10-09-preflight-results.md`：Codex/Claude 原生续接、Muse 独立会话、Windows 合成进程取消和 worktree 均有实际证据。当前 Claude 经 CCR 使用 API 模式；Claude 订阅、Mac、DeepSeek Harness、Muse 远端取消尚未验收。
 
 ## 1. 目标与已确认流程
 
@@ -67,11 +67,14 @@ Python 基线为 3.10，Windows 使用项目独立虚拟环境及现有 py310 �
 | `submit_task` | `request_id`, `agent`, `prompt`, `cwd`, `mode` | `timeout_seconds` | 立即返回任务字段 `id` 与当前状态；后续以该值作为 task_id；同一请求键及内容返回原任务，内容变化则冲突 |
 | `get_task` | `task_id` | 无 | 状态、时间、执行器、工作区与结果引用；进度和错误详情分别通过 get_events / get_result 读取 |
 | `get_events` | `task_id` | `after_seq`, `limit` | 有序分页事件与下一游标；默认 50 条，上限 200 条 |
+| `wait_for_task` | `task_id` | `after_seq=0`, `timeout_seconds=10` | 等待任一终态或单次 0–10 秒上限；返回状态、最多 200 条事件、next_seq、has_more、timed_out；不改变任务期限 |
 | `get_result` | `task_id` | 无 | 未完成返回 `ready=false`；终态返回回答、错误和产物信息 |
 | `continue_task` | `request_id`, `task_id`, `prompt` | `timeout_seconds` | 创建子任务；返回新的 ID；不覆盖旧结果 |
 | `cancel_task` | `task_id` | `reason` | 幂等请求取消，返回本地状态和实际取消能力，不捏造远端已停止 |
 
 `mode` 初版为 `read_only` 或 `edit_worktree`。默认期限 1800 秒，允许 10–7200 秒。总控等待超时与任务期限独立：工具断开不会自动重发任务或改变任务期限。
+
+2026-10-10 用户确认新增第八个工具，详见 `2026-10-10-wait-for-task-addendum.md`；原七个工具保持行为及结构。MCP 等待使用异步入口，后台在锁外等待；最后收到的游标用于续接，响应丢失按 seq 去重。
 
 工具错误返回稳定错误码，例如 `AGENT_UNAVAILABLE`、`AUTH_REQUIRED`、`INVALID_WORKSPACE`、`REQUEST_CONFLICT`、`WORKSPACE_BUSY`、`RESULT_PENDING`。不得把密钥、Cookie 或完整环境变量放进错误正文。
 
@@ -111,7 +114,7 @@ Muse 的远端取消能力需实测。如果只有停止本地等待的能力，
 
 ## 8. 工作区与产物
 
-编码任务只接受存在的 Git 仓库且已提交至少一个基线提交。独立 worktree 从明确 Git ref 创建，默认 HEAD；不会自动复制未提交和未跟踪内容。主目录有未提交更改且任务依赖它们时，返回需用户选择基线的说明，不默默忽略。
+编码任务只接受存在的 Git 仓库且已提交至少一个基线提交。当前实现从 HEAD 已提交基线创建独立 worktree；已跟踪文件有未提交修改时返回 DIRTY_WORKSPACE。允许未跟踪文件留在主目录，不复制到 worktree，状态及产物记录 excluded_untracked_files。需要这些文件参与任务时先提交明确基线。
 
 开发前顶层目录不是 Git 仓库；实现时已建立 Hub 自身仓库并创建独立开发 worktree。现有 Muse 克隆、`.tools`、日志与认证数据保持排除。测试任务使用专用 Git 测试仓库，不修改现有项目作为验收素材。
 

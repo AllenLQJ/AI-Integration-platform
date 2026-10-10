@@ -1,5 +1,7 @@
 # Muse 错误恢复修改与验证（2026-10-10）
 
+> 分阶段历史验收记录：前文失败、未提交和旧共享进程描述均为当时状态。后续真实成功回收、共享切换及本地 Git 保存结果见本文后半部分；最新等待工具和后台重载见 `2026-10-10-wait-for-task-validation.md`。本轮新增可复现配套补丁见 `../vendor/muse-mcp/README.md`。
+
 工作树：`C:\Users\your-name\.codex\worktrees\agent-hub-v1\AI-Integration-platform`，分支 `feature/agent-hub-v1`，修改前基线 `c7ba64a`。本次修改保留在工作区，未提交或推送。
 
 ## 修改

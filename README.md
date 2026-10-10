@@ -1,5 +1,7 @@
 # 本地 Agent Hub
 
+当前进度（2026-10-10）：Windows 第一版及 `wait_for_task` 已实现；本轮完整回归 62/62 通过（93.993 秒）。当前状态见 [docs/开发进度.md](docs/开发进度.md)，验收范围见 [docs/第一版验收.md](docs/第一版验收.md)。
+
 用一个 MCP 接口提交 Codex、Claude Code 和 Muse 任务。任务由独立后台服务执行，SQLite 保存记录，代码修改放在独立 Git worktree，返回结果与差异供审阅。
 
 ## Windows 安装
@@ -27,12 +29,12 @@ MCP 使用 stdio：command 为虚拟环境 python.exe 的绝对路径，args 为
 
 ## 总控接入
 
-本机 Codex 已登记 `agent_hub`；重新加载 MCP 或打开新聊天后查看工具。源码当前位于 `C:\Users\your-name\.codex\worktrees\agent-hub-v1\AI-Integration-platform`，注册命令使用该目录的 `.venv\Scripts\python.exe`，请保留此目录。其他机器在 MCP 设置中填写自己的绝对路径。
+在 Codex 的 MCP 设置中登记 `agent_hub`，command 使用本机项目虚拟环境 Python 的绝对路径，args 为 `["-m", "agent_hub", "mcp"]`。重新加载 MCP 或打开新聊天后应看到八个工具。移动源码或环境后需同步修改 MCP 注册路径；本机既有注册仍引用开发 worktree，合并源码不自动迁移运行环境。
 
 Claude Code 可以作为总控连接同一服务，例如保存下述本机 MCP 配置（换成自己的 Python 绝对路径）：
 
 ```json
-{"mcpServers":{"agent_hub":{"command":"C:/Users/your-name/.codex/worktrees/agent-hub-v1/AI-Integration-platform/.venv/Scripts/python.exe","args":["-m","agent_hub","mcp"],"env":{"PYTHONUTF8":"1"}}}}
+{"mcpServers":{"agent_hub":{"command":"D:/path/to/AI-Integration-platform/.venv/Scripts/python.exe","args":["-m","agent_hub","mcp"],"env":{"PYTHONUTF8":"1"}}}}
 ```
 
 使用 `claude --strict-mcp-config --mcp-config <配置文件绝对路径>` 启动。总控必须加载 Hub MCP；不要套用执行器的空 MCP 配置或 `--safe-mode`。本机 Claude / DeepSeek API 模式在测试时使用 `ENABLE_TOOL_SEARCH=false` 禁用动态工具发现，再明确允许相应 Hub 工具，才产生真实调用。此环境变量可仅对启动终端设置：`$env:ENABLE_TOOL_SEARCH='false'`。遵循客户端正常的工具授权流程，无需改变全局权限。
@@ -45,13 +47,25 @@ Claude Code 可以作为总控连接同一服务，例如保存下述本机 MCP 
 
 1. `list_agents` 查看配置、版本和模式。
 2. `submit_task(request_id, agent, prompt, cwd, mode)`，记录返回的 `id`。
-3. `get_task(task_id)` / `get_events(task_id, after_seq)` 查看状态。
+3. `wait_for_task(task_id, after_seq=0, timeout_seconds=10)` 等待结果；也可用 `get_task` / `get_events` 即时查询。
 4. `get_result(task_id)` 读取 `ready=true` 的结果。
 5. `continue_task(request_id, task_id, prompt)` 复用原生会话和工作区；返回子任务 ID。
 
 request_id 应为稳定且唯一的请求键。相同键和内容只执行一次，改变内容返回 REQUEST_CONFLICT。任务超时为 10–7200 秒，默认 1800；总控退出不改变任务期限。
 
-编码任务使用 `edit_worktree`，要求 Git 主目录干净且有基线提交。Hub 不复制未提交内容、不自动提交或合并、不删除任务 worktree。返回 diff、变更文件和日志路径；模型说完成不等于代码测试通过。worktree 不是安全沙箱。
+### 持续等待任务
+
+`wait_for_task` 是第八个只读工具，单次最多等待 10 秒，默认 10 秒，0 秒立即返回快照。检测到 succeeded、failed、timed_out、cancelled、interrupted、delivery_unknown 任一终态就提前返回。MCP 与带令牌的回环 HTTP `/rpc` 使用相同契约。
+
+返回 `state`、`events`、`next_seq`、`has_more`、`timed_out`。`timed_out=true` 只表示本次等待到期，不会取消或重发任务；任务自身期限到期则是 `state="timed_out"`，这时等待返回 `timed_out=false`。
+
+总控应保存最后实际收到的 next_seq：若未终态，立刻用该游标再次等待；若终态但 has_more=true，继续读取至 has_more=false，再调用 get_result 获取完整答案。每页最多 200 条事件，游标只前进到已返回的最后一条。断线后使用最后收到的游标续接；响应丢失可能重复读取，按事件 seq 去重，不重新提交任务。
+
+等待由 Hub 执行，但持续续接由总控负责；不会自动唤醒已结束聊天或发桌面通知。服务关闭时等待返回 SERVICE_STOPPING，重连后继续原任务游标。
+
+更新源码后，已运行后台不会自动加载新工具。在无在途任务且明确允许停止的时机运行 `python -m agent_hub stop`，下次调用启动新版后台；重新加载 MCP 或开启新聊天刷新八个工具。验收脚本使用隔离服务；2026-10-10 已按用户授权重启共享后台并验证八个工具，见等待验收记录。后续更新仍需手动重载。
+
+编码任务使用 `edit_worktree`，以 `HEAD` 已提交版本为基线，要求已跟踪文件没有未提交修改且有基线提交。主目录可以存在未跟踪文件：这些文件保留在原目录，不复制到任务工作区，任务状态和结果的 `excluded_untracked_files` 列出未纳入的路径，`baseline` 记录提交 SHA。需要使用未提交内容时，先明确并准备相应基线。Hub 不自动提交或合并、不删除任务 worktree。返回 diff、变更文件和日志路径；模型说完成不等于代码测试通过。worktree 不是安全沙箱。
 
 ## 执行器限制
 
@@ -62,7 +76,7 @@ request_id 应为稳定且唯一的请求键。相同键和内容只执行一次
   MCP 内层 `ok=false` 作为失败处理并保留上游错误码。仅历史读取遇到临时网关、超时或 VM 不可用时最多尝试三次，间隔为 1、2 秒；受任务期限和取消约束，并记录 retry 事件。认证失败和异常响应格式不重试。会话创建和任务发送不自动重试，避免重复会话或重复执行。
   completion_evidence 保留最终回复的 reply_to_message_id（可能为空）；非空字段不会排除已完成且带本任务标记的回复。读取失败耗尽后保留远端状态不确定，不将其视为远端已停止。
   Muse 发送使用 fire_and_forget，只取得派发确认；回复由 Hub 的历史轮询统一回收，不在发送工具内重复等待回复。
-  Hub 专用 Muse 子进程启用 `MUSE_MCP_REUSE_GATEWAY=1`，配套 muse-mcp 支持在锁保护下复用连接，减少重复 HTTPS 认证；连接异常会丢弃缓存，不重放业务操作。普通 Muse 工具默认仍使用独立连接。当前本机配套实现位于 `D:\projects\AI-Integration-platform\muse-mcp`，部署到其他设备时需要同步该实现。
+  Hub 专用 Muse 子进程启用 `MUSE_MCP_REUSE_GATEWAY=1`，配套 muse-mcp 支持在锁保护下复用连接，减少重复 HTTPS 认证；连接异常会丢弃缓存，不重放业务操作。普通 Muse 工具默认仍使用独立连接。配套兼容性补丁和基线安装步骤见 [vendor/muse-mcp/README.md](vendor/muse-mcp/README.md)，部署时需应用补丁并配置自己的认证与 Python 路径。
 - 后台重启：queued 继续；running/cancelling 标 interrupted，不按旧 PID 杀进程，也不自动重跑。无法确认旧执行已停止的工作区隔离，拒绝直接续接；需人工核对，在新工作区提交。正常终态使用已保存的 session_id 续接。
 - Mac 与 DeepSeek harness 尚未实机验收。Mac 不使用 Windows lock 文件：创建环境后 `pip install -e .`，按本机路径配置；实际支持需要另行验收。
 
