@@ -136,8 +136,8 @@ class Service:
                                **workspace_metadata)
         if parent.get('workspace_quarantined'):
             raise HubError('WORKSPACE_UNCERTAIN', '旧执行状态不确定，工作区已隔离；请人工核对后在新工作区提交')
-        if parent['agent'] == 'muse' and parent['state'] in {'interrupted', 'delivery_unknown'}:
-            raise HubError('REMOTE_STATE_UNKNOWN', 'Muse 原任务远端状态不确定，禁止直接续发')
+        if parent['agent'] in {'muse', 'grokbot'} and parent['state'] in {'interrupted', 'delivery_unknown'}:
+            raise HubError('REMOTE_STATE_UNKNOWN', '原任务远端状态不确定，禁止直接续发')
         if parent['state'] not in TERMINAL:
             raise HubError('WORKSPACE_BUSY', '父任务仍在执行')
         if not parent.get('session_id'):
@@ -156,13 +156,20 @@ class Service:
         task = self.store.get(task_id)
         remote = self.adapters[task['agent']].remote_cancel
         if task['state'] == 'queued':
-            self.store.finish(task_id, 'cancelled', {'error': reason, 'remote_cancelled': False})
+            self.store.finish(task_id, 'cancelled', {'error': reason, 'remote_cancelled': False,
+                                                    'cancel_scope': 'not_started'})
         elif task['state'] not in TERMINAL:
             self.store.update(task_id, state='cancelling', cancel_reason=reason)
             if task_id in self.active:
                 self.active[task_id]['cancel'].set()
+        scope = getattr(self.adapters[task['agent']], 'cancel_scope',
+                        'local_process_tree' if remote else 'local_wait_only')
+        if task['state'] == 'queued':
+            scope = 'not_started'
+        result = self.call('get_result', {'task_id': task_id}) if task['state'] in TERMINAL else {}
         return {'task_id': task_id, 'state': self.store.get(task_id)['state'],
-                'remote_cancelled': False, 'cancel_scope': 'local_process_tree' if remote else 'local_wait_only'}
+                'remote_cancelled': result.get('remote_cancelled', False),
+                'cancel_scope': result.get('cancel_scope', scope)}
 
     def schedule(self):
         while not self.stopping.wait(.05):
@@ -238,6 +245,10 @@ class Service:
                 result['artifact_error'] = str(error)
         if not self.adapters[task['agent']].remote_cancel and state in {'cancelled', 'timed_out', 'interrupted', 'delivery_unknown'}:
             result.update(remote_cancelled=False, warning='仅停止本地等待；远端可能继续执行')
+        elif getattr(self.adapters[task['agent']], 'cancel_scope', None) == 'remote_session' and state in {'cancelled', 'timed_out', 'interrupted', 'delivery_unknown'}:
+            result.setdefault('remote_cancelled', False)
+            if not result['remote_cancelled']:
+                result.setdefault('warning', '远端停止未确认；须核对专用 Bot 和私有状态文件')
         result['permissions'] = self.permissions(task)
         result = self.store.safe(result)
         path = self.root / 'results' / (ident + '.json')
@@ -257,4 +268,5 @@ class Service:
             for active in workers:
                 active['cancel'].set()
         for active in workers:
-            active['thread'].join(20)
+            adapter = self.adapters[active['agent']]
+            active['thread'].join(30 if getattr(adapter, 'cancel_scope', None) == 'remote_session' else 20)
