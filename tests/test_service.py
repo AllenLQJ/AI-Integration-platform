@@ -57,6 +57,35 @@ class ServiceTests(unittest.TestCase):
         self.service.call('cancel_task', {'task_id': task['id']})
         self.assertEqual(self.wait(task['id'])['state'], 'cancelled')
         self.assertTrue(self.service.call('get_result', {'task_id': task['id']})['ready'])
+    def test_remote_session_cancel_is_pending_until_adapter_confirmation(self):
+        self.fake.cancel_scope = 'remote_session'
+        started, release = threading.Event(), threading.Event()
+        def remote_run(task, cancel, event):
+            started.set()
+            cancel.wait(3)
+            release.wait(3)
+            raise HubError('CANCELLED', 'confirmed stopped', {'remote_cancelled':True,
+                'interrupt_requested':True,'interrupt_acknowledged':True})
+        self.fake.run = remote_run
+        task = self.submit()
+        self.assertTrue(started.wait(3))
+        pending = self.service.call('cancel_task',{'task_id':task['id']})
+        self.assertEqual(pending['state'],'cancelling')
+        self.assertEqual(pending['cancel_scope'],'remote_session')
+        self.assertFalse(pending['remote_cancelled'])
+        release.set()
+        self.wait(task['id'])
+        confirmed = self.service.call('cancel_task',{'task_id':task['id']})
+        self.assertTrue(confirmed['remote_cancelled'])
+        self.assertEqual(self.fake.calls,0)
+    def test_queued_cancellation_does_not_claim_a_remote_request(self):
+        self.fake.cancel_scope = 'remote_session'
+        self.service.per_agent_concurrency['fake'] = 0
+        task = self.submit()
+        result = self.service.call('cancel_task',{'task_id':task['id']})
+        self.assertEqual(result['cancel_scope'],'not_started')
+        self.assertFalse(result['remote_cancelled'])
+        self.assertEqual(self.fake.calls,0)
     def test_validation(self):
         with self.assertRaises(HubError):
             self.submit(timeout_seconds=1)

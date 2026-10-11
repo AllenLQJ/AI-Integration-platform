@@ -5,6 +5,8 @@ from pathlib import Path
 from .adapters.codex import Codex
 from .adapters.claude import Claude
 from .adapters.muse import Muse
+from .adapters.cursor import Cursor
+from .adapters.grokbot import GrokBot
 from .models import HubError
 
 
@@ -66,10 +68,14 @@ def adapters(root):
     path = Path(root) / 'config.json'
     config = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
     result = {}
-    for name, cls in [('codex', Codex), ('claude', Claude), ('muse', Muse)]:
+    for name, cls in [('codex', Codex), ('claude', Claude), ('muse', Muse),
+                      ('cursor', Cursor), ('grokbot', GrokBot)]:
         item = config.get('agents', {}).get(name)
         if item and item.get('enabled', True):
-            if name == 'muse': result[name] = cls(item['executable'], item.get('args'), item.get('env'))
+            if name == 'grokbot':
+                result[name] = cls(item['bot_name'], item.get('credentials_file'),
+                                   item.get('state_file'), item.get('env'), item.get('session_id'))
+            elif name == 'muse': result[name] = cls(item['executable'], item.get('args'), item.get('env'))
             elif name == 'codex': result[name] = cls(item['executable'], item.get('env'), item.get('windows_sandbox', 'mxc'))
             else: result[name] = cls(item['executable'], item.get('env'))
     return result

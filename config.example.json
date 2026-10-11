@@ -1,8 +1,11 @@
 {
-  "concurrency": {"global": 2, "per_agent": {"codex": 1, "claude": 1, "muse": 1}},
+  "concurrency": {"global": 2, "per_agent": {"codex": 1, "claude": 1, "muse": 1, "cursor": 1, "grokbot": 1}},
   "agents": {
     "codex": {"executable": "C:/path/to/codex.exe"},
     "claude": {"executable": "C:/path/to/claude.exe"},
+    "cursor": {"enabled": false, "executable": "/Users/your-name/.local/bin/agent"},
+    "grokbot": {"enabled": false, "bot_name": "Agent Hub Worker", "session_id": "YOUR_VERIFIED_EXISTING_SESSION_ID",
+      "credentials_file": "/Users/your-name/.config/agent-serve/credentials.json"},
     "muse": {
       "executable": "D:/path/to/muse-mcp/.venv/Scripts/python.exe",
       "args": ["-m", "muse_mcp"],

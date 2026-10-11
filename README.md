@@ -1,8 +1,8 @@
 # 本地 Agent Hub
 
-当前进度（2026-10-11）：Windows 第一版与 Mac 本机接入已实现，提供八个 MCP 工具。Mac 最新完整自动回归 83 项：82 通过、1 项 Windows ACL 检查跳过。真实核心任务与补充异常验收已完成本轮记录；严格休眠超时恢复等仍未验证，不能宣称全部功能都已验收。当前状态与验证边界见 [开发进度](docs/开发进度.md) 和 [第一版验收](docs/第一版验收.md)。Windows 记录来自 10-09/10-10，最新修改未在 Windows 重新回归。
+当前进度（2026-10-11）：Windows 第一版与 Mac 本机接入已实现，提供八个 MCP 工具。新增 Cursor CLI / Grok Bot 双向接入，真实总控派发、执行器回复和续接通过，见 [接入记录](docs/2026-10-11-cursor-grokbot-validation.md)。Mac 最新完整自动回归 110 项：109 通过、1 项 Windows ACL 检查跳过（49.121 秒）。真实核心任务与补充异常验收已完成本轮记录；严格休眠超时恢复等仍未验证，不能宣称全部功能都已验收。当前状态与验证边界见 [开发进度](docs/开发进度.md) 和 [第一版验收](docs/第一版验收.md)。Windows 记录来自 10-09/10-10，最新修改未在 Windows 重新回归。
 
-用一个 MCP 接口提交 Codex、Claude Code 和 Muse 任务。任务由独立后台服务执行，SQLite 保存记录，代码修改放在独立 Git worktree，返回结果与差异供审阅。
+用一个 MCP 接口提交 Codex、Claude Code、Muse、Cursor CLI 和 Grok Bot 任务。任务由独立后台服务执行，SQLite 保存记录，代码修改放在独立 Git worktree，返回结果与差异供审阅。
 
 ## Mac 安装
 
@@ -84,6 +84,9 @@ request_id 应为稳定且唯一的请求键。相同键和内容只执行一次
 
 ## 执行器限制
 
+- Cursor CLI：read_only 使用 ask；edit_worktree 仅放行工作区文件工具，原生 resume。执行配置独立于总控 MCP，拒绝项目级 MCP/hooks/权限配置；不使用 force，不开放命令。已完成本机文件、续接、取消及超时探针，未独立审计完整 OS 沙箱。
+- Grok Bot：delegate，通过 Cursor BDK 公布的 session API 接收并回收任务；使用专用 Bot，cwd 不自动同步。续接、远端取消、期限中断和正常后台退出已实测；只有 interrupt 后独立确认回合停止，或本任务已自然完成并确认 idle，才报告 `remote_cancelled=true`，已发生操作不回滚。不确定派发或停止保留跨数据目录的私有锁，先人工核对再续发。两者总控及使用说明见 [双向接入](docs/2026-10-11-cursor-grokbot-validation.md)。
+
 - Codex：read_only 使用自身 read-only 沙箱；edit_worktree 使用 workspace-write；不加载用户 MCP 配置。Windows 默认使用已在本机探针通过的 MXC（Codex 0.162.0）；其他设备可明确配置 windows_sandbox，不能通过关闭沙箱解决权限问题。
 - Claude：已验证 Windows CCR/apiKeyHelper 和 Mac DeepSeek Anthropic 兼容 API 配置；Claude 订阅认证尚未验收。text_only 禁用所有工具，适合提供上下文后的文本分析；read_only 仅开放 Read/Glob/Grep；edit_worktree 仅 Read/Glob/Grep/Edit/Write，第一版不允许运行命令。safe-mode 禁用自定义技能/插件，严格空 MCP 配置防止递归。
 - Muse：使用 delegate 委托模式，Hub 不强制只读，可能调用云端及已连接 Mac 的写入工具；操作由 Muse/客户端权限与审批决定。文本调研，每个初始任务独立会话。结果采用会话、消息序号与最终回答标记关联；不宣称远端工作流已完成。取消/超时仅停止本地等待，远端可能继续。发送状态不确定时不自动重发。
@@ -121,6 +124,8 @@ Mac 最新记录分为 [核心验收](docs/2026-10-11-macos-full-acceptance.md) 
 | Codex | read_only | Codex 只读沙箱 |
 | Codex | edit_worktree | Codex workspace-write 沙箱与独立 worktree |
 | Muse | delegate | Hub 不强制只读；实际操作由 Muse 和客户端权限决定 |
+| Cursor CLI | read_only / edit_worktree | ask 或工作区文件白名单，无 Shell/MCP/WebFetch；未全面审计 OS 沙箱 |
+| Grok Bot | delegate | 云端专用 Bot，Hub 不强制只读，取消仅停止本地等待 |
 
 list_agents 的 permissions 按模式说明 enforced_by、enforced、allows_write、allows_commands、os_sandbox 及作用范围；submit_task、get_task、get_result 也返回 permissions。enforced 表示声明的模式限制由执行器强制，而非所有执行器拥有同等隔离保障。Muse 的 allows_write/commands 表示可能发生，不能据此认为已获客户端授权。
 
