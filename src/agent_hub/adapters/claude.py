@@ -5,6 +5,16 @@ from ..models import HubError
 
 
 class Claude(CLI):
+    capabilities = ['text_only', 'read_only', 'edit_worktree', 'continue']
+
+    def permission_policy(self, mode):
+        return {'enforced_by': 'claude_code_tools', 'enforced': True,
+                'allows_file_read': mode != 'text_only',
+                'allows_write': mode == 'edit_worktree',
+                'allows_commands': False, 'os_sandbox': False,
+                'workspace': 'git_worktree' if mode == 'edit_worktree' else 'original',
+                'scope_note': '工具白名单由 CLI 执行；worktree 不是文件系统沙箱'}
+
     def diagnose(self):
         result = super().diagnose()
         result['authentication'] = '现有 CLI 认证；本机已验证 CCR/apiKeyHelper/API 模式'
@@ -16,13 +26,14 @@ class Claude(CLI):
         root.mkdir(parents=True, exist_ok=True)
         config = root / 'mcp-empty.json'
         config.write_text('{"mcpServers":{}}', encoding='utf-8')
-        tools = '' if task['mode'] == 'read_only' else 'Read,Glob,Grep,Edit,Write'
+        tools = {'text_only': '', 'read_only': 'Read,Glob,Grep',
+                 'edit_worktree': 'Read,Glob,Grep,Edit,Write'}[task['mode']]
         args = [self.executable, '-p', '--safe-mode', '--output-format', 'json', '--tools=' + tools,
                 '--strict-mcp-config', '--mcp-config=' + str(config),
                 '--setting-sources=user', '--settings', '{"disableAllHooks":true}',
                 '--permission-mode', 'dontAsk']
         if tools:
-            args += ['--allowedTools=Read,Glob,Grep,Edit,Write']
+            args += ['--allowedTools=' + tools]
         if task.get('resume_session'):
             args += ['--resume', task['resume_session']]
         return args + ['--', task['prompt']]

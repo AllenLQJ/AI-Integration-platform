@@ -11,3 +11,4 @@ cookies*
 build/
 dist/
 .pytest_cache/
+.DS_Store

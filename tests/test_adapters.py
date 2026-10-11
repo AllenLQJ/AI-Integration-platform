@@ -15,6 +15,22 @@ from agent_hub.models import HubError
 
 
 class AdapterTests(unittest.TestCase):
+    def test_muse_json_text_response_preserves_session_and_errors(self):
+        for payload in ({'ok': True, 'result': {'session_id': 'sid'}},
+                        {'ok': False, 'error': {'code': 'AUTH_REQUIRED'}}):
+            response = SimpleNamespace(structuredContent=None,
+                content=[SimpleNamespace(type='text', text=json.dumps(payload))])
+            self.assertEqual(Muse.response_payload(response), payload)
+
+    def test_muse_text_history_and_empty_history(self):
+        rows = [{'seq': 1}, {'seq': 2}]
+        response = SimpleNamespace(structuredContent=None,
+            content=[SimpleNamespace(type='text', text=json.dumps(row)) for row in rows])
+        self.assertEqual(Muse.response_payload(response), rows)
+        self.assertEqual(Muse.response_payload(SimpleNamespace(structuredContent=None, content=[])), [])
+        response.content = [SimpleNamespace(type='text', text='invalid')]
+        with self.assertRaises(HubError): Muse.response_payload(response)
+
     def test_codex_parse_and_resume_policy(self):
         adapter = Codex('codex.exe')
         output = '\n'.join(json.dumps(e) for e in [
@@ -31,7 +47,10 @@ class AdapterTests(unittest.TestCase):
             adapter = Claude('claude.exe')
             read = adapter.command(dict(prompt='hi', mode='read_only', log_dir=td))
             edit = adapter.command(dict(prompt='hi', mode='edit_worktree', log_dir=td))
-            self.assertIn('--tools=', read)
+            self.assertIn('--tools=Read,Glob,Grep', read)
+            text = adapter.command(dict(prompt='hi', mode='text_only', log_dir=td))
+            self.assertIn('--tools=', text)
+            self.assertNotIn('--allowedTools=Read,Glob,Grep,Edit,Write', read)
             self.assertIn('--tools=Read,Glob,Grep,Edit,Write', edit)
             self.assertIn('--strict-mcp-config', edit)
             result = adapter.parse('{"type":"result","result":"done","session_id":"sid","is_error":false}')

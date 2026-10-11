@@ -61,7 +61,7 @@ def main():
                           'error': result.get('error'), 'main_unchanged': entry['main_unchanged']}, ensure_ascii=False), flush=True)
     first = client.call('submit_task', dict(request_id='accept-' + stamp + 'muse', agent='muse',
             prompt='用两句话说明 SQLite 事务的用途，提供 SQLite 官方文档链接。记住本轮编号 '+stamp+'，无需长调研。',
-            cwd=str(repo), mode='read_only', timeout_seconds=180))
+            cwd=str(repo), mode='delegate', timeout_seconds=180))
     result = wait(client, first)
     entry = {'task_id': first['id'], 'first': result}
     if result.get('state') == 'succeeded':

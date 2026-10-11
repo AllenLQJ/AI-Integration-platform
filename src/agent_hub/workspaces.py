@@ -24,7 +24,7 @@ class Workspaces:
             if not workspace.is_dir():
                 raise HubError('INVALID_WORKSPACE', '原工作区已不存在')
             return {k: task[k] for k in ('workspace', 'baseline', 'excluded_untracked_files') if k in task}
-        if task['mode'] == 'read_only':
+        if task['mode'] in {'read_only', 'text_only', 'delegate'}:
             return {'workspace': str(cwd)}
         if git(cwd, 'status', '--porcelain', '--untracked-files=no').strip():
             raise HubError('DIRTY_WORKSPACE', '已跟踪文件存在未提交修改；edit_worktree 使用 HEAD 基线，不复制本地修改')

@@ -47,11 +47,11 @@ class Service:
             if tool == 'get_result':
                 task = self.store.get(arguments['task_id'])
                 if task['state'] not in TERMINAL:
-                    return {'ready': False, 'state': task['state']}
+                    return {'ready': False, 'state': task['state'], 'permissions': self.permissions(task)}
                 result = dict(task.get('result', {}))
                 if result.get('path'):
                     result = json.loads(Path(result['path']).read_text(encoding='utf-8'))
-                return dict(result, ready=True, state=task['state'])
+                return dict(result, ready=True, state=task['state'], permissions=self.permissions(task))
             if tool == 'cancel_task':
                 return self.cancel(**arguments)
             raise HubError('UNKNOWN_TOOL', '未知工具')
@@ -76,9 +76,21 @@ class Service:
             # Neither the global service lock nor a DB transaction is held here.
             self.stopping.wait(min(.1, remaining))
 
-    @staticmethod
-    def public(task):
-        return {k: v for k, v in task.items() if k not in {'prompt', 'resume_session'}}
+    def permissions(self, task):
+        if 'permissions' in task:
+            return task['permissions']
+        adapter = self.adapters.get(task['agent'])
+        if hasattr(adapter, 'permission_policy'):
+            mode = task['mode']
+            if task['agent'] == 'claude' and mode == 'read_only':
+                mode = 'text_only'  # 历史任务的 read_only 禁用全部工具。
+            return adapter.permission_policy(mode)
+        return {'enforced_by': 'unknown', 'enforced': False, 'allows_write': None}
+
+    def public(self, task):
+        result = {k: v for k, v in task.items() if k not in {'prompt', 'resume_session'}}
+        result['permissions'] = self.permissions(task)
+        return result
 
     def submit(self, request_id, agent, prompt, cwd, mode, timeout_seconds=1800, **internal):
         if not isinstance(request_id, str) or not request_id or len(request_id) > 200:
@@ -94,8 +106,9 @@ class Service:
         if agent not in self.adapters:
             raise HubError('AGENT_UNAVAILABLE', '执行器未配置')
         adapter = self.adapters[agent]
-        if mode not in adapter.capabilities:
-            raise HubError('UNSUPPORTED_MODE', '执行器不支持此模式')
+        if mode == 'continue' or mode not in adapter.capabilities:
+            raise HubError('UNSUPPORTED_MODE', '执行器不支持此模式；可提交模式：' +
+                           ', '.join(m for m in adapter.capabilities if m != 'continue'))
         if not Path(cwd).is_dir():
             raise HubError('INVALID_WORKSPACE', '目录不存在')
         resolved = str(Path(cwd).resolve())
@@ -103,10 +116,17 @@ class Service:
                for t in self.store.list()):
             raise HubError('WORKSPACE_UNCERTAIN', '此工作区存在未核对的旧执行状态')
         task = self.store.create(request_id, spec)
+        policy = adapter.permission_policy(mode) if hasattr(adapter, 'permission_policy') else self.permissions(task)
+        self.store.update(task['id'], permissions=policy)
+        task = self.store.get(task['id'])
         return self.public(task)
 
     def continue_task(self, request_id, task_id, prompt, timeout_seconds=1800):
         parent = self.store.get(task_id)
+        if parent['agent'] == 'muse' and parent['mode'] == 'read_only' and not self.store.by_request(request_id):
+            raise HubError('LEGACY_MODE', '旧 Muse read_only 不保证只读；请使用 delegate 新建任务并确认操作范围')
+        if parent['agent'] == 'claude' and parent['mode'] == 'read_only' and 'permissions' not in parent and not self.store.by_request(request_id):
+            parent = dict(parent, mode='text_only')
         workspace_metadata = ({'excluded_untracked_files': parent['excluded_untracked_files']}
                               if 'excluded_untracked_files' in parent else {})
         if self.store.by_request(request_id):
@@ -156,6 +176,14 @@ class Service:
                     actual_workspace = task.get('workspace') or (
                         str(self.workspaces.root / task['id']) if task['mode'] == 'edit_worktree' else task['cwd'])
                     workspace_key = os.path.normcase(str(Path(actual_workspace).resolve()))
+                    quarantined = {os.path.normcase(str(Path(t.get('workspace') or t['cwd']).resolve()))
+                                   for t in self.store.list() if t.get('workspace_quarantined')}
+                    if workspace_key in quarantined:
+                        self.store.update(task['id'], workspace=actual_workspace, workspace_quarantined=True)
+                        self.store.finish(task['id'], 'interrupted', {
+                            'error_code': 'WORKSPACE_UNCERTAIN',
+                            'error': '工作区旧执行状态不确定，排队任务未启动；请人工核对后使用新工作区'})
+                        continue
                     if (used_agents[task['agent']] >= self.per_agent_concurrency.get(task['agent'], 1)
                             or workspace_key in used_workspaces):
                         continue
@@ -210,6 +238,7 @@ class Service:
                 result['artifact_error'] = str(error)
         if not self.adapters[task['agent']].remote_cancel and state in {'cancelled', 'timed_out', 'interrupted', 'delivery_unknown'}:
             result.update(remote_cancelled=False, warning='仅停止本地等待；远端可能继续执行')
+        result['permissions'] = self.permissions(task)
         result = self.store.safe(result)
         path = self.root / 'results' / (ident + '.json')
         path.parent.mkdir(exist_ok=True)

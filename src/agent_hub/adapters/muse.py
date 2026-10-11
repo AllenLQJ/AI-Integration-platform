@@ -10,7 +10,7 @@ from ..processes import environment, run_process
 
 
 class Muse:
-    capabilities = ['read_only', 'continue']
+    capabilities = ['delegate', 'continue']
     remote_cancel = False
 
     def __init__(self, executable, args=None, env=None):
@@ -18,10 +18,36 @@ class Muse:
         self.args = args or ['-m', 'muse_mcp']
         self.env = env or {}
 
+    def permission_policy(self, mode):
+        return {'enforced_by': 'muse_and_client_permissions', 'enforced': False,
+                'allows_file_read': True, 'allows_write': True,
+                'allows_commands': True, 'os_sandbox': False,
+                'workspace': 'remote_and_connected_devices',
+                'scope_note': 'Hub 无法限制 Muse 内部工具；写入和其他动作取决于 Muse/客户端权限及审批'}
+
     def diagnose(self):
         return {'available': Path(self.executable).is_file(), 'capabilities': self.capabilities,
                 'platform': os.name, 'remote_cancel': False,
-                'authentication': '现有 muse-mcp 认证；实际调用确认有效性'}
+                'authentication': '现有 muse-mcp 认证；实际调用确认有效性',
+                'permissions': {'delegate': self.permission_policy('delegate')}}
+
+    @staticmethod
+    def response_payload(response):
+        # MCP 对 Any 返回值可能只提供 JSON 文本块，不能当成空结果。
+        structured = response.structuredContent
+        if structured is not None:
+            return structured.get('result', structured) if isinstance(structured, dict) else structured
+        values = []
+        for block in getattr(response, 'content', ()):
+            if getattr(block, 'type', None) != 'text':
+                raise HubError('INVALID_RESPONSE', 'Muse MCP 返回非 JSON 文本内容')
+            try:
+                values.append(json.loads(block.text))
+            except (ValueError, TypeError) as error:
+                raise HubError('INVALID_RESPONSE', 'Muse MCP 返回无效 JSON') from error
+        if len(values) == 1:
+            return values[0]
+        return values
 
     @staticmethod
     def find_reply(events, baseline, marker):
@@ -109,7 +135,9 @@ class Muse:
                             await asyncio.gather(operation, return_exceptions=True)
                     if response.isError:
                         raise HubError('MUSE_ERROR', stage + ': Muse MCP 调用失败')
-                    payload = (response.structuredContent or {}).get('result')
+                    payload = self.response_payload(response)
+                    if name == 'muse_history' and response.structuredContent is None and isinstance(payload, dict) and 'ok' not in payload:
+                        payload = [payload]
                     if isinstance(payload, dict) and payload.get('ok') is False:
                         error = payload.get('error') or {}
                         if not isinstance(error, dict): error = {}

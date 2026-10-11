@@ -10,6 +10,33 @@ from agent_hub.models import HubError
 
 
 class ProcessTests(unittest.TestCase):
+    @unittest.skipIf(os.name == 'nt', 'POSIX 独立 session')
+    def test_detached_child_is_cleaned_on_cancel_and_timeout(self):
+        import subprocess
+        for cancelling in (True, False):
+            with self.subTest(cancelling=cancelling), tempfile.TemporaryDirectory() as td:
+                child_file = Path(td) / 'detached.pid'
+                code = ('import subprocess,sys,time;from pathlib import Path;'
+                        'p=subprocess.Popen([sys.executable,"-c","import time;time.sleep(60)"],'
+                        'start_new_session=True);Path(sys.argv[1]).write_text(str(p.pid));time.sleep(60)')
+                cancel = threading.Event()
+                timer = threading.Timer(.7, cancel.set)
+                if cancelling: timer.start()
+                try:
+                    with self.assertRaises(HubError):
+                        run_process([sys.executable, '-c', code, str(child_file)], td,
+                                    environment(), cancel, time.time() + (5 if cancelling else .7),
+                                    td, lambda *a: None)
+                    pid = int(child_file.read_text())
+                    for _ in range(50):
+                        status = subprocess.run(['ps', '-p', str(pid), '-o', 'stat='],
+                                                capture_output=True, text=True).stdout.strip()
+                        if not status or status.startswith('Z'): break
+                        time.sleep(.05)
+                    self.assertTrue(not status or status.startswith('Z'), status)
+                finally:
+                    timer.cancel()
+
     def test_environment_isolation(self):
         old = os.environ.get('ANTHROPIC_API_KEY')
         os.environ['ANTHROPIC_API_KEY'] = 'not-a-real-key'
