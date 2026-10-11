@@ -13,6 +13,9 @@ class CLI:
         self.executable = str(executable)
         self.env = env or {}
 
+    def permission_policy(self, mode):
+        return {'enforced_by': 'unknown', 'enforced': False, 'allows_write': None}
+
     def diagnose(self):
         exists = Path(self.executable).is_file()
         version = None
@@ -24,7 +27,8 @@ class CLI:
                 pass
         return {'available': exists, 'version': version, 'platform': os.name,
                 'authentication': '使用 CLI 现有认证；有效性由实际任务确认',
-                'capabilities': self.capabilities}
+                'capabilities': self.capabilities,
+                'permissions': {mode: self.permission_policy(mode) for mode in self.capabilities if mode != 'continue'}}
 
     def run(self, task, cancel, event):
         if not Path(self.executable).is_file():

@@ -45,7 +45,7 @@ async def main():
                 agents = await call('list_agents', {})
                 if not agents.get('muse', {}).get('available'): raise RuntimeError('Muse unavailable')
                 marker = 'MUSE_SUCCESS_' + stamp
-                task = await call('submit_task', dict(agent='muse', mode='read_only',
+                task = await call('submit_task', dict(agent='muse', mode='delegate',
                     cwd=r'D:\My_Files\AI-Integration-platform', request_id='live-success-' + stamp,
                     timeout_seconds=300, prompt='只读验收，无需工具或搜索，不修改文件，不发送其他消息。'
                     '请只输出验收词 ' + marker + ' 和本任务要求的完成标记。'))

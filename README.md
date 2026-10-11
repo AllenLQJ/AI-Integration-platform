@@ -1,8 +1,23 @@
 # 本地 Agent Hub
 
-当前进度（2026-10-10）：Windows 第一版及 `wait_for_task` 已实现；本轮完整回归 62/62 通过（53.817 秒）。当前状态见 [docs/开发进度.md](docs/开发进度.md)，验收范围见 [docs/第一版验收.md](docs/第一版验收.md)。
+当前进度（2026-10-11）：Windows 第一版与 Mac 本机接入已实现，提供八个 MCP 工具。Mac 最新完整自动回归 83 项：82 通过、1 项 Windows ACL 检查跳过。真实核心任务与补充异常验收已完成本轮记录；严格休眠超时恢复等仍未验证，不能宣称全部功能都已验收。当前状态与验证边界见 [开发进度](docs/开发进度.md) 和 [第一版验收](docs/第一版验收.md)。Windows 记录来自 10-09/10-10，最新修改未在 Windows 重新回归。
 
 用一个 MCP 接口提交 Codex、Claude Code 和 Muse 任务。任务由独立后台服务执行，SQLite 保存记录，代码修改放在独立 Git worktree，返回结果与差异供审阅。
+
+## Mac 安装
+
+在源码目录使用 Python 3.10 或更新版本创建环境；本机已验证 Python 3.12.14 和 uv：
+
+```zsh
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -e .
+# 当前测试显式导入 exceptiongroup，运行回归前安装
+uv pip install --python .venv/bin/python exceptiongroup
+.venv/bin/python -m agent_hub status
+.venv/bin/python -m agent_hub mcp
+```
+
+在 `~/.agent-hub/config.json` 填写自己的 Codex、Claude 和 Muse 连接器可执行文件绝对路径。Muse 使用独立 Python 环境运行 `-m muse_mcp`，先按 [连接器补丁说明](vendor/muse-mcp/README.md) 安装，再验证认证。MCP 注册的 command 使用本机 `.venv/bin/python` 绝对路径，args 为 `["-m", "agent_hub", "mcp"]`。CLI 登录、Cookie 和模型密钥保留在各执行器的私有用户配置中。详细本机配置历史见 [Mac 配置记录](docs/2026-10-11-macos-setup-validation.md)。
 
 ## Windows 安装
 
@@ -29,7 +44,7 @@ MCP 使用 stdio：command 为虚拟环境 python.exe 的绝对路径，args 为
 
 ## 总控接入
 
-在 Codex 的 MCP 设置中登记 `agent_hub`，command 使用本机项目虚拟环境 Python 的绝对路径，args 为 `["-m", "agent_hub", "mcp"]`。重新加载 MCP 或打开新聊天后应看到八个工具。移动源码或环境后需同步修改 MCP 注册路径；本机现已迁移到 D 盘主目录虚拟环境，详见 `docs/2026-10-10-d-drive-migration.md`。
+在 Codex 的 MCP 设置中登记 `agent_hub`，command 使用本机项目虚拟环境 Python 的绝对路径，args 为 `["-m", "agent_hub", "mcp"]`。重新加载 MCP 或打开新聊天后应看到八个工具。移动源码或环境后需同步修改 MCP 注册路径；Windows 测试环境的 D 盘迁移见 `docs/2026-10-10-d-drive-migration.md`，Mac 使用自己的项目路径。
 
 Claude Code 可以作为总控连接同一服务，例如保存下述本机 MCP 配置（换成自己的 Python 绝对路径）：
 
@@ -39,7 +54,7 @@ Claude Code 可以作为总控连接同一服务，例如保存下述本机 MCP 
 
 使用 `claude --strict-mcp-config --mcp-config <配置文件绝对路径>` 启动。总控必须加载 Hub MCP；不要套用执行器的空 MCP 配置或 `--safe-mode`。本机 Claude / DeepSeek API 模式在测试时使用 `ENABLE_TOOL_SEARCH=false` 禁用动态工具发现，再明确允许相应 Hub 工具，才产生真实调用。此环境变量可仅对启动终端设置：`$env:ENABLE_TOOL_SEARCH='false'`。遵循客户端正常的工具授权流程，无需改变全局权限。
 
-示例任务：让总控“通过 agent_hub 把本次调研交给 Muse，使用 read_only，工作目录指定为项目绝对路径；记录任务 ID，查询到 ready=true 后汇总 answer 与 source_urls”。模型提示词之外，检查实际 MCP 调用和任务结果才算成功。
+示例任务：让总控“通过 agent_hub 把本次调研交给 Muse，使用 delegate，工作目录指定为项目绝对路径；记录任务 ID，查询到 ready=true 后汇总 answer 与 source_urls”。模型提示词之外，检查实际 MCP 调用和任务结果才算成功。
 
 ## 提交任务
 
@@ -70,15 +85,15 @@ request_id 应为稳定且唯一的请求键。相同键和内容只执行一次
 ## 执行器限制
 
 - Codex：read_only 使用自身 read-only 沙箱；edit_worktree 使用 workspace-write；不加载用户 MCP 配置。Windows 默认使用已在本机探针通过的 MXC（Codex 0.162.0）；其他设备可明确配置 windows_sandbox，不能通过关闭沙箱解决权限问题。
-- Claude：当前本机通过 CCR/apiKeyHelper 调用 DeepSeek API。read_only 禁用所有工具，适合提供上下文后的文本分析；edit_worktree 仅 Read/Glob/Grep/Edit/Write，第一版不允许运行命令。safe-mode 禁用自定义技能/插件，严格空 MCP 配置防止递归。
-- Muse：文本调研，每个初始任务独立会话。结果采用会话、消息序号与最终回答标记关联；不宣称远端工作流已完成。取消/超时仅停止本地等待，远端可能继续。发送状态不确定时不自动重发。
+- Claude：已验证 Windows CCR/apiKeyHelper 和 Mac DeepSeek Anthropic 兼容 API 配置；Claude 订阅认证尚未验收。text_only 禁用所有工具，适合提供上下文后的文本分析；read_only 仅开放 Read/Glob/Grep；edit_worktree 仅 Read/Glob/Grep/Edit/Write，第一版不允许运行命令。safe-mode 禁用自定义技能/插件，严格空 MCP 配置防止递归。
+- Muse：使用 delegate 委托模式，Hub 不强制只读，可能调用云端及已连接 Mac 的写入工具；操作由 Muse/客户端权限与审批决定。文本调研，每个初始任务独立会话。结果采用会话、消息序号与最终回答标记关联；不宣称远端工作流已完成。取消/超时仅停止本地等待，远端可能继续。发送状态不确定时不自动重发。
   正文链接与后续 external_link 附件均汇入 source_urls；两次稳定轮询后返回。该列表保留 Muse 返回的来源，不等于 Hub 已核实网页内容。
   MCP 内层 `ok=false` 作为失败处理并保留上游错误码。仅历史读取遇到临时网关、超时或 VM 不可用时最多尝试三次，间隔为 1、2 秒；受任务期限和取消约束，并记录 retry 事件。认证失败和异常响应格式不重试。会话创建和任务发送不自动重试，避免重复会话或重复执行。
   completion_evidence 保留最终回复的 reply_to_message_id（可能为空）；非空字段不会排除已完成且带本任务标记的回复。读取失败耗尽后保留远端状态不确定，不将其视为远端已停止。
   Muse 发送使用 fire_and_forget，只取得派发确认；回复由 Hub 的历史轮询统一回收，不在发送工具内重复等待回复。
   Hub 专用 Muse 子进程启用 `MUSE_MCP_REUSE_GATEWAY=1`，配套 muse-mcp 支持在锁保护下复用连接，减少重复 HTTPS 认证；连接异常会丢弃缓存，不重放业务操作。普通 Muse 工具默认仍使用独立连接。配套兼容性补丁和基线安装步骤见 [vendor/muse-mcp/README.md](vendor/muse-mcp/README.md)，部署时需应用补丁并配置自己的认证与 Python 路径。
-- 后台重启：queued 继续；running/cancelling 标 interrupted，不按旧 PID 杀进程，也不自动重跑。无法确认旧执行已停止的工作区隔离，拒绝直接续接；需人工核对，在新工作区提交。正常终态使用已保存的 session_id 续接。
-- Mac 与 DeepSeek harness 尚未实机验收。Mac 不使用 Windows lock 文件：创建环境后 `pip install -e .`，按本机路径配置；实际支持需要另行验收。
+- 后台重启：running/cancelling 标 interrupted，不按旧 PID 杀进程，也不自动重跑。无法确认旧执行已停止的工作区隔离，拒绝直接续接；同工作区此前已排队的任务也转 interrupted，其他工作区 queued 继续。需人工核对，在新工作区提交。正常终态使用已保存的 session_id 续接。Mac 上强制杀死后台不保证旧执行器停止。
+- Mac 已完成本机核心闭环及补充实机验收，详见 [Mac 验收记录](docs/2026-10-11-macos-full-acceptance.md) 与 [补充异常验收](docs/2026-10-11-macos-resilience-validation.md)。严格的睡眠期间到期后恢复处理仍未验证。DeepSeek Harness、Claude 订阅模式未验收；跨机器 Hub 调度和 Muse 远端取消不属于当前实现能力。Mac 不使用 Windows lock 文件：创建环境后 `pip install -e .`，按本机路径配置。
 
 ## 诊断与验证
 
@@ -91,3 +106,22 @@ request_id 应为稳定且唯一的请求键。相同键和内容只执行一次
 ```
 
 开发设计、实施计划、开发进度和验收记录位于 docs。认证和运行数据不进入 Git；完整日志仅在用户私有数据目录保存。
+
+Mac 最新记录分为 [核心验收](docs/2026-10-11-macos-full-acceptance.md) 与 [异常及稳定性验收](docs/2026-10-11-macos-resilience-validation.md)。仍未验证严格的睡眠期间到期后恢复处理、Muse 底层浏览器动作独立审计、数小时持续稳定性、真实登录自然过期后的恢复。跨机器 Hub 调度和 Muse 远端取消尚未实现；DeepSeek Harness、Claude 订阅模式按本轮范围排除。
+
+`scripts/macos_*.py` 是本轮隔离验收及证据复核脚本，使用固定私有目录和请求键，不能把重放旧结果当作新验收。涉及真实账号的脚本会使用账号额度；休眠脚本会让整台 Mac 休眠，须每次明确授权并准备手动唤醒。它们不由普通自动回归执行。
+
+## 任务模式与权限（2026-10-11）
+
+| 执行器 | 模式 | 实际限制 |
+|---|---|---|
+| Claude | text_only | 无工具，仅文字分析 |
+| Claude | read_only | 仅 Read/Glob/Grep，无写入、命令或 MCP 工具 |
+| Claude | edit_worktree | 独立 worktree，Read/Glob/Grep/Edit/Write，无命令；不是 OS 沙箱 |
+| Codex | read_only | Codex 只读沙箱 |
+| Codex | edit_worktree | Codex workspace-write 沙箱与独立 worktree |
+| Muse | delegate | Hub 不强制只读；实际操作由 Muse 和客户端权限决定 |
+
+list_agents 的 permissions 按模式说明 enforced_by、enforced、allows_write、allows_commands、os_sandbox 及作用范围；submit_task、get_task、get_result 也返回 permissions。enforced 表示声明的模式限制由执行器强制，而非所有执行器拥有同等隔离保障。Muse 的 allows_write/commands 表示可能发生，不能据此认为已获客户端授权。
+
+旧任务保留原始记录和 request_id 幂等性。历史 Claude read_only 续接按 text_only 执行；历史 Muse read_only 禁止续接，需按明确操作范围新建 delegate 任务。仅 get_result 成功不代表实际操作正确，仍需核对文件或外部结果。更新后需无在途任务时重载后台，并刷新客户端 MCP 工具说明。

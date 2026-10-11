@@ -100,6 +100,25 @@ class ServiceTests(unittest.TestCase):
             self.service.call('continue_task', dict(request_id='b', task_id=parent['id'], prompt='next'))
         self.assertEqual(error.exception.code, 'WORKSPACE_UNCERTAIN')
 
+    def test_recovery_blocks_already_queued_task_in_quarantined_workspace(self):
+        with self.service.lock:
+            spec = dict(agent='fake', prompt='x', cwd=str(self.root), workspace=str(self.root),
+                        mode='read_only', timeout_seconds=30)
+            old = self.service.store.create('crashed', spec)
+            self.service.store.update(old['id'], state='running')
+            queued = self.service.store.create('queued-before-crash', spec)
+            self.service.store.recover()
+        for _ in range(100):
+            task = self.service.store.get(queued['id'])
+            if task['state'] == 'interrupted': break
+            time.sleep(.03)
+        self.assertEqual(task['state'], 'interrupted')
+        self.assertTrue(task['workspace_quarantined'])
+        self.assertEqual(self.fake.calls, 0)
+        other = self.root / 'safe'; other.mkdir()
+        safe = self.submit(request_id='unaffected', cwd=str(other))
+        self.assertEqual(self.wait(safe['id'])['state'], 'succeeded')
+
     def test_worktree_and_dirty_rejection(self):
         repo = self.root / '原仓库'
         repo.mkdir()

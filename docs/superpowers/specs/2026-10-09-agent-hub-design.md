@@ -1,9 +1,9 @@
 # 本地 Agent Hub 开发设计
 
 日期：2026-10-09  
-状态：2026-10-10 完成 Windows 第一版核心与验收收尾；最终范围和证据见 `../../第一版验收.md`，Mac / DeepSeek Harness 等保留后续验收。
+状态：2026-10-11 已完成 Windows 历史核心与 Mac 本轮接入、权限修订及异常验收记录；最新 Mac 自动回归 83 项（82 通过、1 项 Windows ACL 跳过）。当前范围与未验证项见 [第一版验收](../../第一版验收.md) 和 [开发进度](../../开发进度.md)；下述探针描述保留原日期。
 
-开发前探针已完成，见 `../../2026-10-09-preflight-results.md`：Codex/Claude 原生续接、Muse 独立会话、Windows 合成进程取消和 worktree 均有实际证据。当前 Claude 经 CCR 使用 API 模式；Claude 订阅、Mac、DeepSeek Harness、Muse 远端取消尚未验收。
+开发前探针已完成，见 `../../2026-10-09-preflight-results.md`：Codex/Claude 原生续接、Muse 独立会话、Windows 合成进程取消和 worktree 均有实际证据。当时 Windows Claude 经 CCR 使用 API 模式。Mac 后续已接入并实测；Claude 订阅与 DeepSeek Harness 按范围排除，Muse 远端取消尚未实现。
 
 ## 1. 目标与已确认流程
 
@@ -72,7 +72,7 @@ Python 基线为 3.10，Windows 使用项目独立虚拟环境及现有 py310 �
 | `continue_task` | `request_id`, `task_id`, `prompt` | `timeout_seconds` | 创建子任务；返回新的 ID；不覆盖旧结果 |
 | `cancel_task` | `task_id` | `reason` | 幂等请求取消，返回本地状态和实际取消能力，不捏造远端已停止 |
 
-`mode` 初版为 `read_only` 或 `edit_worktree`。默认期限 1800 秒，允许 10–7200 秒。总控等待超时与任务期限独立：工具断开不会自动重发任务或改变任务期限。
+当前 `mode` 按执行器区分：Codex 为 `read_only` / `edit_worktree`，Claude 为 `text_only` / `read_only` / `edit_worktree`，Muse 为 `delegate`；`continue` 是能力说明，不是可提交模式。工具发现、任务状态与结果返回 `permissions`，说明限制执行方和写入、命令、沙箱边界。历史 Claude 无工具 `read_only` 续接按 `text_only`；历史 Muse `read_only` 可查询，但禁止新续接。默认期限 1800 秒，允许 10–7200 秒。总控等待超时与任务期限独立：工具断开不会自动重发任务或改变任务期限。
 
 2026-10-10 用户确认新增第八个工具，详见 `2026-10-10-wait-for-task-addendum.md`；原七个工具保持行为及结构。MCP 等待使用异步入口，后台在锁外等待；最后收到的游标用于续接，响应丢失按 seq 去重。
 
@@ -86,7 +86,7 @@ Python 基线为 3.10，Windows 使用项目独立虚拟环境及现有 py310 �
 
 SQLite 保存：任务 ID、请求键与内容摘要、父任务 ID、执行器、状态、原目录与实际工作区、会话关联、期限、时间、错误；事件保存单调递增序号。回答和日志保存在用户私有数据目录，SQLite 保存引用。数据目录可配置，默认放在用户目录下的 `.agent-hub`，不放进源码仓库。
 
-后台服务重启后：未开始的队列任务可继续；运行中的本地 CLI 任务先尝试核对进程身份，无法安全确认时标为 interrupted，不按旧 PID 直接终止进程。服务重启不等同于恢复执行。恢复 CLI 会话必须通过适配器支持的真实 session ID；否则明确使用历史摘要重建，不声称原生续跑。
+后台服务重启后：running/cancelling 标为 interrupted 并隔离工作区，不按旧 PID 直接终止进程。同实际工作区已排队的任务也转 interrupted；其他工作区未开始的队列任务可继续。Mac 强制杀死后台后旧执行器可能继续，需人工核对。正常取消及期限终止则追踪 POSIX 子进程，核对 PID 与启动时间后清理独立 session 的后代。服务重启不等同于恢复执行。恢复 CLI 会话必须通过适配器支持的真实 session ID；否则明确使用历史摘要重建，不声称原生续跑。
 
 ## 7. 执行器行为
 
@@ -110,7 +110,7 @@ Hub 作为 MCP 客户端调用现有 muse-mcp。收到网关接受回复仅代�
 
 本机已通过 muse_raw 的 session.start 创建独立会话；实现采用每任务独立会话并串行追问。raw 只在适配器内部按路由白名单使用。实测回复 reply_to_message_id 为空，必须使用会话与序号等证据关联，不依赖不存在的强关联字段。
 
-Muse 的远端取消能力需实测。如果只有停止本地等待的能力，`cancel_task` 返回 `remote_cancelled=false`，说明 Muse 可能继续运行。超时同样不代表远端执行已停止。Muse 初版用于文本调研，不直接修改本地代码；可返回资料链接。
+Muse 的远端取消能力需实测。如果只有停止本地等待的能力，`cancel_task` 返回 `remote_cancelled=false`，说明 Muse 可能继续运行。超时同样不代表远端执行已停止。Muse 使用 delegate 委托，Hub 无法限制其内部工具，可能访问云端与已连接设备的文件、写入或命令能力；实际操作由 Muse/客户端权限和审批决定，不能保证只读。可返回资料链接，结果关联不代表底层浏览器动作已独立审计。
 
 ## 8. 工作区与产物
 

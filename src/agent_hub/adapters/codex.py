@@ -5,6 +5,13 @@ from ..models import HubError
 
 
 class Codex(CLI):
+    def permission_policy(self, mode):
+        return {'enforced_by': 'codex_sandbox', 'enforced': True,
+                'allows_file_read': True, 'allows_write': mode == 'edit_worktree',
+                'allows_commands': True, 'os_sandbox': True,
+                'workspace': 'git_worktree' if mode == 'edit_worktree' else 'original',
+                'scope_note': '由 Codex 沙箱执行；写入按沙箱允许目录控制'}
+
     def __init__(self, executable, env=None, windows_sandbox='mxc'):
         super().__init__(executable, env)
         if windows_sandbox not in {'mxc', 'elevated', 'unelevated'}:

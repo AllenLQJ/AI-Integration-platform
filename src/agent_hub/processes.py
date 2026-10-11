@@ -14,6 +14,42 @@ ENV_KEYS = {'PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'USERPROFILE',
             'NUMBER_OF_PROCESSORS', 'SYSTEMDRIVE'}
 
 
+def posix_processes():
+    # 独立 session 的 CLI 工具不会收到根进程组的信号，按父子关系追踪。
+    output = subprocess.check_output(['ps', '-axo', 'pid=,ppid=,lstart='], text=True)
+    rows = {}
+    for line in output.splitlines():
+        fields = line.split(None, 2)
+        if len(fields) == 3:
+            rows[int(fields[0])] = (int(fields[1]), fields[2])
+    return rows
+
+
+def track_descendants(root_pid, tracked):
+    rows = posix_processes()
+    parents = {root_pid} | {pid for pid, birth in tracked.items()
+                             if pid in rows and rows[pid][1] == birth}
+    for _ in range(100):
+        found = {pid for pid, (parent, _) in rows.items() if parent in parents}
+        if found <= parents:
+            break
+        parents |= found
+    for pid in parents - {root_pid}:
+        if pid in rows:
+            tracked[pid] = rows[pid][1]
+
+
+def stop_descendants(tracked):
+    rows = posix_processes()
+    for pid, birth in tracked.items():
+        # 已退出或 PID 已复用时不能终止新的无关进程。
+        if pid in rows and rows[pid][1] == birth:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
 def environment(extra=None):
     env = {k: v for k, v in os.environ.items() if k.upper() in ENV_KEYS}
     env.update(PYTHONIOENCODING='utf-8', PYTHONUTF8='1', NO_PROXY='127.0.0.1,localhost,::1')
@@ -72,11 +108,16 @@ def run_process(argv, cwd, env, cancel, deadline, log_dir, event):
                for stream, path in ((process.stdout, out_path), (process.stderr, err_path))]
     for reader in readers: reader.start()
     reason = None
+    tracked = {}
     try:
         event('process', {'pid': process.pid})
         while process.poll() is None:
+            if os.name != 'nt':
+                track_descendants(process.pid, tracked)
             if cancel.is_set() or time.time() >= deadline:
                 reason = 'CANCELLED' if cancel.is_set() else 'TIMED_OUT'
+                if os.name != 'nt':
+                    stop_descendants(tracked)
                 terminate_tree(process)
                 break
             time.sleep(.1)
@@ -84,8 +125,7 @@ def run_process(argv, cwd, env, cancel, deadline, log_dir, event):
     finally:
         if os.name == 'nt': process.close_tree()
         else:
-            try: os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError: pass
+            stop_descendants(tracked)
         for reader in readers: reader.join(15)
         if os.name == 'nt': process.close()
         else:

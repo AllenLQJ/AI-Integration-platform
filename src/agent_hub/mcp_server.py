@@ -23,7 +23,11 @@ def list_agents() -> dict:
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def submit_task(request_id: str, agent: str, prompt: str, cwd: str,
                 mode: str, timeout_seconds: int = 1800) -> dict:
-    """提交后台任务并立即返回 ID。同一个 request_id 和内容幂等。"""
+    """提交后台任务并立即返回 ID。同一个 request_id 和内容幂等。
+
+    Claude: text_only/read_only/edit_worktree；Codex: read_only/edit_worktree。
+    Muse 仅 delegate，Hub 不保证其只读，权限由 Muse/客户端决定。
+    permissions 返回限制执行方及允许写入等信息。"""
     return invoke('submit_task', locals())
 
 
