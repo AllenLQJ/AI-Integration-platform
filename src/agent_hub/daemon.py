@@ -57,7 +57,7 @@ def make_server(service, token):
                 result = service.call(request['tool'], request.get('arguments', {}))
                 self.respond(200, {'result': result})
             except HubError as error:
-                self.respond(200, {'error': {'code': error.code, 'message': str(error)}})
+                self.respond(200, {'error': error.payload()})
             except (ValueError, TypeError, KeyError):
                 self.respond(400, {'error': {'code': 'INVALID_ARGUMENT', 'message': '请求格式不正确'}})
             except Exception:

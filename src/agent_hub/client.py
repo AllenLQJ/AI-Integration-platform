@@ -70,7 +70,7 @@ class Client:
         # Mutating calls are never automatically retried after uncertain transport errors.
         response = self.request('/rpc', {'tool': tool, 'arguments': arguments or {}})
         if 'error' in response:
-            raise HubError(response['error']['code'], response['error']['message'])
+            raise HubError(response['error']['code'], response['error']['message'], response['error'].get('details'))
         return response['result']
     def stop(self):
         return self.request('/shutdown', {})

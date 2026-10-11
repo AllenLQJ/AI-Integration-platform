@@ -3,6 +3,7 @@ import asyncio
 import datetime
 import json
 import time
+from pathlib import Path
 from .muse import Muse
 from ..processes import environment
 
@@ -19,6 +20,16 @@ async def cancel_remote(adapter, task, context):
     marker = '[HUB:' + task['id'] + ']'
     prompt = task['prompt'] + '\n完成本轮回答后，请在最终回答的最后一行逐字写出 ' + marker + \
              '。不要在接收确认、进度消息或工具执行前写此标记。'
+    expected_messages = [prompt]
+    ledger = Path(task['log_dir']) / 'muse-owned-messages.json' if task.get('log_dir') else None
+    if ledger and ledger.exists():
+        try:
+            expected_messages = json.loads(ledger.read_text(encoding='utf-8'))
+            if not isinstance(expected_messages, list) or not expected_messages or any(
+                    not isinstance(text, str) for text in expected_messages):
+                return result
+        except (ValueError, OSError):
+            return result
     path = adapter.state_file(sid)
     def ownership():
         if json.loads(path.read_text(encoding='utf-8')) != {'task_id': task['id'], 'session_id': sid}:
@@ -49,7 +60,8 @@ async def cancel_remote(adapter, task, context):
                         raise ValueError('history')
                     users = [e for e in history if e.get('role') in {'user', 'message.user'}
                              and (e.get('seq') or 0) > baseline]
-                    if len(users) != 1 or users[0].get('text') != prompt:
+                    observed = [e.get('text') for e in users]
+                    if not observed or observed != expected_messages[:len(observed)]:
                         # 尚未入历史则等待；其他消息则不取消整个会话。
                         if users:
                             raise ValueError('foreign message')

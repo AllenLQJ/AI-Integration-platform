@@ -1,0 +1,65 @@
+{
+  "claude": [
+    {
+      "kind": "text.review",
+      "model": "deepseek-flash[1m]",
+      "verification": "verified",
+      "evidence": {
+        "task_id": "921171a6f80044a4877a3189348fed15",
+        "date": "2026-10-11",
+        "scope": "真实 Claude text_only 返回完整 REVIEW_SCHEMA JSON，fingerprint/policy_version 一致；单个清晰无参考图请求，不证明视觉能力"
+      },
+      "parameters": {},
+      "input_transports": [],
+      "output_mime_types": [
+        "application/json"
+      ]
+    }
+  ],
+  "muse": [
+    {
+      "kind": "image.generate",
+      "model": "muse:auto",
+      "model_identity": {
+        "selection": "default_route",
+        "upstream_model": null
+      },
+      "verification": "verified",
+      "evidence": {
+        "task_id": "079fd10f94894064a79e03f8b7a07de7",
+        "date": "2026-10-11",
+        "scope": "一次 Muse 默认路由 PNG 生成；结构化 image presentation、授权 Noise 原图取回、实际解码、大小和 SHA-256、get_artifact 均通过。上游未披露底层模型；原任务由旧后台派发，成品通过新版适配器读取恢复，未重复生成。 用户已约定 muse:auto 为默认图片路由；仅证明该路由，不证明任何具体底层模型或指定尺寸控制。",
+        "artifact": {
+          "artifact_id": "artifact-85835d25a22d57c390ba8bac998c4dbf",
+          "task_id": "079fd10f94894064a79e03f8b7a07de7",
+          "filename": "result-1.png",
+          "mime_type": "image/png",
+          "size_bytes": 145025,
+          "sha256": "8d541619640a18c40cf41b08343c6203843b22909a363bbc0ddb36c95a4f5e0f"
+        },
+        "dimensions": {
+          "width": 1600,
+          "height": 1600
+        }
+      },
+      "parameters": {
+        "count": {
+          "type": "integer",
+          "enum": [
+            1
+          ]
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "png"
+          ]
+        }
+      },
+      "input_transports": [],
+      "output_mime_types": [
+        "image/png"
+      ]
+    }
+  ]
+}

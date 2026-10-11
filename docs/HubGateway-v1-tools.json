@@ -1,0 +1,320 @@
+[
+  {
+    "name": "list_agents",
+    "description": "列出本机执行器、版本和能力；不发送模型任务。",
+    "inputSchema": {
+      "properties": {},
+      "title": "list_agentsArguments",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "submit_task",
+    "description": "提交后台任务并立即返回 ID。同一个 request_id 和内容幂等。\n\n    Claude: text_only/read_only/edit_worktree；Codex、Cursor: read_only/edit_worktree。\n    Muse、Grok Bot 仅 delegate，Hub 不保证其只读，权限由远端/客户端决定。\n    permissions 返回限制执行方及允许写入等信息。",
+    "inputSchema": {
+      "properties": {
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "agent": {
+          "title": "Agent",
+          "type": "string"
+        },
+        "prompt": {
+          "title": "Prompt",
+          "type": "string"
+        },
+        "cwd": {
+          "title": "Cwd",
+          "type": "string"
+        },
+        "mode": {
+          "title": "Mode",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "default": 1800,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        },
+        "context": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Context"
+        }
+      },
+      "required": [
+        "request_id",
+        "agent",
+        "prompt",
+        "cwd",
+        "mode"
+      ],
+      "title": "submit_taskArguments",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "get_task",
+    "description": "获取任务状态；不等待执行完成。",
+    "inputSchema": {
+      "properties": {
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "title": "get_taskArguments",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "get_events",
+    "description": "按游标读取任务事件，上限 200 条。",
+    "inputSchema": {
+      "properties": {
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "after_seq": {
+          "default": 0,
+          "title": "After Seq",
+          "type": "integer"
+        },
+        "limit": {
+          "default": 50,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "title": "get_eventsArguments",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "wait_for_task",
+    "description": "等待终态、waiting_for_user 或单次超时（0–10 秒）；超时不取消任务。\n\n    用 next_seq 续接，has_more=true 时继续取事件；响应丢失按 seq 去重。\n    终态后调用 get_result 获取回答。needs_user=true 时停止轮询并提示用户接管 Muse；\n    用户确认处理完成后调用 resume_task，保留原任务，不能重复提交或调用 continue_task。\n    ",
+    "inputSchema": {
+      "properties": {
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "after_seq": {
+          "default": 0,
+          "title": "After Seq",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "default": 10,
+          "title": "Timeout Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "title": "wait_for_taskArguments",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "get_result",
+    "description": "获取完成结果与差异；未完成返回 ready=false。",
+    "inputSchema": {
+      "properties": {
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "title": "get_resultArguments",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "continue_task",
+    "description": "续接原生会话并创建子任务，保留旧结果和同一工作区。",
+    "inputSchema": {
+      "properties": {
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "prompt": {
+          "title": "Prompt",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "default": 1800,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "request_id",
+        "task_id",
+        "prompt"
+      ],
+      "title": "continue_taskArguments",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "cancel_task",
+    "description": "请求取消；Grok Bot 尝试会话中断，get_result 确认 remote_cancelled。\n    Muse 同样尝试原会话中断；SSH 执行器取消原目标机任务。已发生操作不自动回滚。\n    ",
+    "inputSchema": {
+      "properties": {
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "reason": {
+          "default": "用户取消",
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "title": "cancel_taskArguments",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "get_capabilities",
+    "description": "查询 HubGateway v1 能力、实际模型与验收证据，不发送模型任务。",
+    "inputSchema": {
+      "properties": {},
+      "title": "get_capabilitiesArguments",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "get_artifact",
+    "description": "返回已登记媒体附件的授权取回描述；仅支持同主机 local_file。",
+    "inputSchema": {
+      "properties": {
+        "artifact_id": {
+          "title": "Artifact Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id"
+      ],
+      "title": "get_artifactArguments",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "resume_task",
+    "description": "仅在用户明确确认人工验证/登录/审批已处理后调用；恢复原 Muse 任务。\n\n    intervention_id 来自 get_task/wait_for_task 的 intervention；同一介入只恢复一次。\n    不代替用户完成验证，不创建新任务；确认后继续查询原 task_id。\n    ",
+    "inputSchema": {
+      "properties": {
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "intervention_id": {
+          "title": "Intervention Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "task_id",
+        "intervention_id"
+      ],
+      "title": "resume_taskArguments",
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  }
+]

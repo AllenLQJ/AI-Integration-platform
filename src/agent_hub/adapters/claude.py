@@ -46,4 +46,5 @@ class Claude(CLI):
         result = next((e for e in reversed(events) if e.get('type') == 'result'), None)
         if not result or result.get('is_error'):
             raise HubError('CLI_FAILED', 'Claude 没有返回成功的 result')
-        return {'answer': result.get('result', ''), 'session_id': result.get('session_id')}
+        return {'answer': result.get('result', ''), 'session_id': result.get('session_id'),
+                'models': list(result.get('modelUsage', {}))}

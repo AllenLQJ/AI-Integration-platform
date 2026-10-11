@@ -11,7 +11,7 @@ client = Client()
 
 def invoke(name, arguments):
     try: return client.call(name, arguments)
-    except HubError as error: return {'error': {'code': error.code, 'message': str(error)}}
+    except HubError as error: return {'error': error.payload()}
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
@@ -22,7 +22,7 @@ def list_agents() -> dict:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def submit_task(request_id: str, agent: str, prompt: str, cwd: str,
-                mode: str, timeout_seconds: int = 1800) -> dict:
+                mode: str, timeout_seconds: int = 1800, context: dict | None = None) -> dict:
     """提交后台任务并立即返回 ID。同一个 request_id 和内容幂等。
 
     Claude: text_only/read_only/edit_worktree；Codex、Cursor: read_only/edit_worktree。
@@ -45,10 +45,11 @@ def get_events(task_id: str, after_seq: int = 0, limit: int = 50) -> dict:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
 async def wait_for_task(task_id: str, after_seq: StrictInt = 0, timeout_seconds: StrictFloat = 10) -> dict:
-    """等待六种终态之一或本次等待超时（0–10 秒）；超时不取消任务。
+    """等待终态、waiting_for_user 或单次超时（0–10 秒）；超时不取消任务。
 
     用 next_seq 续接，has_more=true 时继续取事件；响应丢失按 seq 去重。
-    终态后调用 get_result 获取回答。持续等待需要总控再次调用本工具。
+    终态后调用 get_result 获取回答。needs_user=true 时停止轮询并提示用户接管 Muse；
+    用户确认处理完成后调用 resume_task，保留原任务，不能重复提交或调用 continue_task。
     """
     return await asyncio.to_thread(invoke, 'wait_for_task', locals())
 
@@ -78,3 +79,25 @@ def run(connection=None):
     if connection is not None:
         client = connection
     mcp.run(transport='stdio')
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
+def get_capabilities() -> dict:
+    """查询 HubGateway v1 能力、实际模型与验收证据，不发送模型任务。"""
+    return invoke('get_capabilities', {})
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
+def get_artifact(artifact_id: str) -> dict:
+    """返回已登记媒体附件的授权取回描述；仅支持同主机 local_file。"""
+    return invoke('get_artifact', locals())
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
+def resume_task(request_id: str, task_id: str, intervention_id: str) -> dict:
+    """仅在用户明确确认人工验证/登录/审批已处理后调用；恢复原 Muse 任务。
+
+    intervention_id 来自 get_task/wait_for_task 的 intervention；同一介入只恢复一次。
+    不代替用户完成验证，不创建新任务；确认后继续查询原 task_id。
+    """
+    return invoke('resume_task', locals())
