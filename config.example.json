@@ -1,6 +1,10 @@
 {
   "concurrency": {"global": 2, "per_agent": {"codex": 1, "claude": 1, "muse": 1, "cursor": 1, "grokbot": 1}},
   "agents": {
+    "remote-worker": {"enabled": false, "kind": "remote", "ssh_host": "your-known-host",
+      "python": "/path/to/AI-Integration-platform/.venv/bin/python",
+      "data_dir": "/home/your-name/.agent-hub", "agent": "claude",
+      "cwd": "/home/your-name/project", "mode": "read_only"},
     "codex": {"executable": "C:/path/to/codex.exe"},
     "claude": {"executable": "C:/path/to/claude.exe"},
     "cursor": {"enabled": false, "executable": "/Users/your-name/.local/bin/agent"},

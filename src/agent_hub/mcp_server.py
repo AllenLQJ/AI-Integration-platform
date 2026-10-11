@@ -68,9 +68,13 @@ def continue_task(request_id: str, task_id: str, prompt: str, timeout_seconds: i
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def cancel_task(task_id: str, reason: str = '用户取消') -> dict:
     """请求取消；Grok Bot 尝试会话中断，get_result 确认 remote_cancelled。
-    Muse 仅停止本地等待，不保证远端停止。已发生操作不自动回滚。
+    Muse 同样尝试原会话中断；SSH 执行器取消原目标机任务。已发生操作不自动回滚。
     """
     return invoke('cancel_task', locals())
 
 
-def run(): mcp.run(transport='stdio')
+def run(connection=None):
+    global client
+    if connection is not None:
+        client = connection
+    mcp.run(transport='stdio')

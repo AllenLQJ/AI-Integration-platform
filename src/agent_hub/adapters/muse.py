@@ -4,6 +4,8 @@ import os
 import json
 import sys
 import time
+import hashlib
+import threading
 from pathlib import Path
 from ..models import HubError, redact
 from ..processes import environment, run_process
@@ -11,12 +13,17 @@ from ..processes import environment, run_process
 
 class Muse:
     capabilities = ['delegate', 'continue']
-    remote_cancel = False
+    remote_cancel = True
+    cancel_scope = 'remote_session'
+    cancellation_timeout = 12
 
-    def __init__(self, executable, args=None, env=None):
+    def __init__(self, executable, args=None, env=None, session_id=None):
         self.executable = executable
         self.args = args or ['-m', 'muse_mcp']
         self.env = env or {}
+        if session_id is not None and (not isinstance(session_id, str) or not session_id.strip()):
+            raise HubError('INVALID_CONFIG', 'Muse 固定 session_id 需要非空字符串')
+        self.session_id = session_id
 
     def permission_policy(self, mode):
         return {'enforced_by': 'muse_and_client_permissions', 'enforced': False,
@@ -27,7 +34,9 @@ class Muse:
 
     def diagnose(self):
         return {'available': Path(self.executable).is_file(), 'capabilities': self.capabilities,
-                'platform': os.name, 'remote_cancel': False,
+                'platform': os.name, 'remote_cancel': True, 'cancel_scope': self.cancel_scope,
+                'session_id': self.session_id,
+                'remote_review_required': bool(self.session_id and self.state_file(self.session_id).exists()),
                 'authentication': '现有 muse-mcp 认证；实际调用确认有效性',
                 'permissions': {'delegate': self.permission_policy('delegate')}}
 
@@ -79,10 +88,16 @@ class Muse:
         path = Path(task['log_dir']) / 'muse-input.json'
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({'task': task, 'executable': self.executable,
-                       'args': self.args, 'env': self.env}, ensure_ascii=False), encoding='utf-8')
-        rc, stdout, stderr, logs = run_process(
-            [sys.executable, '-m', 'agent_hub.adapters.muse_worker', str(path)],
-            task['workspace'], environment(), cancel, task['deadline'], task['log_dir'], event)
+                       'args': self.args, 'env': self.env, 'session_id': self.session_id}, ensure_ascii=False), encoding='utf-8')
+        path.chmod(0o600)
+        try:
+            rc, stdout, stderr, logs = run_process(
+                [sys.executable, '-m', 'agent_hub.adapters.muse_worker', str(path)],
+                task['workspace'], environment(), cancel, task['deadline'], task['log_dir'], event)
+        except HubError as error:
+            if error.code not in {'CANCELLED', 'TIMED_OUT'}:
+                raise
+            raise self.cancel_after_local_stop(task, path, error, event) from None
         result = None
         for line in stdout.splitlines():
             try: data = json.loads(line)
@@ -91,9 +106,74 @@ class Muse:
         if not result: raise HubError('MUSE_ERROR', 'Muse 执行器未返回结构化结果')
         if result.get('error_code'):
             details = {key: result[key] for key in ('stage', 'upstream_code', 'rpc_code') if key in result}
-            raise HubError(result['error_code'], result['error'], details)
+            error = HubError(result['error_code'], result['error'], details)
+            if error.code in {'CANCELLED', 'TIMED_OUT'}:
+                raise self.cancel_after_local_stop(task, path, error, event) from None
+            raise error
         result['artifacts'] = {'logs': logs}
         return result
+
+    def cancel_after_local_stop(self, task, path, error, event):
+        context = {}
+        # 原等待进程树已终止，再开单独连接清理原会话，避免 Noise 双消费者。
+        output = Path(task['log_dir']) / 'stdout.log'
+        for line in output.read_text(encoding='utf-8').splitlines() if output.exists() else []:
+            try:
+                entry = json.loads(line).get('hub_event', {})
+                if entry.get('kind') == 'accepted':
+                    context = entry['data']
+            except (ValueError, AttributeError, KeyError):
+                pass
+        details = {'remote_cancelled': False, 'cancel_scope': self.cancel_scope}
+        if context.get('session_id'):
+            data = json.loads(path.read_text(encoding='utf-8'))
+            data['cancel_context'] = context
+            cleanup = Path(task['log_dir']) / 'muse-cancel-input.json'
+            cleanup.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
+            cleanup.chmod(0o600)
+            try:
+                _, text, _, _ = run_process(
+                    [sys.executable, '-m', 'agent_hub.adapters.muse_cancel_worker', str(cleanup)],
+                    task['workspace'], environment(), threading.Event(),
+                    time.time()+20, str(Path(task['log_dir'])/'cancel'), event)
+                for line in text.splitlines():
+                    value = json.loads(line)
+                    if isinstance(value, dict) and 'hub_result' in value:
+                        details.update(value['hub_result'])
+            except (HubError, ValueError):
+                pass
+        if not details['remote_cancelled']:
+            details['warning'] = 'Muse 原会话停止未确认；保留会话锁，禁止直接续发'
+        event('remote_cancel', details)
+        return HubError(error.code, '本地进程已停止；远端停止见 remote_cancelled',
+                       dict(error.details, **details))
+
+    def state_file(self, sid):
+        root = Path(self.env.get('HUB_MUSE_STATE_DIR', str(Path.home()/'.config/agent-hub/muse-sessions')))
+        return root / (hashlib.sha256(sid.encode()).hexdigest()[:24]+'.json')
+
+    def reserve(self, task, sid):
+        path = self.state_file(sid)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            with path.open('x', encoding='utf-8') as output:
+                path.chmod(0o600)
+                json.dump({'task_id': task['id'], 'session_id': sid}, output)
+        except FileExistsError:
+            raise HubError('REMOTE_STATE_UNKNOWN', 'Muse 原会话存在未核对派发；禁止续发') from None
+
+    @staticmethod
+    def unnest(value):
+        for _ in range(4):
+            if isinstance(value, dict) and 'result' in value:
+                value = value['result']
+            else:
+                break
+        return value
+
+    async def cancel_remote(self, task, context):
+        from .muse_cancellation import cancel_remote
+        return await cancel_remote(self, task, context)
 
     @staticmethod
     def unwrap(error):
@@ -174,7 +254,15 @@ class Muse:
                             event('retry', {'stage': stage, 'session_id': sid,
                                             'attempt': attempt, 'error_code': code})
                             await pause(attempt)
-                sid = task.get('resume_session')
+                sid = task.get('resume_session') or self.session_id
+                if self.session_id and sid != self.session_id:
+                    raise HubError('SESSION_UNAVAILABLE', '固定 Muse 会话不能续接另一会话')
+                if sid:
+                    status = self.unnest(await call('muse_raw', {'method': 'sessions.get',
+                                                        'path_params': {'id': sid}}))
+                    if (not isinstance(status, dict) or status.get('session_id') != sid
+                            or status.get('status') not in {'completed', 'interrupted'}):
+                        raise HubError('WORKSPACE_BUSY', 'Muse 原会话尚未停止，不投递新的任务')
                 if not sid:
                     created = await call('muse_raw', {'method': 'session.start', 'body': {
                         'method': '/api/session/start', 'params': {
@@ -192,6 +280,8 @@ class Muse:
                 prompt = (task['prompt'] + '\n完成本轮回答后，请在最终回答的最后一行逐字写出 ' + marker +
                           '。不要在接收确认、进度消息或工具执行前写此标记。')
                 if cancel.is_set(): raise HubError('CANCELLED', '已停止本地等待')
+                if task.get('log_dir'):
+                    self.reserve(task, sid)
                 try:
                     sent = await call('muse_send', {'thread': sid, 'message': prompt,
                                                   'wait_seconds': 0, 'fire_and_forget': True})
@@ -223,6 +313,8 @@ class Muse:
                         answer, links = self.answer_with_links(history, reply)
                         snapshot = (reply['seq'], answer, reply.get('reply_to_message_id', ''))
                         if snapshot == previous_snapshot:
+                            if task.get('log_dir'):
+                                self.state_file(sid).unlink()
                             return {'answer': answer, 'source_urls': links, 'session_id': sid, 'completion_evidence': {
                                 'session_id': sid, 'baseline': baseline, 'reply_seq': reply['seq'], 'stable_polls': 2,
                                 'reply_to_message_id': reply.get('reply_to_message_id', ''),

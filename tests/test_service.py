@@ -86,6 +86,17 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(result['cancel_scope'],'not_started')
         self.assertFalse(result['remote_cancelled'])
         self.assertEqual(self.fake.calls,0)
+    def test_unconfirmed_remote_cancellation_cannot_continue(self):
+        self.fake.cancel_scope='remote_hub_task'
+        task=self.submit(prompt='wait')
+        for _ in range(100):
+            if self.fake.calls:break
+            time.sleep(.03)
+        self.service.call('cancel_task',{'task_id':task['id']})
+        self.wait(task['id'])
+        with self.assertRaises(HubError) as error:
+            self.service.call('continue_task',dict(task_id=task['id'],request_id='unknown-next',prompt='next'))
+        self.assertEqual(error.exception.code,'REMOTE_STATE_UNKNOWN')
     def test_validation(self):
         with self.assertRaises(HubError):
             self.submit(timeout_seconds=1)

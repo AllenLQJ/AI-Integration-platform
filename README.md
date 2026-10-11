@@ -1,6 +1,8 @@
 # 本地 Agent Hub
 
-当前进度（2026-10-11）：Windows 第一版与 Mac 本机接入已实现，提供八个 MCP 工具。新增 Cursor CLI / Grok Bot 双向接入，真实总控派发、执行器回复和续接通过，见 [接入记录](docs/2026-10-11-cursor-grokbot-validation.md)。Mac 最新完整自动回归 110 项：109 通过、1 项 Windows ACL 检查跳过（49.121 秒）。真实核心任务与补充异常验收已完成本轮记录；严格休眠超时恢复等仍未验证，不能宣称全部功能都已验收。当前状态与验证边界见 [开发进度](docs/开发进度.md) 和 [第一版验收](docs/第一版验收.md)。Windows 记录来自 10-09/10-10，最新修改未在 Windows 重新回归。
+当前进度（2026-10-11）：Windows 第一版与 Mac 本机接入已实现，提供八个 MCP 工具。新增 Cursor CLI / Grok Bot 双向接入，真实总控派发、执行器回复和续接通过，见 [接入记录](docs/2026-10-11-cursor-grokbot-validation.md)。Mac 最新完整自动回归 129 项：128 通过、1 项 Windows ACL 检查跳过（49.332 秒）。真实核心任务与补充异常验收已完成本轮记录；严格休眠超时恢复等仍未验证，不能宣称全部功能都已验收。当前状态与验证边界见 [开发进度](docs/开发进度.md) 和 [第一版验收](docs/第一版验收.md)。Windows 记录来自 10-09/10-10，最新修改未在 Windows 重新回归。
+
+Muse 原会话远端取消、SSH 跨机器 Hub 调度已实现。Muse 取消/期限/正常退出在同一专用会话实测通过；SSH 调度完成两个隔离 Hub 的逻辑验证，真实双机 SSH 尚未验收。配置与使用见 [新增功能记录](docs/2026-10-11-muse-cancel-remote-hub.md)。
 
 用一个 MCP 接口提交 Codex、Claude Code、Muse、Cursor CLI 和 Grok Bot 任务。任务由独立后台服务执行，SQLite 保存记录，代码修改放在独立 Git worktree，返回结果与差异供审阅。
 
