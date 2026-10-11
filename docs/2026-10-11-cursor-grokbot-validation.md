@@ -107,3 +107,11 @@ rpc 仅接受八工具和 JSON 对象，也可 `--arguments -` 从 stdin 读取�
 共享 `Agent Hub Worker` 固定绑定已核对的原 session 12247914，`agents.grokbot.session_id` 可选配置启用 `fixed_existing`；省略时仍支持按名称 get-or-create。固定路径不查询或创建其他名称的 Bot，名称只是本地配置标签，ID 为权威；账号下既有映射须先核对，不猜测。当前官方 BDK 没有公开 list/GET 会话元数据契约，GET 会话元数据实测 404，不假称按名称列表验证。相同 ID 的不同别名共享同一默认锁，旧名称锁须核对；显式 state_file 仍要求所有调用者共用路径。
 
 最终完整回归 110 项：109 通过、1 项 Windows ACL 跳过（49.121 秒），差异检查通过。最终共享后台 PID 70250，固定 Worker session 12247914 的正常任务 3ad83aaea92149c98b5d3dca1a9f2849 内容核对通过，same_session=true，在途及排队任务数 0；没有调用创建路由。证据为私有目录 `grokbot-cancel-20261011-fixed/shared-release-report.json`、`full-regression.log`。所有独立测试后台均已退出，共享 Hub 保持运行。源码、需求和文档仍在本地，未提交或推送。
+
+
+### 后续提交与在途退出补测
+
+接入快照已于本日提交并推送 `5b52abb`，上文未提交状态为当时验收阶段记录。后续始终复用原 Bot / session 12252578，没有新建 Bot：正常后台退出场景已取得 interrupt_acknowledged=true、remote_cancelled=true 与四次 idle，补齐同 Bot 在途退出强制中断；10 秒期限再次自然完成，stop_reason=already_idle，强制期限中断仍未覆盖。证据为私有 `~/.agent-hub/grokbot-cancel-20261011-final-lifecycle/report.json`。Muse 取消及 SSH Hub 调度后续实现见 [新增记录](2026-10-11-muse-cancel-remote-hub.md)。
+
+
+新增功能之后的完整回归为 129 项：128 通过、1 项 Windows ACL 跳过（49.332 秒），见上方新增记录；前述 110 项为接入阶段记录。

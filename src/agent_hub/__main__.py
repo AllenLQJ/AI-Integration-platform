@@ -13,11 +13,18 @@ def main():
     parser.add_argument('tool', nargs='?', choices=TOOLS)
     parser.add_argument('--arguments', default='{}', help='rpc 参数 JSON 对象；用 - 从 stdin 读取')
     parser.add_argument('--data-dir')
+    parser.add_argument('--ssh-host', help='已有 SSH 主机别名；调用目标机 Hub')
+    parser.add_argument('--remote-python', help='目标机虚拟环境 Python 绝对路径')
+    parser.add_argument('--remote-data-dir', help='目标机 Hub 私有数据目录绝对路径')
     args = parser.parse_args()
     if args.command == 'rpc' and not args.tool:
         parser.error('rpc 需要工具名称')
     if args.command != 'rpc' and args.tool:
         parser.error('只有 rpc 接受工具名称')
+    if args.ssh_host and (args.command in {'daemon', 'stop'} or not args.remote_python or not args.remote_data_dir):
+        parser.error('SSH 仅支持 mcp/status/rpc，需 remote-python 和 remote-data-dir')
+    if not args.ssh_host and (args.remote_python or args.remote_data_dir):
+        parser.error('远端路径需要 ssh-host')
     try:
         arguments = json.loads(sys.stdin.read() if args.arguments == '-' else args.arguments)
         if not isinstance(arguments, dict):
@@ -36,12 +43,20 @@ def main():
         run(root)
     elif args.command == 'mcp':
         from .mcp_server import run
-        run()
+        if args.ssh_host:
+            from .ssh_client import SshClient
+            run(SshClient(args.ssh_host, args.remote_python, args.remote_data_dir))
+        else:
+            run()
     else:
         from .client import Client
-        client = Client()
         from .models import HubError, redact
         try:
+            if args.ssh_host:
+                from .ssh_client import SshClient
+                client = SshClient(args.ssh_host, args.remote_python, args.remote_data_dir)
+            else:
+                client = Client()
             result = (client.stop() if args.command == 'stop' else
                       client.call(args.tool, arguments) if args.command == 'rpc' else client.call('list_agents'))
         except HubError as error:

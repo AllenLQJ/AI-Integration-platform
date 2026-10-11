@@ -136,8 +136,13 @@ class Service:
                                **workspace_metadata)
         if parent.get('workspace_quarantined'):
             raise HubError('WORKSPACE_UNCERTAIN', '旧执行状态不确定，工作区已隔离；请人工核对后在新工作区提交')
-        if parent['agent'] in {'muse', 'grokbot'} and parent['state'] in {'interrupted', 'delivery_unknown'}:
+        if (getattr(self.adapters[parent['agent']], 'cancel_scope', None) in {'remote_session', 'remote_hub_task'}
+                or parent['agent'] == 'muse') and parent['state'] in {'interrupted', 'delivery_unknown'}:
             raise HubError('REMOTE_STATE_UNKNOWN', '原任务远端状态不确定，禁止直接续发')
+        if (getattr(self.adapters[parent['agent']], 'cancel_scope', None) in {'remote_session', 'remote_hub_task'}
+                and parent['state'] in {'cancelled', 'timed_out'}
+                and not self.call('get_result', {'task_id': task_id}).get('remote_cancelled')):
+            raise HubError('REMOTE_STATE_UNKNOWN', '原任务远端停止未确认，禁止直接续发')
         if parent['state'] not in TERMINAL:
             raise HubError('WORKSPACE_BUSY', '父任务仍在执行')
         if not parent.get('session_id'):
@@ -245,7 +250,7 @@ class Service:
                 result['artifact_error'] = str(error)
         if not self.adapters[task['agent']].remote_cancel and state in {'cancelled', 'timed_out', 'interrupted', 'delivery_unknown'}:
             result.update(remote_cancelled=False, warning='仅停止本地等待；远端可能继续执行')
-        elif getattr(self.adapters[task['agent']], 'cancel_scope', None) == 'remote_session' and state in {'cancelled', 'timed_out', 'interrupted', 'delivery_unknown'}:
+        elif getattr(self.adapters[task['agent']], 'cancel_scope', None) in {'remote_session', 'remote_hub_task'} and state in {'cancelled', 'timed_out', 'interrupted', 'delivery_unknown'}:
             result.setdefault('remote_cancelled', False)
             if not result['remote_cancelled']:
                 result.setdefault('warning', '远端停止未确认；须核对专用 Bot 和私有状态文件')
@@ -269,4 +274,4 @@ class Service:
                 active['cancel'].set()
         for active in workers:
             adapter = self.adapters[active['agent']]
-            active['thread'].join(30 if getattr(adapter, 'cancel_scope', None) == 'remote_session' else 20)
+            active['thread'].join(30 if getattr(adapter, 'cancel_scope', None) in {'remote_session', 'remote_hub_task'} else 20)

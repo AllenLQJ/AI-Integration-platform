@@ -10,7 +10,7 @@ from ..models import HubError
 
 def main():
     data = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
-    adapter = Muse(data['executable'], data['args'], data['env'])
+    adapter = Muse(data['executable'], data['args'], data['env'], data.get('session_id'))
     def event(kind, payload):
         print(json.dumps({'hub_event': {'kind': kind, 'data': payload}}, ensure_ascii=False), flush=True)
     try:

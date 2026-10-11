@@ -7,6 +7,7 @@ from .adapters.claude import Claude
 from .adapters.muse import Muse
 from .adapters.cursor import Cursor
 from .adapters.grokbot import GrokBot
+from .adapters.remote import Remote
 from .models import HubError
 
 
@@ -68,14 +69,18 @@ def adapters(root):
     path = Path(root) / 'config.json'
     config = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
     result = {}
+    for name, item in config.get('agents', {}).items():
+        if item.get('kind') == 'remote' and item.get('enabled', True):
+            result[name] = Remote(item['ssh_host'], item['python'], item['data_dir'],
+                                  item['agent'], item['cwd'], item['mode'])
     for name, cls in [('codex', Codex), ('claude', Claude), ('muse', Muse),
                       ('cursor', Cursor), ('grokbot', GrokBot)]:
         item = config.get('agents', {}).get(name)
-        if item and item.get('enabled', True):
+        if item and item.get('enabled', True) and item.get('kind') != 'remote':
             if name == 'grokbot':
                 result[name] = cls(item['bot_name'], item.get('credentials_file'),
                                    item.get('state_file'), item.get('env'), item.get('session_id'))
-            elif name == 'muse': result[name] = cls(item['executable'], item.get('args'), item.get('env'))
+            elif name == 'muse': result[name] = cls(item['executable'], item.get('args'), item.get('env'), item.get('session_id'))
             elif name == 'codex': result[name] = cls(item['executable'], item.get('env'), item.get('windows_sandbox', 'mxc'))
             else: result[name] = cls(item['executable'], item.get('env'))
     return result
