@@ -1,6 +1,6 @@
 # 本地 Agent Hub
 
-当前进度（2026-10-11）：Windows 第一版与 Mac 本机接入已实现，提供八个 MCP 工具。新增 Cursor CLI / Grok Bot 双向接入，真实总控派发、执行器回复和续接通过，见 [接入记录](docs/2026-10-11-cursor-grokbot-validation.md)。Mac 最新完整自动回归 129 项：128 通过、1 项 Windows ACL 检查跳过（49.332 秒）。真实核心任务与补充异常验收已完成本轮记录；严格休眠超时恢复等仍未验证，不能宣称全部功能都已验收。当前状态与验证边界见 [开发进度](docs/开发进度.md) 和 [第一版验收](docs/第一版验收.md)。Windows 记录来自 10-09/10-10，最新修改未在 Windows 重新回归。
+当前进度（2026-10-11）：Windows 第一版与 Mac 本机接入已实现，提供 11 个 MCP 工具。新增 Cursor CLI / Grok Bot 双向接入，真实总控派发、执行器回复和续接通过，见 [接入记录](docs/2026-10-11-cursor-grokbot-validation.md)。Mac 最新完整自动回归 129 项：128 通过、1 项 Windows ACL 检查跳过（49.332 秒）。真实核心任务与补充异常验收已完成本轮记录；严格休眠超时恢复等仍未验证，不能宣称全部功能都已验收。当前状态与验证边界见 [开发进度](docs/开发进度.md) 和 [第一版验收](docs/第一版验收.md)。Windows 记录来自 10-09/10-10，最新修改未在 Windows 重新回归。
 
 Muse 原会话远端取消、SSH 跨机器 Hub 调度已实现。Muse 取消/期限/正常退出在同一专用会话实测通过；SSH 调度完成两个隔离 Hub 的逻辑验证，真实双机 SSH 尚未验收。配置与使用见 [新增功能记录](docs/2026-10-11-muse-cancel-remote-hub.md)。
 
@@ -132,3 +132,24 @@ Mac 最新记录分为 [核心验收](docs/2026-10-11-macos-full-acceptance.md) 
 list_agents 的 permissions 按模式说明 enforced_by、enforced、allows_write、allows_commands、os_sandbox 及作用范围；submit_task、get_task、get_result 也返回 permissions。enforced 表示声明的模式限制由执行器强制，而非所有执行器拥有同等隔离保障。Muse 的 allows_write/commands 表示可能发生，不能据此认为已获客户端授权。
 
 旧任务保留原始记录和 request_id 幂等性。历史 Claude read_only 续接按 text_only 执行；历史 Muse read_only 禁止续接，需按明确操作范围新建 delegate 任务。仅 get_result 成功不代表实际操作正确，仍需核对文件或外部结果。更新后需无在途任务时重载后台，并刷新客户端 MCP 工具说明。
+
+## HubGateway v1（服务版本 0.2.1）
+
+新增 `get_capabilities()`、`get_artifact(artifact_id)`，MCP 当前共十一个工具（包括同期新增的 resume_task）。
+`submit_task` 新增可选 `context`，省略或 null 保持旧请求哈希兼容；对象内容全部参与幂等哈希。
+任务状态保留原始 `state`；结果另提供 `gateway_state`、`execution_uncertain`、`errors` 和 `media_artifacts`。
+实现边界、配置和测试见 [HubGateway 交接说明](docs/HubGateway-v1-实现交接.md)。
+
+## Muse 等待人工处理
+
+Muse 遇到人机验证、登录或审批时，可报告 `waiting_for_user`（非终态）。`get_task`、`get_result`、`wait_for_task` 返回 `intervention`，含 `intervention_id`、原因、消息、Muse `session_id` 和人工等待期限；结果保持 `ready=false`。`wait_for_task` 提前返回 `needs_user=true`、`timed_out=false`，总控应停止连续轮询并提示用户在 Muse 原会话接管处理。
+
+仅当用户明确确认处理完成后，调用 `resume_task(request_id, task_id, intervention_id)`。此工具恢复原任务和原会话，不创建子任务；同一介入即使收到不同 request_id 也只投递一次继续指令。之后查询原 task_id；不要重新 submit，也不要对等待中的任务调用 continue_task。`acknowledged=true` 仅表示本地确认已登记，最终回答仍需 get_result 核实。
+
+每个任务人工等待总预算为 15 分钟，人工等待期间暂停普通执行期限；恢复后使用剩余执行时间。人工等待到期、用户取消或服务停止沿用 Muse 原会话取消与独立停止核验；停止不确定时保留锁，不自动续发。浏览器中人工处理后，如果 Muse 自行给出最终回答，也会回收原任务结果。
+
+当前检测优先使用派发提示中约定的 `[HUB_WAIT:<task_id>:human_verification|login|approval]` 消息标记，保守识别最新助手消息中的明确阻碍和接管请求作为辅助，并标明 `evidence`。尚未验证 Muse 原生结构化人工等待字段；这不是通用浏览器状态探测，模型不报告时可能仍需人工查看。Hub 不操作人机验证。
+
+本机 MCP 增至 11 工具；后台需在无在途任务时重载，Cursor/Codex 客户端需重新连接 MCP 才能发现 resume_task 和新版等待说明。已开始的旧 worker 不会热升级。SSH 执行器的人工等待透传不在本次实现范围。
+
+HubGateway 媒体接入已完成首轮真实文本审核与 Muse 默认图片路由验收：`text.review/deepseek-flash[1m]` 和 `image.generate/muse:auto` 已登记证据。`muse:auto` 表示默认路由，底层模型未知；仅支持已验收的一张 PNG 无参考图路径。

@@ -94,3 +94,18 @@ class MuseCancelTests(unittest.TestCase):
         self.assertEqual(error.exception.code,'TIMED_OUT')
         self.assertTrue(error.exception.details['remote_cancelled'])
         self.assertIn('agent_hub.adapters.muse_cancel_worker',run.call_args.args[0])
+
+
+    def test_resume_messages_owned_by_task_allow_cancellation(self):
+        self.task['log_dir'] = self.temp.name
+        expected = [self.prompt + '\n新增等待协议', '用户确认继续原任务']
+        Path(self.temp.name, 'muse-owned-messages.json').write_text(json.dumps(expected))
+        self.history = [dict(seq=5+i, role='user', text=text) for i, text in enumerate(expected)]
+        self.assertTrue(self.execute()['remote_cancelled'])
+
+    def test_foreign_message_after_resume_still_prevents_cancellation(self):
+        self.task['log_dir'] = self.temp.name
+        expected = [self.prompt, '用户确认继续原任务']
+        Path(self.temp.name, 'muse-owned-messages.json').write_text(json.dumps(expected))
+        self.history = [dict(seq=5+i, role='user', text=text) for i, text in enumerate(expected)]
+        self.assertFalse(self.execute(foreign=True)['remote_cancelled'])

@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from .models import HubError, TERMINAL
 from .store import Store
+from .gateway import Gateway, result_fields
 from .workspaces import Workspaces
 
 
@@ -15,6 +16,7 @@ class Service:
         self.root.mkdir(parents=True, exist_ok=True)
         self.store = Store(self.root / 'tasks.db')
         self.store.recover()
+        self.gateway = Gateway(self.root, self.store)
         self.workspaces = Workspaces(self.root)
         self.adapters = adapters
         self.concurrency = concurrency
@@ -31,26 +33,34 @@ class Service:
                 raise HubError('INVALID_ARGUMENT', '等待参数不正确')
             return self.wait_for_task(**arguments)
         with self.lock:
+            if tool == 'get_capabilities':
+                return self.gateway.capabilities(self.adapters)
+            if tool == 'get_artifact':
+                return self.gateway.artifact(**arguments)
             if tool == 'list_agents':
                 return {name: adapter.diagnose() for name, adapter in self.adapters.items()}
             if tool == 'submit_task':
-                allowed = {'request_id', 'agent', 'prompt', 'cwd', 'mode', 'timeout_seconds'}
+                allowed = {'request_id', 'agent', 'prompt', 'cwd', 'mode', 'timeout_seconds', 'context'}
                 if set(arguments) - allowed:
                     raise HubError('INVALID_ARGUMENT', '不允许设置内部任务字段')
                 return self.submit(**arguments)
+            if tool == 'resume_task':
+                return self.resume_task(**arguments)
             if tool == 'continue_task':
                 return self.continue_task(**arguments)
             if tool == 'get_events':
-                return self.store.events(**arguments)
+                return dict(self.store.events(**arguments), contract_version='1.0')
             if tool == 'get_task':
                 return self.public(self.store.get(arguments['task_id']))
             if tool == 'get_result':
                 task = self.store.get(arguments['task_id'])
                 if task['state'] not in TERMINAL:
-                    return {'ready': False, 'state': task['state'], 'permissions': self.permissions(task)}
+                    return dict(ready=False, state=task['state'], intervention=task.get('intervention'), permissions=self.permissions(task),
+                                **result_fields(task['state'], {}))
                 result = dict(task.get('result', {}))
                 if result.get('path'):
                     result = json.loads(Path(result['path']).read_text(encoding='utf-8'))
+                result.update(result_fields(task['state'], result))
                 return dict(result, ready=True, state=task['state'], permissions=self.permissions(task))
             if tool == 'cancel_task':
                 return self.cancel(**arguments)
@@ -71,8 +81,9 @@ class Service:
             snapshot = self.store.wait_snapshot(task_id, after_seq)
             terminal = snapshot['state'] in TERMINAL
             remaining = deadline - time.monotonic()
-            if terminal or remaining <= 0:
-                return dict(snapshot, timed_out=not terminal)
+            needs_user = snapshot['state'] == 'waiting_for_user'
+            if terminal or needs_user or remaining <= 0:
+                return dict(snapshot, timed_out=not terminal and not needs_user, needs_user=needs_user, contract_version='1.0')
             # Neither the global service lock nor a DB transaction is held here.
             self.stopping.wait(min(.1, remaining))
 
@@ -90,9 +101,11 @@ class Service:
     def public(self, task):
         result = {k: v for k, v in task.items() if k not in {'prompt', 'resume_session'}}
         result['permissions'] = self.permissions(task)
+        result['contract_version'] = '1.0'
+        result_fields(task['state'], {})
         return result
 
-    def submit(self, request_id, agent, prompt, cwd, mode, timeout_seconds=1800, **internal):
+    def submit(self, request_id, agent, prompt, cwd, mode, timeout_seconds=1800, context=None, **internal):
         if not isinstance(request_id, str) or not request_id or len(request_id) > 200:
             raise HubError('INVALID_ARGUMENT', 'request_id 需要非空字符串，最多 200 字符')
         if not isinstance(prompt, str) or not prompt or len(prompt) > 100000:
@@ -101,6 +114,9 @@ class Service:
             raise HubError('INVALID_ARGUMENT', '期限须在 10–7200 秒内')
         spec = dict(agent=agent, prompt=prompt, cwd=str(Path(cwd).resolve()), mode=mode,
                     timeout_seconds=timeout_seconds, **internal)
+        self.gateway.context(context)
+        if context is not None:
+            spec['context'] = context
         if self.store.by_request(request_id):
             return self.public(self.store.create(request_id, spec))
         if agent not in self.adapters:
@@ -147,7 +163,7 @@ class Service:
             raise HubError('WORKSPACE_BUSY', '父任务仍在执行')
         if not parent.get('session_id'):
             raise HubError('SESSION_UNAVAILABLE', '没有可续接的原生会话')
-        siblings = self.store.list({'queued', 'running', 'cancelling'})
+        siblings = self.store.list({'queued', 'running', 'waiting_for_user', 'cancelling'})
         if any(t.get('workspace') == parent.get('workspace') for t in siblings):
             # Idempotent replay of the exact same child is allowed.
             if not any(t['request_id'] == request_id for t in siblings):
@@ -156,6 +172,39 @@ class Service:
                            timeout_seconds, parent_id=task_id, workspace=parent['workspace'],
                            baseline=parent.get('baseline'), resume_session=parent['session_id'],
                            **workspace_metadata)
+
+    def resume_task(self, request_id, task_id, intervention_id):
+        """确认人工处理已完成；恢复同一任务，不创建子任务。"""
+        if any(not isinstance(v, str) or not v or len(v) > 200
+               for v in (request_id, task_id, intervention_id)):
+            raise HubError('INVALID_ARGUMENT', '恢复参数需要非空字符串，最多 200 字符')
+        task = self.store.get(task_id)
+        receipts = task.get('resume_receipts', {})
+        if request_id in receipts:
+            if receipts[request_id] != intervention_id:
+                raise HubError('IDEMPOTENCY_CONFLICT', '恢复请求内容发生变化')
+            return dict(task_id=task_id, intervention_id=intervention_id, acknowledged=True)
+        if intervention_id in receipts.values():
+            receipts[request_id] = intervention_id
+            self.store.update(task_id, resume_receipts=receipts)
+            return dict(task_id=task_id, intervention_id=intervention_id, acknowledged=True)
+        intervention = task.get('intervention') or {}
+        if (task['state'] != 'waiting_for_user' or intervention.get('intervention_id') != intervention_id
+                or task_id not in self.active or task['agent'] != 'muse'):
+            raise HubError('NOT_WAITING_FOR_USER', '任务没有等待此人工处理；请先查询原任务')
+        if time.time() >= intervention['wait_deadline']:
+            raise HubError('USER_WAIT_EXPIRED', '人工等待期限已到，不续发')
+        # 相同介入的不同 request_id 也只写一次；worker 在发送前移走指令。
+        if intervention_id not in receipts.values():
+            path = self.root / 'logs' / task_id / 'muse-resume.json'
+            temporary = path.with_suffix('.tmp')
+            temporary.write_text(json.dumps(dict(intervention_id=intervention_id)), encoding='utf-8')
+            temporary.chmod(0o600)
+            temporary.replace(path)
+        receipts[request_id] = intervention_id
+        self.store.update(task_id, state='running', resume_receipts=receipts,
+                          intervention=dict(intervention, resume_pending=True))
+        return dict(task_id=task_id, intervention_id=intervention_id, acknowledged=True)
 
     def cancel(self, task_id, reason='用户取消'):
         task = self.store.get(task_id)
@@ -172,7 +221,7 @@ class Service:
         if task['state'] == 'queued':
             scope = 'not_started'
         result = self.call('get_result', {'task_id': task_id}) if task['state'] in TERMINAL else {}
-        return {'task_id': task_id, 'state': self.store.get(task_id)['state'],
+        return {'contract_version': '1.0', 'task_id': task_id, 'state': self.store.get(task_id)['state'],
                 'remote_cancelled': result.get('remote_cancelled', False),
                 'cancel_scope': result.get('cancel_scope', scope)}
 
@@ -212,14 +261,19 @@ class Service:
         ident = task['id']
         deadline = time.time() + task['timeout_seconds']
         timed_out = threading.Event()
+        task['deadline'] = deadline
+        watchdog_stop = threading.Event()
         def expire():
-            timed_out.set(); cancel.set()
-        timer = threading.Timer(task['timeout_seconds'], expire)
+            while not watchdog_stop.wait(.1):
+                if time.time() >= task['deadline']:
+                    timed_out.set(); cancel.set(); return
+        timer = threading.Thread(target=expire)
         timer.daemon = True
         timer.start()
         try:
             prepared = self.workspaces.prepare(task)
-            task.update(prepared, deadline=deadline, log_dir=str(self.root / 'logs' / ident))
+            task.update(prepared, deadline=deadline, log_dir=str(self.root / 'logs' / ident),
+                        media_artifact_root=str(self.gateway.artifact_root))
             self.store.update(ident, **prepared)
             self.store.event(ident, 'state', {'state': 'running'})
             def event(kind, data):
@@ -227,10 +281,18 @@ class Service:
                     self.store.update(ident, session_id=data['session_id'])
                 if kind == 'accepted':
                     self.store.update(ident, delivery='accepted', baseline=data.get('baseline'))
+                if kind in {'waiting_for_user', 'user_wait_resumed'}:
+                    with self.lock:
+                        current = self.store.get(ident)
+                        if current['state'] not in TERMINAL and current['state'] != 'cancelling':
+                            task['deadline'] = data['execution_deadline']
+                            self.store.update(ident, state='waiting_for_user' if kind == 'waiting_for_user' else 'running',
+                                              intervention=self.store.safe(data) if kind == 'waiting_for_user' else None)
                 self.store.event(ident, kind, data)
             result = self.adapters[task['agent']].run(task, cancel, event)
             if result.get('session_id'):
                 self.store.update(ident, session_id=result['session_id'])
+            result['media_artifacts'] = self.gateway.register(ident, result.get('media_artifacts', []))
             result['artifacts'] = dict(result.get('artifacts', {}), **self.workspaces.artifacts(task))
             state = 'timed_out' if timed_out.is_set() else 'cancelled' if cancel.is_set() else 'succeeded'
         except HubError as error:
@@ -242,7 +304,8 @@ class Service:
         except Exception as error:
             state, result = 'failed', {'error': type(error).__name__, 'error_code': 'EXECUTION_ERROR'}
         finally:
-            timer.cancel()
+            watchdog_stop.set()
+            timer.join(1)
         if state != 'succeeded' and task.get('workspace') and task['mode'] == 'edit_worktree':
             try:
                 result['artifacts'] = dict(result.get('artifacts', {}), **self.workspaces.artifacts(task))

@@ -85,6 +85,11 @@ class Muse:
         return reply['text'] + ('\n\n' + '\n'.join(appended) if appended else ''), links
 
     def run(self, task, cancel, event):
+        requested = task.get('context', {}).get('payload', {}).get('requested_output', {})
+        if requested.get('media_type') == 'video':
+            raise HubError('UNSUPPORTED_MEDIA_TYPE', 'Muse 视频适配尚未验收')
+        if requested.get('media_type') == 'image' and requested.get('model') != 'muse:auto':
+            raise HubError('UNSUPPORTED_MODEL', 'Muse 仅支持已约定的 muse:auto 默认图片路由')
         path = Path(task['log_dir']) / 'muse-input.json'
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({'task': task, 'executable': self.executable,
@@ -93,7 +98,7 @@ class Muse:
         try:
             rc, stdout, stderr, logs = run_process(
                 [sys.executable, '-m', 'agent_hub.adapters.muse_worker', str(path)],
-                task['workspace'], environment(), cancel, task['deadline'], task['log_dir'], event)
+                task['workspace'], environment(), cancel, lambda: task['deadline'], task['log_dir'], event)
         except HubError as error:
             if error.code not in {'CANCELLED', 'TIMED_OUT'}:
                 raise
@@ -110,8 +115,50 @@ class Muse:
             if error.code in {'CANCELLED', 'TIMED_OUT'}:
                 raise self.cancel_after_local_stop(task, path, error, event) from None
             raise error
+        exports = result.pop('media_exports', [])
+        if exports:
+            result['media_artifacts'] = self.fetch_media(task, exports, cancel, event)
+            result['media_generation_evidence'] = [a['generation_evidence'] for a in result['media_artifacts']]
         result['artifacts'] = {'logs': logs}
         return result
+
+    def fetch_media(self, task, images, cancel, event):
+        from PIL import Image
+        root = Path(task['media_artifact_root']) / task['id']
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for index, item in enumerate(images):
+            item['filename'] = 'result-' + str(index + 1) + ('.png' if item['mime_type'] == 'image/png' else '.jpeg')
+        input_path = Path(task['log_dir']) / 'muse-media-input.json'
+        data = {'root': str(root), 'images': images,
+                'timeout_seconds': max(.1, min(30, task['deadline'] - time.time()))}
+        input_path.write_text(json.dumps(data), encoding='utf-8')
+        input_path.chmod(0o600)
+        _, stdout, _, _ = run_process(
+            [self.executable, str(Path(__file__).with_name('muse_media_worker.py')), str(input_path)],
+            task['workspace'], environment(self.env), cancel, task['deadline'],
+            str(Path(task['log_dir']) / 'media-transfer'), event)
+        responses = [json.loads(line)['hub_result'] for line in stdout.splitlines()
+                     if line.startswith('{') and 'hub_result' in line]
+        if not responses or not responses[-1].get('ok'):
+            raise HubError('ARTIFACT_FETCH_FAILED', 'Muse 授权原图取回失败；未重发生成')
+        artifacts = []
+        for item in images:
+            path = root / item['filename']
+            try:
+                with Image.open(path) as decoded:
+                    if decoded.format != ('PNG' if item['mime_type'] == 'image/png' else 'JPEG'):
+                        raise ValueError()
+                    decoded.verify()
+                with Image.open(path) as decoded:
+                    decoded.load()
+                    dimensions = {'width': decoded.width, 'height': decoded.height}
+            except Exception:
+                raise HubError('INVALID_ARTIFACT', 'Muse 成品无法按声明格式解码') from None
+            artifacts.append({'path': str(path), 'mime_type': item['mime_type'],
+                'generation_evidence': {'presentation_id': item['presentation_id'], 'seq': item['seq'],
+                    'size_bytes': path.stat().st_size, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                    'transfer': 'authenticated_noise_original', **dimensions}})
+        return artifacts
 
     def cancel_after_local_stop(self, task, path, error, event):
         context = {}
@@ -278,10 +325,20 @@ class Muse:
                 baseline = max((e.get('seq', 0) for e in history), default=0)
                 marker = '[HUB:' + task['id'] + ']'
                 prompt = (task['prompt'] + '\n完成本轮回答后，请在最终回答的最后一行逐字写出 ' + marker +
-                          '。不要在接收确认、进度消息或工具执行前写此标记。')
+                          '。不要在接收确认、进度消息或工具执行前写此标记。'
+                          '\n遇到必须由用户处理的人机验证、登录或审批时，立即说明阻碍并在求助消息末尾写出 '
+                          '[HUB_WAIT:' + task['id'] + ':human_verification]（登录改为 login，审批改为 approval）。'
+                          '等待用户接管；不要自动完成人机验证。求助消息不能写最终完成标记。')
                 if cancel.is_set(): raise HubError('CANCELLED', '已停止本地等待')
+                owned_messages = [prompt]
+                def save_owned_messages():
+                    if task.get('log_dir'):
+                        ledger = Path(task['log_dir']) / 'muse-owned-messages.json'
+                        ledger.write_text(json.dumps(owned_messages, ensure_ascii=False), encoding='utf-8')
+                        ledger.chmod(0o600)
                 if task.get('log_dir'):
                     self.reserve(task, sid)
+                    save_owned_messages()
                 try:
                     sent = await call('muse_send', {'thread': sid, 'message': prompt,
                                                   'wait_seconds': 0, 'fire_and_forget': True})
@@ -295,6 +352,8 @@ class Muse:
                 if not isinstance(sent, dict) or not sent.get('sent'):
                     raise HubError('DELIVERY_UNKNOWN', '未取得确定的发送确认，未重发')
                 event('accepted', {'session_id': sid, 'baseline': baseline, 'acknowledged': sent.get('acknowledged', False)})
+                from .muse_wait import HumanWait, find_intervention
+                human_wait = HumanWait(task, sid, event)
                 previous_snapshot = None
                 while time.time() < task['deadline']:
                     if cancel.is_set(): raise HubError('CANCELLED', '仅停止本地等待')
@@ -308,14 +367,51 @@ class Muse:
                                        error.code, details) from error
                     except Exception as error:
                         raise HubError('REMOTE_STATE_UNKNOWN', '已发送，但连接中断；远端可能继续执行') from error
-                    reply = self.find_reply(history, baseline, marker)
+                    intervention = human_wait.observe(history, baseline)
+                    reply = self.find_reply(history, max(baseline, human_wait.reply_after), marker)
+                    if intervention and find_intervention(history, baseline, task['id']):
+                        reply = None
+                    if reply and human_wait.current:
+                        human_wait.resume()
+                    if human_wait.consume_confirmation():
+                        try:
+                            resume_prompt = ('用户已确认人工处理完成，请在原任务范围内继续；若仍受阻请再次报告。'
+                                             '完成后最后一行写出 ' + marker)
+                            owned_messages.append(resume_prompt)
+                            save_owned_messages()
+                            resumed = await call('muse_send', {'thread': sid, 'message': resume_prompt,
+                                                  'wait_seconds': 0, 'fire_and_forget': True})
+                            if not isinstance(resumed, dict) or not resumed.get('sent'):
+                                raise HubError('DELIVERY_UNKNOWN', '未取得恢复发送确认')
+                        except Exception as error:
+                            if isinstance(error, HubError) and error.code in {'CANCELLED', 'TIMED_OUT'}:
+                                raise
+                            raise HubError('DELIVERY_UNKNOWN', '恢复发送状态不确定，未重发') from error
                     if reply:
                         answer, links = self.answer_with_links(history, reply)
-                        snapshot = (reply['seq'], answer, reply.get('reply_to_message_id', ''))
+                        media_requested = task.get('context', {}).get('payload', {}).get('requested_output', {}).get('media_type') == 'image'
+                        from .muse_media import images_for_task
+                        images = images_for_task(history, baseline) if media_requested else []
+                        snapshot = (reply['seq'], answer, reply.get('reply_to_message_id', ''),
+                                    json.dumps(images, sort_keys=True))
                         if snapshot == previous_snapshot:
+                            media_artifacts = []
+                            if media_requested:
+                                status = self.unnest(await call('muse_raw', {'method': 'sessions.get', 'path_params': {'id': sid}}))
+                                if not isinstance(status, dict) or status.get('status') != 'completed':
+                                    await pause(1)
+                                    continue
+                                if not images:
+                                    raise HubError('ARTIFACT_NOT_FOUND', 'Muse 回复已完成，但未提供结构化真实成品附件')
+                                media_artifacts = [dict(i, url=None) for i in images]
+                                for image in images:
+                                    answer = answer.replace(image['url'], '[媒体附件取回地址已隐藏]')
+                                links = [url for url in links if url not in {i['url'] for i in images}]
                             if task.get('log_dir'):
                                 self.state_file(sid).unlink()
-                            return {'answer': answer, 'source_urls': links, 'session_id': sid, 'completion_evidence': {
+                            return {'answer': answer, 'source_urls': links, 'session_id': sid,
+                                    'media_exports': [{k: v for k, v in a.items() if k != 'url'} for a in media_artifacts],
+                                    'completion_evidence': {
                                 'session_id': sid, 'baseline': baseline, 'reply_seq': reply['seq'], 'stable_polls': 2,
                                 'reply_to_message_id': reply.get('reply_to_message_id', ''),
                                 'method': '独立会话+序号+completed消息+最终标记+两次稳定读取（不等于远端工作流完成）'}}

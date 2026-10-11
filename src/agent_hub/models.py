@@ -10,6 +10,11 @@ class HubError(Exception):
         self.details = details or {}
         super().__init__(message)
 
+    def payload(self):
+        from .store import Store
+        return {"code": self.code, "message": redact(str(self)),
+                "retryable": False, "details": Store.safe(self.details)}
+
 
 def redact(text):
     text = re.sub(r'(?i)(?:sk-|ccr-profile-)[A-Za-z0-9_-]+', '[REDACTED]', str(text))

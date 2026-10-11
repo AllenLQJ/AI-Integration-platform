@@ -114,7 +114,7 @@ def run_process(argv, cwd, env, cancel, deadline, log_dir, event):
         while process.poll() is None:
             if os.name != 'nt':
                 track_descendants(process.pid, tracked)
-            if cancel.is_set() or time.time() >= deadline:
+            if cancel.is_set() or time.time() >= (deadline() if callable(deadline) else deadline):
                 reason = 'CANCELLED' if cancel.is_set() else 'TIMED_OUT'
                 if os.name != 'nt':
                     stop_descendants(tracked)

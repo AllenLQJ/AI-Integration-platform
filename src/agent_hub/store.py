@@ -112,14 +112,14 @@ class Store:
     def wait_snapshot(self, task_id, after_seq):
         with self.connection() as db:
             db.execute('BEGIN')
-            row = db.execute('SELECT state FROM tasks WHERE id=?', (task_id,)).fetchone()
+            row = db.execute('SELECT state, data FROM tasks WHERE id=?', (task_id,)).fetchone()
             if not row:
                 raise HubError('TASK_NOT_FOUND', '任务不存在')
             rows = db.execute('SELECT * FROM events WHERE task_id=? AND seq>? ORDER BY seq LIMIT 201',
                               (task_id, after_seq)).fetchall()
             events = [dict(seq=r['seq'], kind=r['kind'], data=json.loads(r['data']),
                            timestamp=r['timestamp']) for r in rows[:200]]
-            return {'state': row['state'], 'events': events,
+            return {'state': row['state'], 'intervention': json.loads(row['data']).get('intervention'), 'events': events,
                     'next_seq': events[-1]['seq'] if events else after_seq,
                     'has_more': len(rows) > 200}
 
@@ -150,6 +150,6 @@ class Store:
             return {'events': events, 'next_seq': events[-1]['seq'] if events else after_seq}
 
     def recover(self):
-        for task in self.list({'running', 'cancelling'}):
+        for task in self.list({'running', 'waiting_for_user', 'cancelling'}):
             self.update(task['id'], workspace_quarantined=True)
             self.finish(task['id'], 'interrupted', {'error': '服务重启，执行状态无法确认；未自动重发'})

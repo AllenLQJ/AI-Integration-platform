@@ -56,6 +56,8 @@ class Remote:
             args['task_id'] = task['resume_session']
             remote = call('continue_task', args)
         else:
+            if task.get('context') is not None:
+                args['context'] = task['context']
             remote = call('submit_task', dict(args, agent=self.agent, cwd=self.cwd, mode=self.mode))
         rid = remote.get('id') if isinstance(remote, dict) else None
         if not isinstance(rid, str) or not rid:

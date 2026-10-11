@@ -35,7 +35,7 @@ class SshClient:
                                        timeout=max(.1, timeout))
             response = json.loads(completed.stdout)
         except (OSError, subprocess.TimeoutExpired, ValueError):
-            code = 'DELIVERY_UNKNOWN' if tool in {'submit_task', 'continue_task'} else 'REMOTE_UNAVAILABLE'
+            code = 'DELIVERY_UNKNOWN' if tool in {'submit_task', 'continue_task', 'resume_task'} else 'REMOTE_UNAVAILABLE'
             raise HubError(code, 'SSH 响应未确认；未自动重发，请核对目标机任务') from None
         if not isinstance(response, dict):
             raise HubError('INVALID_RESPONSE', '目标机 Hub 返回格式不正确')
