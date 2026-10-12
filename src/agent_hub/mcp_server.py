@@ -62,13 +62,13 @@ def get_result(task_id: str) -> dict:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
-def continue_task(request_id: str, task_id: str, prompt: str, timeout_seconds: int = 1800) -> dict:
+def continue_task(request_id: str, task_id: str, prompt: str, timeout_seconds: int = 1800, controller_id: str | None = None, controller_epoch: int | None = None) -> dict:
     """续接原生会话并创建子任务，保留旧结果和同一工作区；已被续接的验收尝试返回 ATTEMPT_SUPERSEDED。"""
     return invoke('continue_task', locals())
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
-def cancel_task(task_id: str, reason: str = '用户取消') -> dict:
+def cancel_task(task_id: str, reason: str = '用户取消', controller_id: str | None = None, controller_epoch: int | None = None) -> dict:
     """请求取消；Grok Bot 尝试会话中断，get_result 确认 remote_cancelled。
     Muse 同样尝试原会话中断；SSH 执行器取消原目标机任务。已发生操作不自动回滚。
     """
@@ -105,7 +105,7 @@ def resume_task(request_id: str, task_id: str, intervention_id: str) -> dict:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
-def verify_task(request_id: str, task_id: str) -> dict:
+def verify_task(request_id: str, task_id: str, controller_id: str | None = None, controller_epoch: int | None = None) -> dict:
     """由 Hub 重新检查当前执行尝试；相同请求键只检查一次；非 succeeded 任务返回 INVALID_STATE。"""
     return invoke('verify_task', locals())
 
@@ -114,3 +114,16 @@ def verify_task(request_id: str, task_id: str) -> dict:
 def get_work_item(task_id: str) -> dict:
     """读取根任务及所有尝试、验收历史、产物和待处理动作。"""
     return invoke('get_work_item', locals())
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+def claim_controller(request_id: str, task_id: str, controller_id: str) -> dict:
+    """接管工作项，返回递增 controller_epoch；相同 request_id 返回原租约收据。"""
+    return invoke('claim_controller', locals())
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
+def switch_executor(request_id: str, task_id: str, agent: str, mode: str, prompt: str,
+                    controller_id: str | None = None, controller_epoch: int | None = None) -> dict:
+    """从当前已终止尝试交接到新执行器，不复用原生 session_id。"""
+    return invoke('switch_executor', locals())

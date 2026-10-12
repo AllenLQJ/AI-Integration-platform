@@ -19,6 +19,8 @@ class PermissionTests(unittest.TestCase):
         self.seen = []
         def run(task, cancel, event):
             self.seen.append(task['mode'])
+            if task['agent'] == 'claude':
+                event('session', {'session_id': 'sid', 'source': 'cli_init'})
             return {'answer': 'done', 'session_id': 'sid'}
         self.claude.run = self.muse.run = run
         self.service = Service(self.root/'data', {'claude': self.claude, 'muse': self.muse})

@@ -6,7 +6,7 @@ import subprocess
 from .models import HubError
 
 TOOLS = {'list_agents', 'submit_task', 'get_task', 'get_events', 'wait_for_task',
-         'get_result', 'continue_task', 'cancel_task', 'get_work_item'}
+         'get_result', 'continue_task', 'cancel_task', 'get_work_item', 'claim_controller'}
 
 
 class SshClient:

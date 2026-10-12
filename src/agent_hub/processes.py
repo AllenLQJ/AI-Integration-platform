@@ -6,6 +6,7 @@ import threading
 import time
 from pathlib import Path
 from .models import HubError, redact
+from .verification import safe
 
 ENV_KEYS = {'PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'USERPROFILE', 'HOME',
             'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'HTTP_PROXY', 'HTTPS_PROXY',
@@ -77,7 +78,7 @@ def terminate_tree(process):
     process.wait(15)
 
 
-def run_process(argv, cwd, env, cancel, deadline, log_dir, event):
+def run_process(argv, cwd, env, cancel, deadline, log_dir, event, allow_hub_events=True):
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     out_path, err_path = log_dir / 'stdout.log', log_dir / 'stderr.log'
@@ -87,24 +88,38 @@ def run_process(argv, cwd, env, cancel, deadline, log_dir, event):
     else:
         process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-    def pump(stream, path):
+    def pump(stream, path, structured):
         from .store import Store
+        tool_names = {}
+        session_seen = False
         with path.open('w', encoding='utf-8') as log:
             for line in iter(stream.readline, b''):
                 text = line.decode('utf-8', errors='replace')
                 try:
-                    data = Store.safe(json.loads(text))
-                    if isinstance(data, dict) and data.get('hub_event'):
-                        entry = data['hub_event']
-                        event(entry['kind'], entry['data'])
-                    elif isinstance(data, dict) and data.get('type') in {'item.started', 'item.completed', 'turn.failed'}:
-                        item = data.get('item', {})
-                        event('progress', {'type': data['type'], 'item_type': item.get('type'),
-                                           'message': str(item.get('text', ''))[:1000]})
-                    text = json.dumps(data, ensure_ascii=False) + '\n'
-                except ValueError: text = redact(text)
+                    data = safe(Store.safe(json.loads(text)))
+                    if structured and isinstance(data, dict) and data.get('hub_event'):
+                        if allow_hub_events:
+                            entry = data['hub_event']
+                            event(entry['kind'], entry['data'])
+                    elif structured and isinstance(data, dict):
+                        initialization = data.get('type') == 'thread.started' or (data.get('type') == 'system' and data.get('subtype') == 'init')
+                        first_init = initialization and not session_seen
+                        if initialization:
+                            session_seen = True
+                        for kind, payload in stream_events(data):
+                            if kind == 'session' and not first_init:
+                                continue
+                            ident = payload.get('tool_use_id')
+                            if kind == 'tool' and ident:
+                                if payload.get('name'):
+                                    tool_names[ident] = payload['name']
+                                elif ident in tool_names:
+                                    payload['name'] = tool_names[ident]
+                            event(kind, payload)
+                    text = json.dumps(log_record(data), ensure_ascii=False) + '\n'
+                except ValueError: text = safe(redact(text))
                 log.write(text); log.flush()
-    readers = [threading.Thread(target=pump, args=(stream, path), daemon=True)
+    readers = [threading.Thread(target=pump, args=(stream, path, stream is process.stdout), daemon=True)
                for stream, path in ((process.stdout, out_path), (process.stderr, err_path))]
     for reader in readers: reader.start()
     reason = None
@@ -136,3 +151,67 @@ def run_process(argv, cwd, env, cancel, deadline, log_dir, event):
         raise HubError(reason, '本地执行进程树已停止', {'exit_code': code,
                        'artifacts': {'logs': {'stdout': str(out_path), 'stderr': str(err_path)}}})
     return code, stdout, stderr, {'stdout': str(out_path), 'stderr': str(err_path)}
+
+
+def stream_events(data):
+    """Map only observed structured records; never retain tool inputs or outputs."""
+    kind = data.get('type')
+    session_id = data.get('thread_id') if kind == 'thread.started' else data.get('session_id') if kind == 'system' and data.get('subtype') == 'init' else None
+    if isinstance(session_id, str) and session_id:
+        yield 'session', {'session_id': session_id, 'source': 'cli_init'}
+    if kind in {'turn.started', 'turn.completed', 'turn.failed', 'result'}:
+        yield 'progress', {'type': kind, 'message': str(data.get('subtype', ''))[:1000]}
+    if kind == 'system' and data.get('subtype') == 'init':
+        yield 'progress', {'type': 'round.started', 'message': '执行器初始化本轮'}
+    denials = data.get('permission_denials')
+    for denial in denials if isinstance(denials, list) else []:
+        if isinstance(denial, dict):
+            yield 'approval', {'name': denial.get('tool_name'), 'status': 'denied'}
+    item = data.get('item') or {}
+    if kind in {'item.started', 'item.completed'}:
+        if item.get('type') == 'agent_message' and kind == 'item.completed':
+            yield 'message', {'message': str(item.get('text', ''))[:1000]}
+        elif item.get('type') in {'command_execution', 'mcp_tool_call', 'file_change', 'web_search'}:
+            status = item.get('status')
+            if item.get('exit_code') is not None:
+                status = 'success' if item['exit_code'] == 0 else 'failed'
+            elif kind == 'item.completed':
+                status = 'failed' if status == 'failed' or item.get('error') else 'success'
+            yield 'tool', {'name': item.get('tool') or item.get('type'), 'status': status or 'started'}
+    message = data.get('message') or {}
+    for block in message.get('content', []) if isinstance(message, dict) else []:
+        if not isinstance(block, dict):
+            continue
+        if block.get('type') == 'text':
+            yield 'message', {'message': str(block.get('text', ''))[:1000]}
+        elif block.get('type') == 'tool_use':
+            yield 'tool', {'name': block.get('name'), 'tool_use_id': block.get('id'), 'status': 'started'}
+        elif block.get('type') == 'tool_result':
+            yield 'tool', {'tool_use_id': block.get('tool_use_id'), 'status': 'failed' if block.get('is_error') is True else 'success' if block.get('is_error') is False else 'unknown'}
+    if kind in {'tool_call', 'tool_result'}:
+        call = data.get('tool_call') or {}
+        yield 'tool', {'name': data.get('name') or next(iter(call), None),
+                       'status': 'failed' if data.get('is_error') else data.get('subtype', 'observed')}
+
+
+def log_record(data):
+    """Keep parseable final replies, but omit complete tool inputs/file contents."""
+    if not isinstance(data, dict):
+        return data
+    data = dict(data)
+    if 'permission_denials' in data:
+        data['permission_denials'] = [{k: denial[k] for k in ('tool_name', 'tool_use_id') if k in denial}
+                                     for denial in data['permission_denials'] if isinstance(denial, dict)] if isinstance(data['permission_denials'], list) else []
+    item = data.get('item')
+    if isinstance(item, dict) and item.get('type') != 'agent_message':
+        data['item'] = {k: v for k, v in item.items() if k in {'id', 'type', 'tool', 'status', 'exit_code'}}
+    message = data.get('message')
+    if isinstance(message, dict):
+        message = dict(message)
+        message['content'] = [{k: v for k, v in b.items() if k in {'type', 'name', 'id', 'tool_use_id', 'is_error'}}
+                              if isinstance(b, dict) and b.get('type') in {'tool_use', 'tool_result'} else b
+                              for b in message.get('content', [])]
+        data['message'] = message
+    if data.get('type') in {'tool_call', 'tool_result'}:
+        data = {k: v for k, v in data.items() if k in {'type', 'subtype', 'name', 'is_error', 'session_id'}}
+    return data

@@ -33,8 +33,16 @@ class CLI:
     def run(self, task, cancel, event):
         if not Path(self.executable).is_file():
             raise HubError('AGENT_UNAVAILABLE', '执行器路径不存在')
+        session_id = None
+        def observed(kind, data):
+            nonlocal session_id
+            if kind == 'session':
+                if data.get('source') != 'cli_init' or session_id is not None:
+                    return
+                session_id = data['session_id']
+            event(kind, data)
         rc, out, err, logs = run_process(self.command(task), task['workspace'], environment(self.env),
-                                       cancel, task['deadline'], task['log_dir'], event)
+                                       cancel, task['deadline'], task['log_dir'], observed, allow_hub_events=False)
         if rc:
             raise HubError('CLI_FAILED', '执行器退出码 ' + str(rc) + ': ' + err[-1000:],
                            {'exit_code': rc, 'artifacts': {'logs': logs}})
@@ -42,6 +50,8 @@ class CLI:
         except HubError as error:
             error.details.update(exit_code=rc, artifacts={'logs': logs})
             raise
+        # Final result records cannot replace the stdout initialization session.
+        result['session_id'] = session_id
         if 'blocked by policy' in err or 'Failed to write' in err or 'Failed to delete' in err:
             result['warnings'] = ['执行日志包含工具失败，请检查差异和日志；CLI 回合结束不等于任务目标已完成']
         result.update(exit_code=rc, artifacts={'logs': logs})

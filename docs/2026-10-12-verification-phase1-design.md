@@ -63,3 +63,53 @@ MediaFlow 通过 context 携带关联信息，同时提交 acceptance；读取 g
 数据目录 config.json 的 verification 对象可配置 max_files、max_bytes、max_entries、max_seconds、join_seconds，缺省分别为 1000、268435456、5000、10、20。全部字段仅接受整数（拒绝布尔值、字符串、浮点数和未知字段）；范围依次为 1–1000000、1–1099511627776 字节、1–10000000、1–3600 秒、1–300 秒，错误返回 INVALID_CONFIG。join_seconds 是验收 worker 共用的关机等待预算，不改变执行 worker 的等待规则。
 
 copied 规则也会把合法重新生成的相同内容判为非证据，这是第一阶段的保守限制；第二阶段通过显式期望产物哈希支持可复现任务。无 artifact_required 的媒体索引 created 标记仅描述提交附件的新路径分类，不是验收通过证据。
+
+## 第二阶段实现（2026-10-12）
+
+本阶段仍使用 Store 执行状态、verification 生命周期、verification_requests 收据与 events 表；没有引入第二套执行状态机。无 acceptance 的任务不做自动验收或返工；没有 controller 租约的任务继续接受原操作。HubGateway 1.0 字段与执行终态保护保留。
+
+### 统一过程与本机工作台
+
+本机 `claude --help` 和 Cursor `agent --help` 均列出 stream-json，Claude 使用 `--output-format stream-json --verbose`，Cursor CLI 使用 `--output-format stream-json`，Codex 保持 `--json`。没有发起模型调用，本轮没有验证各版本的真实在线流。结构化记录存在才映射 session、progress（初始化、turn/result 结束）、message、tool 与真实 permission_denials 的 approval；Codex tool 记录工具名和结果状态，Claude tool_result 用 tool_use_id 关联名称。message/progress 最多 1000 字，tool 不存输入、完整文件内容或完整输出。stdout/stderr 保留最终回复用于解析，工具输入和输出从日志删除；既有脱敏继续应用，并移除 URL。权限参数、工具白名单没有放宽。没有观测到的信息标为缺失，进度和模型自述不成为验收证据。Hub 实际登记产物与检查落盘另写 artifact、verification 事件。
+
+当前核实的三个 CLI 均支持流式格式；无法据此声称在线工具/审批事件已经实测。Cursor IDE、Muse、Grok Bot 不因本轮新增虚构的原生过程事件，继续使用其现有桥接/轮询事件。
+
+回环服务增加 `POST /work/<task_id>/session`，只接受原 Bearer 认证，签发独立随机 HttpOnly cookie（Path=/work、SameSite=Strict）；令牌和 cookie 不进入 URL、日志或 HTML。`GET /work/<task_id>` 接受 Bearer 或 cookie，服务端按尝试展示状态、已有消息/工具/审批事件、条件、检查结论、原因及产物逻辑 ID/哈希。内容先脱敏再 HTML 转义。`GET /work/<task_id>/events?after_seq=N` 同样认证，只查询该尝试 seq>N 的事件，最多等待 10 秒、每批最多 200 条。页面用 cookie 和游标续接，验收事件更新右侧结论；新尝试 session 事件触发一次页面重载。没有整库定时轮询，不嵌执行器原生窗口，show 仍为文本版。拒绝 Origin 与跨站请求；cookie 不可用于 /rpc 或 /shutdown。
+
+### 总控接管、执行器交接与返工
+
+controllers 表按根任务持久化 controller_id、epoch。claim_controller(request_id, task_id, controller_id) 接管任何执行/验收阶段，成功接管 epoch+1，request_id 重放返回原 epoch（不恢复旧租约）。controller_id 非空且最多 200 字符。带租约的 continue_task、cancel_task、verify_task、record_verification、switch_executor 在根任务锁下核对 controller_id/controller_epoch；缺失或不符为 CONTROLLER_STALE，拒绝前不改状态。MCP 与本机 RPC 开放 claim；SSH 放行 get_work_item 与幂等 claim，仍禁止验收写入及 verify_task。
+
+switch_executor 从当前已终止且未隔离的尝试创建子尝试，继承 acceptance，但不传 resume_session；已有 edit_worktree 可继承隔离工作区/基线，从只读切到 edit_worktree 则由原 Workspaces 规则创建新的隔离工作区。远端停止未确认时沿用原禁止重发规则。提示词前附截断后的根目标、条件、失败检查、Hub 产物引用/哈希、最近事件，并明确这是新的原生会话。执行中的尝试须先取消并确认终止；接管租约本身不重发任务。同执行器原生续接保持 continue_task。
+
+verification.max_auto_rework 缺省 2，仅接受整数 0–5。后台确定性验收及显式重验后，只有 rework_required、存在 hub-deterministic fail、所有失败均为非 content_review 且没有任何 inconclusive 才自动续接。复用 continue_task 的尝试链与原生会话，原目标保留在根任务；子提示词只含失败原因和产物引用。子任务创建时持久化 auto_rework_run_id，request_id 为 auto-rework:<verification_run_id>，同 run 不重复派发，按工作项链累计次数，重启后仍可计数。达到上限保持 rework_required，并在验收摘要/事件写明原因。没有会话或不满足既有工作区安全规则时不重发，记录无法返工原因。needs_review、验证器不可用、审核失败和外部审核结果不自动派发执行器。
+
+### 显式哈希、审核与外部检查
+
+copied 文件仍不算本次产物，唯一新增例外是同一路径的 sha256 条件显式 expected 与 Hub 实读哈希匹配；允许该 copied 文件满足 artifact_required，保留 copied 来源标记。旧媒体归属、快照完整性和扫描预算规则仍生效。
+
+record_verification 保持仅本机 Bearer RPC；不进入 MCP 或 SSH。对 content_review 的 pass/fail 必须带 reason，并以 artifact_id 引用本尝试已登记 evidence。原人工裁决仍只接受当前 needs_review；迟到尝试仅追加 superseded 历史。旧人工审核测试补入实际文件证据，保留原裁决、幂等和迟到断言。未收到审核端写入时 content_review 仍为 inconclusive，不自动调用审核模型。执行器名称不能用作 verifier_id；执行器不获得本机 RPC 令牌，CLI 的 MCP/工具隔离继续生效。本机 RPC 令牌持有方是可信审核调用方，verifier_id 是审计标识，并非独立身份认证。
+
+record_external_verification(request_id, task_id, verifier_id, checks, controller_id?, controller_epoch?) 同样仅本机 RPC。checks 每项为 criterion_id、outcome(pass/fail/inconclusive)、非空 reason、evidence（非空 artifact_id 数组）；拒绝未知/重复条件、未登记或其他尝试的产物。支持向既有条件回写尺寸、时长、格式等外部项目已做的检查，不新增 Hub 解码器或多媒体生成业务。写入检查历史并按既有 required 规则重算 passed/rework_required/needs_review；未提交的条件保留原检查或 inconclusive。收据与结果在同一事务提交；同 request_id 重放不追加，不同内容冲突；旧尝试仅记 superseded，不覆盖任何验收状态。这是可调用的本机接口，未接通 Muse 或 Windows，也没有配置/派发审核模型。
+
+### 本轮验证范围
+
+扩展 tests/test_verification.py：租约接管/旧 epoch 拒绝与重放/重启、交接不复用原会话、有限返工与幂等、不确定/审核不返工、copied 显式哈希、外部结果重放/迟到、审核 evidence、工作台认证/页面/事件、结构化工具元数据。保留真实 HTTP 测试；另以同一 handler 的内存请求验证响应，不能代替真实监听测试。沙箱拒绝回环 bind 或 ps 时按环境错误报告，不改旧测试规避限制。
+
+本轮实际结果：Python 3.12 隔离虚拟环境，从本机 uv 缓存离线安装依赖；未连接共享后台，未调用真实模型。命令前均设 `AGENT_HUB_DATA_DIR=/private/tmp/phase2-isolated-default PYTHONPATH=src`。` .venv/bin/python -m unittest discover -s tests -p test_verification.py` 跑 66 项，65 项通过，真实 HTTP 工作台测试因回环 bind 的 PermissionError 报错。`.venv/bin/python -m unittest discover -s tests -v` 跑 226 项，12 个错误、1 项跳过：5 个错误来自 ps 受限（含同一测试两次子用例），5 个来自回环 bind 受限，2 个是隔离后台未启动/connection.json 缺失；无断言失败。未调整这些既有测试以规避沙箱。五项关键功能单独运行通过（handler、切换到隔离工作区、租约接管、返工上限、外部迟到/幂等）。compileall、生成页面脚本的 node --check、git diff --check 通过。本轮不构成真实模型流、真实 HTTP 监听、Muse 接通或 Windows 实测通过证明。
+
+
+### 第二阶段只读评审修正
+
+六条评审均经代码核实成立。本次修正：
+
+- run_process 仅在 stdout 映射结构化事件；stderr 不派发任何事件，继续脱敏写日志。通用 Hub worker 的 stdout hub_event 保留；CLI 调用显式禁用 hub_event。CLI session 只来自首个 system/init 或 Codex thread.started，后续 init、非 init system 与最终 result 均不可覆盖。首个 init 缺失合法 ID 时不采用后续 ID。服务层再约束 CLI 会话写入，保持 Muse、Grok Bot、SSH 与 IDE 既有会话机制。tool_result 未提供 is_error 时记 unknown，不能默认成功。
+- cookie 按精确 task_id 绑定，其他 /work/<task_id> 及 events 路径返回 401；同一工作项中的尝试事件通过已授权任务的 events?attempt_id= 接口获取，并逐次核对根任务归属，仅按对应尝试 seq 查询，避免整库轮询。
+- record_external_verification 纳入与其他控制命令相同的根任务租约锁及 epoch 检查；有租约时缺失或不符参数先返回 CONTROLLER_STALE，不创建请求收据、不追加检查、不改验收状态。无租约接口用法不变。
+- stdout/stderr 的 permission_denials 日志逐项只留 tool_name、tool_use_id；tool_input 与其他大字段全部删除。
+- Service 启动时只把当前尝试、确定性 rework_required、没有 auto-rework:<run_id> 任务创建收据且次数未超限的任务加入内存补派集合；由已有验收 worker 按并发限制处理，不重跑检查、不生成新验收 run。派发仍走原 continue_task、工作区规则与 run_id 幂等，已有子尝试、上限和 inconclusive/审核失败不会补派。
+- record_external_verification 先校验条件与 evidence 归属，再处理 superseded；非当前旧尝试即使执行 failed，也只事务追加 superseded 历史/收据，不修改旧尝试或当前尝试。只有当前尝试继续要求 succeeded。
+
+新增针对 stderr 注入、首个 init/最终结果覆盖、permission_denials 裁剪、外部租约拒绝/收据不落盘、重启补派/不重验/不重复、失败旧尝试迟到的测试；工作台 handler 与真实 HTTP 测试均补跨任务 cookie 断言。权限测试的假 Claude executor 补上模拟 init 事件，原权限与续接断言保留。
+
+本次评审修正后的实际验证：命令前设置 `AGENT_HUB_DATA_DIR=/private/tmp/phase2-review-isolated PYTHONPATH=src`。`.venv/bin/python -m unittest discover -s tests -p test_verification.py`：75 项，74 项通过，工作台真实 HTTP 测试因回环 bind 被拒绝报 1 个环境错误。`.venv/bin/python -m unittest discover -s tests -v`：235 项，12 个环境错误、1 项跳过，无断言失败；错误为 5 个 ps 受限、5 个回环 bind 受限及 2 个后台未启动/connection.json 缺失。另运行注入/会话、日志裁剪、外部租约、重启返工、迟到写入与工作台 handler 共 10 项定向测试全部通过。compileall、生成页面脚本 node --check、git diff --check 通过。本轮未改原 HTTP/ps 测试以迁就沙箱，未发起模型调用或访问共享后台；完整回归不能报告为全通过。

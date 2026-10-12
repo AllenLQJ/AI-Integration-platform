@@ -30,6 +30,8 @@ class VerificationTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.workspace = self.root / 'workspace'; self.workspace.mkdir()
         self.service = Service(self.root / 'data', {'fake': Fake()})
+        # Phase-one tests exercise manual continuation; explicitly opt out of automatic rework.
+        self.service.max_auto_rework = 0
     def tearDown(self):
         self.service.close(); self.tmp.cleanup()
     def submit(self, criteria=None, **kw):
@@ -47,8 +49,412 @@ class VerificationTests(unittest.TestCase):
         self.fail('验收未完成')
     def record(self, ident, **kw):
         args = dict(request_id='review', task_id=ident, verifier_id='human', decision='pass', reason='已核对')
+        task = self.service.store.get(ident)
+        if any(c['kind'] == 'content_review' for c in task['acceptance']['criteria']):
+            path = Path(task.get('workspace') or task['cwd']) / 'review-evidence.txt'
+            path.write_text('review evidence')
+            args['artifact_id'] = self.service.verification.file(task, 'review-evidence.txt')['artifact_id']
         args.update(kw)
         return self.service.call('record_verification', args)
+    @contextmanager
+    def cli_output(self, stdout, stderr):
+        """Exercise both real pump threads using in-memory process pipes, without ps."""
+        import json
+        from io import BytesIO
+        from types import SimpleNamespace
+        def process(*args, **kwargs):
+            return SimpleNamespace(pid=12345, poll=lambda: 0, wait=lambda timeout: 0,
+                                   stdout=BytesIO(('\n'.join(json.dumps(row) for row in stdout) + '\n').encode()),
+                                   stderr=BytesIO(('\n'.join(json.dumps(row) for row in stderr) + '\n').encode()))
+        with patch('agent_hub.processes.subprocess.Popen', side_effect=process) as popen, \
+                patch('agent_hub.processes.stop_descendants'):
+            yield popen
+
+    def test_cli_stderr_cannot_emit_events_or_change_session(self):
+        import sys
+        from agent_hub.adapters.claude import Claude
+        self.service.adapters['claude'] = Claude(sys.executable)
+        stdout = [dict(hub_event=dict(kind='session', data=dict(session_id='stdout-hub-spoof', source='cli_init'))),
+                  dict(type='system', subtype='init', session_id='trusted-session'),
+                  dict(type='system', subtype='notice', session_id='notice-spoof'),
+                  dict(type='system', subtype='init', session_id='second-init-spoof'),
+                  dict(type='result', result='done', is_error=False, session_id='final-spoof')]
+        stderr = [dict(type='system', subtype='init', session_id='stderr-spoof'),
+                  dict(type='tool_result', name='Write', is_error=False),
+                  dict(type='user', message={'content': [{'type': 'tool_result', 'tool_use_id': 'bad'}]}),
+                  dict(hub_event=dict(kind='session', data=dict(session_id='stderr-hub-spoof')))]
+        with self.cli_output(stdout, stderr) as popen:
+            ident = self.submit(agent='claude')
+            result = self.wait(ident)
+            events = self.service.store.events(ident, limit=200)['events']
+            sessions = [e['data']['session_id'] for e in events if e['kind'] == 'session']
+            self.assertEqual(sessions, ['trusted-session'])
+            self.assertFalse(any(e['kind'] == 'tool' for e in events))
+            self.assertEqual(self.service.store.get(ident)['session_id'], 'trusted-session')
+            self.assertEqual(result['session_id'], 'trusted-session')
+            child = self.service.call('continue_task', dict(request_id='trusted-resume', task_id=ident, prompt='next'))['id']
+            self.wait(child)
+            self.assertEqual(self.service.store.get(child)['resume_session'], 'trusted-session')
+            self.assertIn('trusted-session', popen.call_args.args[0])
+            self.assertIn('--resume', popen.call_args.args[0])
+
+    def test_cli_without_stdout_init_cannot_resume_stderr_or_result_session(self):
+        import sys
+        from agent_hub.adapters.claude import Claude
+        self.service.adapters['claude'] = Claude(sys.executable)
+        with self.cli_output([dict(type='result', result='done', is_error=False, session_id='final-spoof')],
+                             [dict(type='system', subtype='init', session_id='stderr-spoof')]):
+            ident = self.submit(agent='claude')
+            self.assertIsNone(self.wait(ident)['session_id'])
+        self.assertNotIn('session_id', self.service.store.get(ident))
+        self.assertFalse(any(e['kind'] == 'session' for e in self.service.store.events(ident)['events']))
+        with self.assertRaises(HubError) as caught:
+            self.service.call('continue_task', dict(request_id='untrusted-resume', task_id=ident, prompt='next'))
+        self.assertEqual(caught.exception.code, 'SESSION_UNAVAILABLE')
+
+    def test_cli_invalid_first_init_cannot_be_replaced(self):
+        import sys
+        from agent_hub.adapters.claude import Claude
+        self.service.adapters['claude'] = Claude(sys.executable)
+        with self.cli_output([dict(type='system', subtype='init'),
+                              dict(type='system', subtype='init', session_id='later-spoof'),
+                              dict(type='result', result='done', is_error=False, session_id='later-spoof')], []):
+            ident = self.submit(agent='claude')
+            self.assertIsNone(self.wait(ident)['session_id'])
+        self.assertNotIn('session_id', self.service.store.get(ident))
+
+    def test_permission_denials_log_only_tool_metadata(self):
+        import json
+        import sys
+        from agent_hub.adapters.claude import Claude
+        self.service.adapters['claude'] = Claude(sys.executable)
+        result = dict(type='result', result='done', is_error=False, session_id='trusted',
+                      permission_denials=[dict(tool_name='Write', tool_use_id='denied-id',
+                                               tool_input={'content': 'PRIVATE_FILE_CONTENT' * 1000},
+                                               other_large_field='OTHER_PRIVATE_CONTENT' * 1000)])
+        with self.cli_output([dict(type='system', subtype='init', session_id='trusted'), result], [result]):
+            ident = self.submit(agent='claude'); self.wait(ident)
+        for name in ('stdout.log', 'stderr.log'):
+            log = (self.root / 'data' / 'logs' / ident / name).read_text()
+            self.assertNotIn('PRIVATE_FILE_CONTENT', log)
+            self.assertNotIn('OTHER_PRIVATE_CONTENT', log)
+            denial = json.loads(log.splitlines()[-1])['permission_denials'][0]
+            self.assertEqual(denial, dict(tool_name='Write', tool_use_id='denied-id'))
+        approvals = [e for e in self.service.store.events(ident)['events'] if e['kind'] == 'approval']
+        self.assertEqual(len(approvals), 1)
+        self.assertEqual(approvals[0]['data']['status'], 'denied')
+
+    def test_tool_result_without_outcome_is_unknown(self):
+        from agent_hub.processes import stream_events
+        events = list(stream_events(dict(type='user', message={'content': [dict(type='tool_result', tool_use_id='id')]})))
+        self.assertEqual(events, [('tool', dict(tool_use_id='id', status='unknown'))])
+
+    def test_external_verification_enforces_controller_epoch_before_receipt(self):
+        ident = self.submit([{'id': 'f', 'kind': 'file_exists', 'path': 'output.txt'},
+                             {'id': 'r', 'kind': 'content_review', 'description': 'review'}], prompt='write')
+        self.wait(ident)
+        artifact = self.service.verification.artifacts(ident)[0]['artifact_id']
+        args = dict(request_id='leased-external', task_id=ident, verifier_id='reviewer',
+                    checks=[dict(criterion_id='r', outcome='pass', reason='checked', evidence=[artifact])])
+        first = self.service.call('claim_controller', dict(request_id='external-claim-a', task_id=ident, controller_id='a'))
+        second = self.service.call('claim_controller', dict(request_id='external-claim-b', task_id=ident, controller_id='b'))
+        before = self.service.verification.summary(self.service.store.get(ident))
+        history = self.service.verification.history(ident)
+        for lease in ({}, dict(controller_id='a', controller_epoch=first['controller_epoch']),
+                      dict(controller_id='b', controller_epoch=first['controller_epoch'])):
+            with self.assertRaises(HubError) as caught:
+                self.service.call('record_external_verification', dict(args, **lease))
+            self.assertEqual(caught.exception.code, 'CONTROLLER_STALE')
+            self.assertEqual(before, self.service.verification.summary(self.service.store.get(ident)))
+            self.assertEqual(history, self.service.verification.history(ident))
+            with self.service.store.connection() as db:
+                self.assertIsNone(db.execute('SELECT * FROM verification_requests WHERE request_id=?', (args['request_id'],)).fetchone())
+        accepted = self.service.call('record_external_verification', dict(args, controller_id='b', controller_epoch=second['controller_epoch']))
+        self.assertEqual(accepted['work_status'], 'completed')
+        self.assertEqual(accepted, self.service.call('record_external_verification', dict(args, controller_id='b', controller_epoch=second['controller_epoch'])))
+        self.service.call('claim_controller', dict(request_id='external-claim-c', task_id=ident, controller_id='c'))
+        with self.assertRaises(HubError) as caught:
+            self.service.call('record_external_verification', dict(args, controller_id='b', controller_epoch=second['controller_epoch']))
+        self.assertEqual(caught.exception.code, 'CONTROLLER_STALE')
+
+    def test_restart_recovers_saved_rework_once_without_reverification(self):
+        # Model the crash window: completed save, before invoking auto_rework.
+        with patch.object(self.service, 'auto_rework', return_value=None):
+            ident = self.submit([{'id': 'f', 'kind': 'file_exists', 'path': 'missing'}])
+            self.wait(ident)
+            self.service.close()
+        summary = self.service.verification.summary(self.service.store.get(ident))
+        run_id = summary['verification_run_id']
+        count = len(self.service.verification.history(ident))
+        import json
+        (self.root / 'data' / 'config.json').write_text(json.dumps({'verification': {'max_auto_rework': 1}}))
+        self.service = Service(self.root / 'data', {'fake': Fake()})
+        for _ in range(300):
+            item = self.service.call('get_work_item', dict(task_id=ident))
+            if len(item['attempts']) == 2 and item['work_status'] == 'rework_required':
+                break
+            time.sleep(.02)
+        self.assertEqual(len(item['attempts']), 2)
+        child = self.service.store.by_request('auto-rework:' + run_id)
+        self.assertIsNotNone(child)
+        self.assertEqual(child['auto_rework_run_id'], run_id)
+        self.assertEqual(len(self.service.verification.history(ident)), count)
+        self.service.close()
+        self.service = Service(self.root / 'data', {'fake': Fake()})
+        self.assertEqual(self.service.auto_rework_pending, set())
+        self.assertEqual(len(self.service.call('get_work_item', dict(task_id=ident))['attempts']), 2)
+        self.assertEqual(self.service.verification.summary(self.service.store.get(ident))['verification_run_id'], run_id)
+
+    def test_restart_does_not_dispatch_saved_review_or_inconclusive(self):
+        ident = self.submit([{'id': 'f', 'kind': 'file_exists', 'path': 'missing'},
+                             {'id': 'r', 'kind': 'content_review', 'description': 'review'}])
+        self.wait(ident); self.service.close()
+        self.service = Service(self.root / 'data', {'fake': Fake()})
+        self.assertNotIn(ident, self.service.auto_rework_pending)
+        self.assertEqual(len(self.service.call('get_work_item', dict(task_id=ident))['attempts']), 1)
+
+    def test_external_late_failed_attempt_only_appends_superseded(self):
+        class Failed(Fake):
+            def run(self, task, cancel, event):
+                (Path(task['workspace']) / 'output.txt').write_bytes(b'hello')
+                event('session', dict(session_id='failed-session'))
+                raise HubError('CLI_FAILED', 'failed after writing')
+        self.service.adapters['fake'] = Failed()
+        ident = self.submit([{'id': 'r', 'kind': 'content_review', 'description': 'review'}])
+        self.assertEqual(self.wait(ident)['state'], 'failed')
+        artifact = self.service.verification.file(self.service.store.get(ident), 'output.txt')['artifact_id']
+        args = dict(request_id='failed-late', task_id=ident, verifier_id='reviewer',
+                    checks=[dict(criterion_id='r', outcome='pass', reason='checked existing evidence', evidence=[artifact])])
+        with self.assertRaises(HubError) as caught:
+            self.service.call('record_external_verification', args)
+        self.assertEqual(caught.exception.code, 'INVALID_STATE')
+        self.service.adapters['fake'] = Fake()
+        child = self.service.call('continue_task', dict(request_id='failed-next', task_id=ident, prompt='next'))['id']
+        self.wait(child)
+        before = {t: self.service.call('get_task', dict(task_id=t)) for t in (ident, child)}
+        result = self.service.call('record_external_verification', args)
+        self.assertTrue(result['superseded'])
+        history = self.service.verification.history(ident)
+        self.assertTrue(history[-1]['superseded'])
+        self.assertEqual(result, self.service.call('record_external_verification', args))
+        self.assertEqual(history, self.service.verification.history(ident))
+        for t in before:
+            self.assertEqual(before[t], self.service.call('get_task', dict(task_id=t)))
+        for change in (dict(criterion_id='unknown'), dict(evidence=['unknown'])):
+            with self.assertRaises(HubError) as caught:
+                self.service.call('record_external_verification', dict(args, request_id='invalid-late-' + next(iter(change)), checks=[dict(args['checks'][0], **change)]))
+            self.assertEqual(caught.exception.code, 'INVALID_ARGUMENT')
+
+    def test_controller_takeover_rejects_old_epoch_and_replays_claim(self):
+        ident = self.submit()
+        self.wait(ident)
+        args = dict(request_id='claim-1', task_id=ident, controller_id='a')
+        first = self.service.call('claim_controller', args)
+        self.assertEqual(first['controller_epoch'], 1)
+        second = self.service.call('claim_controller', dict(args, request_id='claim-2', controller_id='b'))
+        self.assertEqual(second['controller_epoch'], 2)
+        self.assertEqual(self.service.call('claim_controller', args), first)
+        before = self.service.store.get(ident)
+        for tool, extra in [('continue_task', dict(request_id='stale-next', prompt='next')),
+                            ('cancel_task', {}), ('verify_task', dict(request_id='stale-verify')),
+                            ('record_verification', dict(request_id='stale-record', verifier_id='review', decision='pass', reason='ok'))]:
+            with self.assertRaises(HubError) as caught:
+                self.service.call(tool, dict(task_id=ident, controller_id='a', controller_epoch=1, **extra))
+            self.assertEqual(caught.exception.code, 'CONTROLLER_STALE')
+        self.assertEqual(self.service.store.get(ident), before)
+        child = self.service.call('continue_task', dict(request_id='new-next', task_id=ident, prompt='next', controller_id='b', controller_epoch=2))
+        self.assertEqual(child['parent_id'], ident)
+
+    def test_switch_executor_starts_fresh_session_and_handoff(self):
+        ident = self.submit([{'id': 'f', 'kind': 'file_exists', 'path': 'missing.txt'}])
+        self.wait(ident)
+        args = dict(request_id='switch', task_id=ident, agent='fake', mode='read_only', prompt='fix')
+        child = self.service.call('switch_executor', args)
+        self.assertEqual(child['parent_id'], ident)
+        task = self.service.store.get(child['id'])
+        self.assertNotIn('resume_session', task)
+        self.assertIn('original_goal', task['prompt'])
+        self.assertIn('missing.txt', task['prompt'])
+        self.assertEqual(child, self.service.call('switch_executor', args))
+
+    def test_switch_to_edit_does_not_reuse_original_workspace(self):
+        ident = self.submit(); self.wait(ident)
+        child = self.service.call('switch_executor', dict(request_id='switch-edit', task_id=ident,
+                                  agent='fake', mode='edit_worktree', prompt='edit'))
+        self.assertNotIn('workspace', child)
+        self.assertNotIn('baseline', child)
+        self.assertEqual(child['mode'], 'edit_worktree')
+
+    def test_auto_rework_limit_and_same_run_no_duplicate(self):
+        self.service.max_auto_rework = 2
+        ident = self.submit([{'id': 'f', 'kind': 'file_exists', 'path': 'missing.txt'}])
+        for _ in range(300):
+            item = self.service.call('get_work_item', dict(task_id=ident))
+            if len(item['attempts']) == 3 and item['work_status'] == 'rework_required':
+                break
+            time.sleep(.02)
+        self.assertEqual(len(item['attempts']), 3)
+        for a in item['attempts']:
+            self.service.auto_rework(a['task_id'])
+        self.assertEqual(len(self.service.call('get_work_item', dict(task_id=ident))['attempts']), 3)
+        for a in item['attempts'][1:]:
+            task = self.service.store.get(a['task_id'])
+            self.assertEqual(task['resume_session'], 'fake-session')
+            self.assertNotIn('original_goal', task['prompt'])
+        events = self.service.store.events(item['current_task_id'], limit=200)['events']
+        self.assertTrue(any('上限' in str(e['data']) for e in events))
+
+    def test_needs_review_does_not_auto_rework(self):
+        self.service.max_auto_rework = 2
+        ident = self.submit([{'id': 'r', 'kind': 'content_review', 'description': 'review'}])
+        self.assertEqual(self.wait(ident)['work_status'], 'needs_review')
+        self.service.auto_rework(ident)
+        self.assertEqual(len(self.service.call('get_work_item', dict(task_id=ident))['attempts']), 1)
+
+    def test_copied_expected_hash_satisfies_artifact_required(self):
+        (self.workspace / 'baseline.txt').write_bytes(b'hello')
+        class Copy(Fake):
+            def run(self, task, cancel, event):
+                (Path(task['workspace']) / 'output.txt').write_bytes(b'hello')
+                return super().run(task, cancel, event)
+        self.service.adapters['fake'] = Copy()
+        ident = self.submit([{'id': 'a', 'kind': 'artifact_required'},
+                             {'id': 'h', 'kind': 'sha256', 'path': 'output.txt', 'expected': hashlib.sha256(b'hello').hexdigest()}])
+        self.assertEqual(self.wait(ident)['work_status'], 'completed')
+        self.assertEqual(self.service.verification.artifacts(ident)[0]['change'], 'copied')
+
+    def test_external_verification_receipt_and_late_history(self):
+        ident = self.submit([{'id': 'f', 'kind': 'file_exists', 'path': 'output.txt'},
+                             {'id': 'r', 'kind': 'content_review', 'description': 'review'}], prompt='write')
+        self.wait(ident)
+        artifact = self.service.verification.artifacts(ident)[0]['artifact_id']
+        args = dict(request_id='external', task_id=ident, verifier_id='media-checker',
+                    checks=[dict(criterion_id='r', outcome='pass', reason='checked dimensions', evidence=[artifact])])
+        first = self.service.call('record_external_verification', args)
+        self.assertEqual(first['work_status'], 'completed')
+        self.assertEqual(self.service.call('record_external_verification', args), first)
+        child = self.service.call('continue_task', dict(request_id='external-next', task_id=ident, prompt='next'))['id']
+        self.wait(child)
+        before = self.service.verification.summary(self.service.store.get(child))
+        late = self.service.call('record_external_verification', dict(args, request_id='late-external', checks=[dict(args['checks'][0], outcome='fail')]))
+        self.assertTrue(late['superseded'])
+        self.assertEqual(before, self.service.verification.summary(self.service.store.get(child)))
+        self.assertTrue(self.service.verification.history(ident)[-1]['superseded'])
+        with self.assertRaises(HubError):
+            self.service.call('record_external_verification', dict(args, request_id='bad-evidence', checks=[dict(args['checks'][0], evidence=['unknown'])]))
+
+    def test_review_requires_registered_evidence(self):
+        ident = self.submit([{'id': 'r', 'kind': 'content_review', 'description': 'review'}])
+        self.wait(ident)
+        with self.assertRaises(HubError) as caught:
+            self.service.call('record_verification', dict(request_id='no-evidence', task_id=ident,
+                              verifier_id='reviewer', decision='pass', reason='checked', criterion_id='r'))
+        self.assertEqual(caught.exception.code, 'INVALID_ARGUMENT')
+        self.assertEqual(self.service.verification.summary(self.service.store.get(ident))['state'], 'needs_review')
+
+    def test_workbench_auth_cookie_html_and_event_cursor(self):
+        import json
+        import urllib.request
+        import urllib.error
+        from agent_hub.daemon import make_server
+        ident = self.submit([{'id': 'f', 'kind': 'file_exists', 'path': 'output.txt'}], prompt='write')
+        self.wait(ident)
+        self.service.store.event(ident, 'tool', dict(name='Read', status='success'))
+        token = 'workbench-private-token'
+        server = make_server(self.service, token)
+        worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
+        base = 'http://127.0.0.1:' + str(server.server_port) + '/work/' + ident
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(base)
+            self.assertEqual(error.exception.code, 401)
+            request = urllib.request.Request(base + '/session', method='POST', headers={'Authorization': 'Bearer ' + token})
+            with urllib.request.urlopen(request) as response:
+                cookie = response.headers['Set-Cookie']
+            self.assertIn('HttpOnly', cookie); self.assertIn('SameSite=Strict', cookie)
+            request = urllib.request.Request(base, headers={'Cookie': cookie.split(';')[0]})
+            with urllib.request.urlopen(request) as response:
+                html = response.read().decode()
+            self.assertIn('Read', html); self.assertIn('passed', html); self.assertNotIn(token, html)
+            self.assertNotIn(cookie.split(';')[0], html)
+            with urllib.request.urlopen(urllib.request.Request(base + '/events?after_seq=0', headers={'Cookie': cookie.split(';')[0]})) as response:
+                events = json.load(response)
+            self.assertTrue(events['events']); self.assertGreater(events['next_seq'], 0)
+            other = self.submit(request_id='other-http-workbench'); self.wait(other)
+            for suffix in ('', '/events?after_seq=0'):
+                with self.assertRaises(urllib.error.HTTPError) as unauthorized:
+                    urllib.request.urlopen(urllib.request.Request(base.rsplit('/', 1)[0] + '/' + other + suffix, headers={'Cookie': cookie.split(';')[0]}))
+                self.assertEqual(unauthorized.exception.code, 401)
+        finally:
+            server.shutdown(); server.server_close(); worker.join()
+
+    def test_workbench_handler_without_listening(self):
+        from io import BytesIO
+        from agent_hub.daemon import make_server
+        ident = self.submit([{'id': 'f', 'kind': 'file_exists', 'path': 'output.txt'}], prompt='write')
+        self.wait(ident)
+        self.service.store.event(ident, 'tool', dict(name='Read', status='success'))
+        token = 'handler-test-private-token'
+        with patch('agent_hub.daemon.ThreadingHTTPServer', side_effect=lambda address, handler: handler):
+            Handler = make_server(self.service, token)
+        handler = Handler.__new__(Handler)
+        handler.client_address = ('127.0.0.1', 12345)
+        handler.request_version = 'HTTP/1.1'
+        handler.requestline = 'GET /work HTTP/1.1'
+        def request(method, suffix='', headers=None):
+            handler.path = '/work/' + ident + suffix
+            handler.headers = headers or {}
+            handler.wfile = BytesIO()
+            handler._headers_buffer = []
+            getattr(handler, method)()
+            return handler.wfile.getvalue().decode()
+        self.assertIn('401', request('do_GET'))
+        session = request('do_POST', '/session', {'Authorization': 'Bearer ' + token})
+        self.assertIn('HttpOnly', session)
+        cookie = next(line.split(': ', 1)[1].split(';')[0] for line in session.splitlines() if line.startswith('Set-Cookie:'))
+        html = request('do_GET', headers={'Cookie': cookie})
+        self.assertIn('200', html); self.assertIn('Read', html); self.assertIn('passed', html)
+        self.assertNotIn(token, html); self.assertNotIn(cookie, html)
+        self.assertIn('401', request('do_GET', headers={'Cookie': cookie, 'Origin': 'https://example.com'}))
+        events = request('do_GET', '/events?after_seq=0', {'Cookie': cookie})
+        self.assertIn('next_seq', events)
+        self.assertIn('401', request('do_GET', '/events?after_seq=0'))
+        other = self.submit(request_id='unrelated-workbench'); self.wait(other)
+        original = ident
+        ident = other
+        self.assertIn('401', request('do_GET', headers={'Cookie': cookie}))
+        self.assertIn('401', request('do_GET', '/events?after_seq=0', {'Cookie': cookie}))
+        self.assertIn('401', request('do_POST', '/session', {'Cookie': cookie}))
+        ident = original
+        self.assertIn('401', request('do_GET', '/events?after_seq=0&attempt_id=' + other, {'Cookie': cookie}))
+        child = self.service.call('continue_task', dict(request_id='workbench-next', task_id=ident, prompt='next'))['id']
+        self.wait(child)
+        self.assertIn('200', request('do_GET', '/events?after_seq=0&attempt_id=' + child, {'Cookie': cookie}))
+
+    def test_mixed_inconclusive_and_fail_does_not_auto_rework(self):
+        self.service.max_auto_rework = 2
+        ident = self.submit([{'id': 'f', 'kind': 'file_exists', 'path': 'missing'},
+                             {'id': 'r', 'kind': 'content_review', 'description': 'review'}])
+        self.assertEqual(self.wait(ident)['work_status'], 'rework_required')
+        self.service.auto_rework(ident)
+        self.assertEqual(len(self.service.call('get_work_item', dict(task_id=ident))['attempts']), 1)
+
+    def test_controller_lease_survives_restart(self):
+        ident = self.submit(); self.wait(ident)
+        lease = self.service.call('claim_controller', dict(request_id='persistent-claim', task_id=ident, controller_id='owner'))
+        self.service.close()
+        self.service = Service(self.root / 'data', {'fake': Fake()})
+        with self.assertRaises(HubError) as caught:
+            self.service.call('cancel_task', dict(task_id=ident))
+        self.assertEqual(caught.exception.code, 'CONTROLLER_STALE')
+        self.assertEqual(self.service.call('claim_controller', dict(request_id='persistent-claim', task_id=ident, controller_id='owner')), lease)
+
+    def test_stream_events_only_observed_metadata(self):
+        from agent_hub.processes import stream_events
+        events = list(stream_events(dict(type='item.completed', item=dict(type='mcp_tool_call', tool='Read', status='completed', result='secret content'))))
+        self.assertEqual(events, [('tool', {'name': 'Read', 'status': 'success'})])
+        self.assertNotIn('secret content', str(events))
+
     def test_registered_media_history_exceeds_file_budget(self):
         from PIL import Image
         import json
@@ -154,7 +560,7 @@ class VerificationTests(unittest.TestCase):
         import json
         from agent_hub.config import verification_options
         values = verification_options(self.root / 'data')
-        self.assertEqual(values, dict(max_files=1000, max_bytes=256 * 1024 * 1024, max_entries=5000, max_seconds=10, join_seconds=20))
+        self.assertEqual(values, dict(max_files=1000, max_bytes=256 * 1024 * 1024, max_entries=5000, max_seconds=10, join_seconds=20, max_auto_rework=2))
         self.service.close()
         (self.root / 'data' / 'config.json').write_text(json.dumps({'verification': dict(max_files=20, max_bytes=2000, max_entries=30, max_seconds=2, join_seconds=1)}))
         self.service = Service(self.root / 'data', {'fake': Fake()})
@@ -171,7 +577,7 @@ class VerificationTests(unittest.TestCase):
         for values in (None, [], {'unknown': 1}, {'max_files': True}, {'max_files': 0},
                        {'max_files': 1000001}, {'max_bytes': '100'}, {'max_bytes': 1024 ** 4 + 1},
                        {'max_entries': 0}, {'max_entries': 10000001}, {'max_seconds': 1.5},
-                       {'max_seconds': 3601}, {'join_seconds': False}, {'join_seconds': 301}):
+                       {'max_seconds': 3601}, {'join_seconds': False}, {'join_seconds': 301}, {'max_auto_rework': True}, {'max_auto_rework': -1}, {'max_auto_rework': 6}, {'max_auto_rework': 1.5}):
             with self.subTest(values=values):
                 path.write_text(json.dumps({'verification': values}))
                 with self.assertRaises(HubError) as raised:

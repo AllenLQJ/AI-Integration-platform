@@ -33,7 +33,7 @@ def verification_options(root):
     values = config.get('verification', {})
     ranges = {'max_files': (1000, 1, 1000000), 'max_bytes': (256 * 1024 * 1024, 1, 1024 ** 4),
               'max_entries': (5000, 1, 10000000), 'max_seconds': (10, 1, 3600),
-              'join_seconds': (20, 1, 300)}
+              'join_seconds': (20, 1, 300), 'max_auto_rework': (2, 0, 5)}
     if not isinstance(values, dict) or set(values) - set(ranges):
         raise HubError('INVALID_CONFIG', 'verification 必须为对象，且仅含支持的预算字段')
     result = {}

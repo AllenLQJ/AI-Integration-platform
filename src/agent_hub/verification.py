@@ -18,6 +18,7 @@ def safe(value):
     if isinstance(value, list):
         return [safe(v) for v in value]
     if isinstance(value, str):
+        value = re.sub(r'[A-Za-z][A-Za-z0-9+.-]*://[^\s/<>]+@[^\s<>]+', '[URL]', value)
         return re.sub(r'https?://[^\s<>"\']+', '[URL]', value)
     return value
 
@@ -77,6 +78,7 @@ class Verification:
         self.use_dir_fd = os.name == 'posix'
         with store.connection() as db:
             db.executescript('''
+                CREATE TABLE IF NOT EXISTS controllers (root_task_id TEXT PRIMARY KEY, controller_id TEXT NOT NULL, epoch INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS verifications (
                     task_id TEXT PRIMARY KEY, state TEXT NOT NULL, data TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS verification_inputs (
@@ -165,6 +167,8 @@ class Verification:
             if old:
                 item = dict(json.loads(old['data']), **item)
             db.execute('INSERT INTO artifact_index VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data', (ident, task['id'], json.dumps(item)))
+        if not old:
+            self.store.event(task['id'], 'artifact', safe(self.store.safe(item)))
         return item
 
     def read_file(self, root, name, limit=None):
@@ -380,7 +384,7 @@ class Verification:
     def check(self, task, criterion):
         kind = criterion['kind']
         if kind == 'content_review':
-            return 'inconclusive', '第一阶段没有审核端，请人工审核：' + criterion['description'], {}
+            return 'inconclusive', '没有配置审核端，请人工审核：' + criterion['description'], {}
         if kind in {'file_exists', 'sha256'}:
             evidence = self.file(task, criterion['path'])
             if kind == 'sha256' and criterion.get('expected') and evidence['sha256'] != criterion['expected'].lower():
@@ -429,7 +433,7 @@ class Verification:
                 if self.owned_media(task['id'], path):
                     self.index(task, 'media', row['id'], dict(item, change='reused'))
                     continue
-                if change in {'created', 'changed'}:
+                if change in {'created', 'changed'} or change == 'copied' and self.expected_artifact(task, actual['sha256'], name):
                     data = registered
                     if data['sha256'] != actual['sha256']:
                         raise HubError('VERIFICATION_UNCERTAIN', '媒体在检查期间改变，请人工核对')
@@ -448,7 +452,7 @@ class Verification:
             try:
                 actual = self.read_file(task.get('workspace') or task['cwd'], name, self.max_file_bytes)
                 change = self.change(snapshot['files'].get(name), actual, baseline)
-                if change in {'created', 'changed'}:
+                if change in {'created', 'changed'} or change == 'copied' and self.expected_artifact(task, actual['sha256'], name):
                     item = self.file(task, name, actual, change)
                     if item['sha256'] != actual['sha256']:
                         raise HubError('VERIFICATION_UNCERTAIN', '产物在检查期间改变，请人工核对')
@@ -484,7 +488,7 @@ class Verification:
             if request_id:
                 db.execute('UPDATE verification_requests SET response=? WHERE request_id=?', (json.dumps(response), request_id))
             db.execute('INSERT INTO events(task_id,kind,data,timestamp) VALUES (?,?,?,?)',
-                       (task_id, 'verification', json.dumps(dict(state=state, verification_run_id=run_id)), time.time()))
+                       (task_id, 'verification', json.dumps(safe(self.store.safe(dict(state=state, verification_run_id=run_id, checks=checks)))), time.time()))
             self.checkpoint()
         with self.lock:
             self.pending_ids.discard(task_id)
@@ -633,32 +637,120 @@ class Verification:
                 events = [dict(seq=r['seq'], kind=r['kind'], data=json.loads(r['data']), timestamp=r['timestamp'])
                           for r in db.execute('SELECT * FROM events WHERE task_id=? ORDER BY seq DESC LIMIT 20', (t['id'],))][::-1]
             attempts.append(dict(task_id=t['id'], parent_id=t.get('parent_id'), attempt=depth, state=t['state'],
-                                 session_id=t.get('session_id'), workspace=t.get('workspace'),
+                                 session_id=t.get('session_id'), workspace=t.get('workspace'), criteria=(t.get('acceptance') or {}).get('criteria', []),
                                  **self.fields(t), checks=self.history(t['id']), artifacts=self.artifacts(t['id']), events=events))
         parents = {a['parent_id'] for a in attempts}
         leaves = [a for a in attempts if a['task_id'] not in parents]
         current = leaves[-1] if task.get('acceptance') else attempts[-1]
         status = current['work_status']
         actions = ['人工审核并调用 record_verification'] if status == 'needs_review' else ['调用 continue_task 续接返工'] if status == 'rework_required' else []
-        return safe(dict(root_task_id=root, current_task_id=current['task_id'], work_status=status, attempts=attempts, pending_actions=actions))
+        return safe(dict(controller=self.controller(root), root_task_id=root, current_task_id=current['task_id'], work_status=status, attempts=attempts, pending_actions=actions))
 
-    def record(self, request_id, task_id, verifier_id, decision, reason, criterion_id=None):
+    def expected_artifact(self, task, digest, path):
+        return any(c['kind'] == 'sha256' and c.get('expected', '').lower() == digest
+                   and c['path'] == path for c in task['acceptance']['criteria'])
+
+    def root_id(self, task_id):
+        task = self.store.get(task_id)
+        while task.get('parent_id'):
+            task = self.store.get(task['parent_id'])
+        return task['id']
+
+    def controller(self, root):
+        with self.store.connection() as db:
+            row = db.execute('SELECT controller_id,epoch FROM controllers WHERE root_task_id=?', (root,)).fetchone()
+        return dict(row) if row else None
+
+    def check_controller(self, task_id, controller_id=None, controller_epoch=None):
+        lease = self.controller(self.root_id(task_id))
+        if lease and (controller_id != lease['controller_id'] or type(controller_epoch) is not int
+                      or controller_epoch != lease['epoch']):
+            raise HubError('CONTROLLER_STALE', '总控租约已失效，请重新接管')
+
+    def claim(self, request_id, task_id, controller_id):
+        if not isinstance(controller_id, str) or not controller_id.strip() or len(controller_id) > 200:
+            raise HubError('INVALID_ARGUMENT', 'controller_id 需要非空字符串，最多 200 字符')
+        root = self.root_id(task_id)
+        def apply():
+            with self.store.connection() as db:
+                db.execute('BEGIN IMMEDIATE')
+                row = db.execute('SELECT epoch FROM controllers WHERE root_task_id=?', (root,)).fetchone()
+                epoch = row['epoch'] + 1 if row else 1
+                db.execute('INSERT INTO controllers VALUES (?,?,?) ON CONFLICT(root_task_id) DO UPDATE SET controller_id=excluded.controller_id,epoch=excluded.epoch', (root, controller_id, epoch))
+                response = dict(root_task_id=root, controller_id=controller_id, controller_epoch=epoch)
+                db.execute('UPDATE verification_requests SET response=? WHERE request_id=?', (json.dumps(response), request_id))
+            return response
+        return self.request(request_id, dict(tool='claim_controller', task_id=task_id, controller_id=controller_id), apply)
+
+    def external(self, request_id, task_id, verifier_id, checks):
+        if (not isinstance(verifier_id, str) or not 0 < len(verifier_id) <= 200
+                or not isinstance(checks, list) or not 1 <= len(checks) <= 100):
+            raise HubError('INVALID_ARGUMENT', '外部验收参数不正确')
+        def apply():
+            task = self.store.get(task_id)
+            criteria = (task.get('acceptance') or {}).get('criteria', [])
+            ids = {c['id'] for c in criteria}
+            artifacts = {a['artifact_id'] for a in self.artifacts(task_id)}
+            seen = set()
+            for c in checks:
+                if (not isinstance(c, dict) or set(c) != {'criterion_id', 'outcome', 'reason', 'evidence'}
+                        or not isinstance(c['criterion_id'], str) or c['criterion_id'] not in ids or c['criterion_id'] in seen
+                        or not isinstance(c['outcome'], str) or c['outcome'] not in {'pass', 'fail', 'inconclusive'}
+                        or not isinstance(c['reason'], str) or not 0 < len(c['reason']) <= 10000
+                        or not isinstance(c['evidence'], list) or not c['evidence']
+                        or any(not isinstance(a, str) or a not in artifacts for a in c['evidence'])):
+                    raise HubError('INVALID_ARGUMENT', '检查必须引用已登记产物，条件、结论或原因不正确')
+                seen.add(c['criterion_id'])
+            superseded = self.work_item(task_id)['current_task_id'] != task_id
+            run_id = uuid.uuid4().hex
+            incoming = [dict(c, evidence={'artifacts': [a for a in self.artifacts(task_id) if a['artifact_id'] in c['evidence']]},
+                             verifier={'name': verifier_id, 'version': 'external-1'}, checked_at=time.time(),
+                             verification_run_id=run_id, superseded=superseded) for c in checks]
+            if superseded:
+                response = dict(task_id=task_id, superseded=True, **self.fields(task))
+                with self.store.connection() as db:
+                    db.execute('BEGIN IMMEDIATE')
+                    for c in incoming:
+                        db.execute('INSERT INTO verification_checks(task_id,data) VALUES (?,?)', (task_id, json.dumps(safe(self.store.safe(c)))))
+                    db.execute('UPDATE verification_requests SET response=? WHERE request_id=?', (json.dumps(response), request_id))
+                return response
+            if task['state'] != 'succeeded' or not criteria:
+                raise HubError('INVALID_STATE', '仅成功且请求验收的尝试可写入检查')
+            old = {c['criterion_id']: c for c in self.summary(task).get('checks', [])}
+            old.update({c['criterion_id']: c for c in incoming})
+            for criterion in criteria:
+                old.setdefault(criterion['id'], dict(criterion_id=criterion['id'], outcome='inconclusive', reason='缺少检查结果', evidence={}))
+            merged = list(old.values())
+            return self.save(task_id, self.decision(criteria, merged), merged, run_id, request_id,
+                             history=incoming, extra=dict(task_id=task_id, superseded=False))
+        def locked():
+            with self.task_lock(task_id):
+                return apply()
+        return self.request(request_id, dict(tool='record_external_verification', task_id=task_id,
+                            verifier_id=verifier_id, checks=checks), locked)
+
+    def record(self, request_id, task_id, verifier_id, decision, reason, criterion_id=None, artifact_id=None):
         if (not isinstance(verifier_id, str) or not 0 < len(verifier_id) <= 200
                 or not isinstance(decision, str) or decision not in {'pass', 'fail'}
                 or not isinstance(reason, str) or not 0 < len(reason) <= 10000
-                or (criterion_id is not None and (not isinstance(criterion_id, str) or not 0 < len(criterion_id) <= 200))):
+                or (criterion_id is not None and (not isinstance(criterion_id, str) or not 0 < len(criterion_id) <= 200))
+                or (artifact_id is not None and (not isinstance(artifact_id, str) or not 0 < len(artifact_id) <= 200))):
             raise HubError('INVALID_ARGUMENT', '人工裁决参数不正确')
         def apply():
             task = self.store.get(task_id)
             criteria = (task.get('acceptance') or {}).get('criteria', [])
             if criterion_id is not None and criterion_id not in {c['id'] for c in criteria}:
                 raise HubError('INVALID_ARGUMENT', 'criterion_id 不存在')
+            review_ids = {c['id'] for c in criteria if c['kind'] == 'content_review'}
+            targets = {criterion_id} if criterion_id else {c['criterion_id'] for c in self.summary(task).get('checks', []) if c['outcome'] == 'inconclusive'}
+            if targets & review_ids and artifact_id not in {a['artifact_id'] for a in self.artifacts(task_id)}:
+                raise HubError('INVALID_ARGUMENT', 'content_review 必须引用已登记 evidence 的 artifact_id')
             superseded = self.work_item(task_id)['current_task_id'] != task_id
             summary = self.summary(task)
             if not superseded and summary['state'] != 'needs_review':
                 raise HubError('INVALID_STATE', '只有 needs_review 可以人工裁决')
             run_id = uuid.uuid4().hex
-            check = dict(criterion_id=criterion_id, outcome=decision, reason=reason, evidence={},
+            check = dict(criterion_id=criterion_id, outcome=decision, reason=reason, evidence={'artifact_id': artifact_id} if artifact_id else {},
                          verifier={'name': verifier_id, 'version': 'human-1'}, checked_at=time.time(),
                          verification_run_id=run_id, superseded=superseded)
             if superseded:
@@ -670,7 +762,7 @@ class Verification:
                 checks = list(summary.get('checks', []))
                 for old in checks:
                     if (criterion_id is None and old['outcome'] == 'inconclusive') or old['criterion_id'] == criterion_id:
-                        old.update(outcome=decision, reason=reason, verifier=check['verifier'], checked_at=check['checked_at'], verification_run_id=run_id)
+                        old.update(outcome=decision, reason=reason, evidence=check['evidence'] or old.get('evidence', {}), verifier=check['verifier'], checked_at=check['checked_at'], verification_run_id=run_id)
                 state = self.decision(criteria, checks)
                 response = self.save(task_id, state, checks, run_id, request_id, history=[check],
                                      extra=dict(task_id=task_id, superseded=False))
@@ -679,7 +771,7 @@ class Verification:
             with self.task_lock(task_id):
                 return apply()
         return self.request(request_id, dict(tool='record_verification', task_id=task_id, verifier_id=verifier_id,
-                            decision=decision, reason=reason, criterion_id=criterion_id), apply_locked)
+                            decision=decision, reason=reason, criterion_id=criterion_id, **({'artifact_id': artifact_id} if artifact_id is not None else {})), apply_locked)
 
 
 def render(item):
