@@ -37,11 +37,20 @@ class Service:
         self.verification_active = {}
         self.verification_retry_at = 0
         self.auto_rework_pending = set()
+        self.auto_rework_failures = {}
+        self.auto_rework_retry_at = {}
+        from .nodes import Nodes
+        self.nodes = Nodes(self)
+        self.verification.adapters = self.adapters
         self.recover_auto_rework()
         self.thread = threading.Thread(target=self.schedule, daemon=True)
         self.thread.start()
 
     def call(self, tool, arguments):
+        if tool == 'transfer_artifact':
+            return self.nodes.transfer(**arguments)
+        if tool == 'list_nodes':
+            return self.nodes.list()
         if tool == 'wait_for_task':
             if not isinstance(arguments, dict) or set(arguments) - {'task_id', 'after_seq', 'timeout_seconds'} or 'task_id' not in arguments:
                 raise HubError('INVALID_ARGUMENT', '等待参数不正确')
@@ -88,11 +97,19 @@ class Service:
             if tool == 'get_capabilities':
                 return self.gateway.capabilities(self.adapters)
             if tool == 'get_artifact':
-                return self.gateway.artifact(**arguments)
+                if set(arguments) - {'artifact_id', 'target_host_id', 'target_node_id'}:
+                    raise HubError('INVALID_ARGUMENT', '产物查询字段不正确')
+                args = dict(arguments)
+                target_node = args.pop('target_node_id', None)
+                if target_node is not None:
+                    node = self.nodes.get(target_node)
+                    args['target_host_id'] = node['host_id']
+                    args['target_transport'] = node['transport']
+                return self.nodes.artifact(**args)
             if tool == 'list_agents':
                 return {name: adapter.diagnose() for name, adapter in self.adapters.items()}
             if tool == 'submit_task':
-                allowed = {'request_id', 'agent', 'prompt', 'cwd', 'mode', 'timeout_seconds', 'context', 'acceptance'}
+                allowed = {'request_id', 'agent', 'prompt', 'cwd', 'mode', 'timeout_seconds', 'context', 'acceptance', 'node_id'}
                 if set(arguments) - allowed:
                     raise HubError('INVALID_ARGUMENT', '不允许设置内部任务字段')
                 return self.submit(**arguments)
@@ -158,7 +175,7 @@ class Service:
         result_fields(task['state'], {})
         return result
 
-    def submit(self, request_id, agent, prompt, cwd, mode, timeout_seconds=1800, context=None, acceptance=None, **internal):
+    def submit(self, request_id, agent, prompt, cwd, mode, timeout_seconds=1800, context=None, acceptance=None, node_id=None, **internal):
         if not isinstance(request_id, str) or not request_id or len(request_id) > 200:
             raise HubError('INVALID_ARGUMENT', 'request_id 需要非空字符串，最多 200 字符')
         if not isinstance(prompt, str) or not prompt or len(prompt) > 100000:
@@ -167,6 +184,8 @@ class Service:
             raise HubError('INVALID_ARGUMENT', '期限须在 10–7200 秒内')
         spec = dict(agent=agent, prompt=prompt, cwd=str(Path(cwd).resolve()), mode=mode,
                     timeout_seconds=timeout_seconds, **internal)
+        if node_id is not None:
+            spec['node_id'] = node_id
         validate(acceptance)
         if acceptance is not None:
             spec['acceptance'] = acceptance
@@ -175,6 +194,12 @@ class Service:
             spec['context'] = context
         if self.store.by_request(request_id):
             return self.public(self.store.create(request_id, spec))
+        if node_id is not None:
+            node = self.nodes.get(node_id)
+            if mode not in node['capabilities'].get(agent, []):
+                raise HubError('NODE_UNAVAILABLE', '节点未声明对应执行器与模式')
+            if node['transport'] == 'local' and node_id != self.nodes.local_id:
+                raise HubError('NODE_UNAVAILABLE', '接收节点没有本机任务执行路由')
         if agent not in self.adapters:
             raise HubError('AGENT_UNAVAILABLE', '执行器未配置')
         adapter = self.adapters[agent]
@@ -205,6 +230,8 @@ class Service:
         workspace_metadata = ({'excluded_untracked_files': parent['excluded_untracked_files']}
                               if 'excluded_untracked_files' in parent else {})
         workspace_metadata['acceptance'] = parent.get('acceptance')
+        if parent.get('node_id'):
+            workspace_metadata['node_id'] = parent['node_id']
         if _auto_rework_run_id is not None:
             workspace_metadata['auto_rework_run_id'] = _auto_rework_run_id
         if self.store.by_request(request_id):
@@ -291,14 +318,15 @@ class Service:
             return
         for task in self.store.list({'succeeded'}):
             summary = self.verification.summary(task)
-            if not self.auto_rework_ready(task, summary):
+            if not self.auto_rework_ready(task, summary) or self.verification.remote_workspace(task):
                 continue
             if self.store.by_request('auto-rework:' + summary['verification_run_id']):
                 continue
             item = self.verification.work_item(task['id'])
             count = sum(bool(self.store.get(a['task_id']).get('auto_rework_run_id')) for a in item['attempts'])
             if item['current_task_id'] == task['id'] and count < self.max_auto_rework:
-                self.auto_rework_pending.add(task['id'])
+                with self.lock:
+                    self.auto_rework_pending.add(task['id'])
 
     def auto_rework(self, task_id):
         root = self.verification.root_id(task_id)
@@ -307,7 +335,7 @@ class Service:
             summary = self.verification.summary(task)
             checks = summary.get('checks', [])
             failed = [c for c in checks if c['outcome'] == 'fail']
-            if not self.auto_rework_ready(task, summary):
+            if not self.auto_rework_ready(task, summary) or self.verification.remote_workspace(task):
                 return
             item = self.verification.work_item(task_id)
             if item['current_task_id'] != task_id:
@@ -388,7 +416,9 @@ class Service:
         while not self.stopping.wait(.05):
             try:
                 try:
-                    pending = (self.verification.pending() + list(self.auto_rework_pending)
+                    with self.lock:
+                        rework_pending = [i for i in self.auto_rework_pending if time.monotonic() >= self.auto_rework_retry_at.get(i, 0)]
+                    pending = (self.verification.pending() + rework_pending
                                if time.monotonic() >= self.verification_retry_at else [])
                     with self.lock:
                         for ident in pending:
@@ -452,13 +482,30 @@ class Service:
                 self.stopping.wait(.2)
 
     def verify(self, task_id, rework_only=False):
+        reworking = False
         try:
+            with self.lock:
+                if rework_only and self.auto_rework_failures.get(task_id, 0) >= 3:
+                    return
             if not rework_only:
                 self.verification.run(task_id, automatic=True)
+            reworking = True
             self.auto_rework(task_id)
             with self.lock:
                 self.auto_rework_pending.discard(task_id)
+                self.auto_rework_failures.pop(task_id, None)
+                self.auto_rework_retry_at.pop(task_id, None)
         except Exception as error:
+            with self.lock:
+                if reworking:
+                    failures = self.auto_rework_failures.get(task_id, 0) + 1
+                    self.auto_rework_failures[task_id] = failures
+                    if failures >= 3:
+                        self.auto_rework_pending.discard(task_id)
+                        logging.getLogger(__name__).error('自动返工重试达到上限：%s', type(error).__name__)
+                    else:
+                        self.auto_rework_pending.add(task_id)
+                        self.auto_rework_retry_at[task_id] = time.monotonic() + 2 ** failures
             self.verification_retry_at = time.monotonic() + .2
             try:
                 self.store.event(task_id, 'verification_error', {'reason': type(error).__name__})

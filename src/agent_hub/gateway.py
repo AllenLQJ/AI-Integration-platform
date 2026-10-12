@@ -135,7 +135,7 @@ class Gateway:
             result.append(metadata)
         return result
 
-    def artifact(self, artifact_id):
+    def artifact(self, artifact_id, target_host_id=None, target_transport=None):
         with self.store.connection() as db:
             row = db.execute('SELECT data FROM media_artifacts WHERE id=?', (artifact_id,)).fetchone()
         if not row:
@@ -145,6 +145,9 @@ class Gateway:
         content = path.read_bytes()
         if len(content) != data['size_bytes'] or hashlib.sha256(content).hexdigest() != data['sha256']:
             raise HubError('ARTIFACT_EXPIRED', '附件内容已变化')
+        if target_transport not in {None, 'local'} or target_host_id is not None and target_host_id != self.host_id:
+            return {'contract_version': CONTRACT_VERSION, 'artifact': data,
+                    'transfer': {'kind': 'transfer_required', 'host_id': self.host_id}}
         return {'contract_version': CONTRACT_VERSION, 'artifact': data,
                 'transfer': {'kind': 'local_file', 'host_id': self.host_id,
                              'path': str(path), 'allowed_root': str(self.artifact_root.resolve())}}

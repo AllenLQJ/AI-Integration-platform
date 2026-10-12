@@ -105,3 +105,30 @@ def adapters(root):
             elif name == 'codex': result[name] = cls(item['executable'], item.get('env'), item.get('windows_sandbox', 'mxc'))
             else: result[name] = cls(item['executable'], item.get('env'))
     return result
+
+
+def remote_node_declaration(name, item, host):
+    """Configuration declares identity only; never probes or verifies SSH."""
+    import hashlib
+    os_platform = item.get('platform')
+    if not isinstance(os_platform, str) or os_platform not in {'darwin', 'windows', 'linux'}:
+        raise HubError('INVALID_CONFIG', 'remote 节点必须显式声明 platform 为 darwin/windows/linux')
+    return (item.get('node_id', 'ssh-' + name), os_platform,
+            item.get('host_id', 'ssh-host-' + hashlib.sha256(host.encode()).hexdigest()[:32]))
+
+
+def artifact_transfer_options(root):
+    path = Path(root) / 'config.json'
+    config = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+    values = config.get('artifact_transfer', {})
+    ranges = {'max_received_bytes': (1024 ** 3, 1, 1024 ** 4),
+              'max_received_files': (10000, 1, 1000000)}
+    if not isinstance(values, dict) or set(values) - set(ranges):
+        raise HubError('INVALID_CONFIG', 'artifact_transfer 字段不正确')
+    result = {}
+    for key, (default, low, high) in ranges.items():
+        value = values.get(key, default)
+        if type(value) is not int or not low <= value <= high:
+            raise HubError('INVALID_CONFIG', 'artifact_transfer.' + key + ' 必须为范围内整数')
+        result[key] = value
+    return result

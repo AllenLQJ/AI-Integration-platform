@@ -227,7 +227,21 @@ class Verification:
             raise HubError('ARTIFACT_NOT_FOUND', '文件不存在：' + name) from None
         return dict(sha256=digest.hexdigest(), size_bytes=size, identity=[opened.st_dev, opened.st_ino])
 
+    def remote_workspace(self, task):
+        from .adapters.remote import Remote
+        if isinstance(getattr(self, 'adapters', {}).get(task.get('agent')), Remote):
+            return True
+        if task.get('permissions', {}).get('workspace') == 'remote_machine':
+            return True
+        if task.get('node_id'):
+            with self.store.connection() as db:
+                row = db.execute('SELECT transport FROM nodes WHERE node_id=?', (task['node_id'],)).fetchone()
+            return bool(row and row['transport'] == 'ssh')
+        return False
+
     def file(self, task, name, actual=None, change=None):
+        if self.remote_workspace(task):
+            raise HubError('REMOTE_WORKSPACE_UNAVAILABLE', '远端工作区不在本机验收范围')
         actual = dict(actual) if actual is not None else self.read_file(task.get('workspace') or task['cwd'], name)
         if change is None:
             with self.store.connection() as db:
@@ -254,7 +268,7 @@ class Verification:
     def workspace_files(self, task):
         root = Path(task.get('workspace') or task['cwd']).resolve()
         data_root = Path(self.store.path).parent.resolve()
-        owned_dirs = {'logs', 'results', 'media-artifacts', 'worktrees'}
+        owned_dirs = {'logs', 'results', 'media-artifacts', 'received-artifacts', 'worktrees'}
         if any(root.is_relative_to(data_root / name) for name in {'logs', 'results'}):
             return
         directories = [root]
@@ -295,6 +309,8 @@ class Verification:
         return result
 
     def snapshot(self, task, cancel=None):
+        if self.remote_workspace(task):
+            return
         if not task.get('acceptance') or not any(c['kind'] == 'artifact_required' for c in task['acceptance']['criteria']):
             return
         self.local.cancel = cancel
@@ -383,6 +399,8 @@ class Verification:
 
     def check(self, task, criterion):
         kind = criterion['kind']
+        if kind in {'file_exists', 'sha256', 'artifact_required'} and self.remote_workspace(task):
+            return 'inconclusive', '远端工作区不在本机验收范围，未检查本机 cwd 或判定远端产物缺失', {}
         if kind == 'content_review':
             return 'inconclusive', '没有配置审核端，请人工审核：' + criterion['description'], {}
         if kind in {'file_exists', 'sha256'}:

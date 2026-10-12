@@ -113,3 +113,48 @@ record_external_verification(request_id, task_id, verifier_id, checks, controlle
 新增针对 stderr 注入、首个 init/最终结果覆盖、permission_denials 裁剪、外部租约拒绝/收据不落盘、重启补派/不重验/不重复、失败旧尝试迟到的测试；工作台 handler 与真实 HTTP 测试均补跨任务 cookie 断言。权限测试的假 Claude executor 补上模拟 init 事件，原权限与续接断言保留。
 
 本次评审修正后的实际验证：命令前设置 `AGENT_HUB_DATA_DIR=/private/tmp/phase2-review-isolated PYTHONPATH=src`。`.venv/bin/python -m unittest discover -s tests -p test_verification.py`：75 项，74 项通过，工作台真实 HTTP 测试因回环 bind 被拒绝报 1 个环境错误。`.venv/bin/python -m unittest discover -s tests -v`：235 项，12 个环境错误、1 项跳过，无断言失败；错误为 5 个 ps 受限、5 个回环 bind 受限及 2 个后台未启动/connection.json 缺失。另运行注入/会话、日志裁剪、外部租约、重启返工、迟到写入与工作台 handler 共 10 项定向测试全部通过。compileall、生成页面脚本 node --check、git diff --check 通过。本轮未改原 HTTP/ps 测试以迁就沙箱，未发起模型调用或访问共享后台；完整回归不能报告为全通过。
+
+## 第三阶段实现（2026-10-12）
+
+执行状态机、第一/二阶段验收汇总、无 acceptance 任务行为与 HubGateway 1.0 既有字段保留；传输状态独立于执行和验收，receipt 不使任务 completed，不自动生成或重发执行。
+
+### 节点与选择
+
+同一 tasks.db 增加 nodes 表，字段 node_id、platform(darwin/windows/linux)、host_id、capabilities(agent→mode 数组)、transport(local/ssh)。启动按当前配置刷新声明，本机节点只列本机适配器；kind=remote 的适配器声明 SSH 节点，仍 remote_connection_verified=false。可配置 node_id/platform/host_id，缺省按执行器名称和 SSH 别名构造不暴露主机名的标识；同 node_id 的兼容声明合并能力，身份冲突拒绝。list_nodes 在本机 RPC、MCP、SSH 可读，不发起探测。
+
+submit_task 可选 node_id，省略不改变原 spec/幂等哈希/执行器路由；指定后核对 agent 与 mode，错误为 NODE_UNAVAILABLE。SSH 任务沿用原 Remote 适配器（Hub 侧 delegate，实际远端 agent/cwd/mode 仍由已有配置固定），不上传本机 cwd。当前没有生产远端 local 执行路由，测试注入的 local 接收节点不能据此执行任务。续接继承指定节点。
+
+### 受控产物与收据
+
+get_artifact 增加 target_host_id 与 target_node_id；跨 host_id 返回 transfer_required 和逻辑元数据，移除发送端绝对路径及 allowed_root。同主机保留原媒体 local_file 契约，并支持验收索引的 artifact://ID；媒体业务继续留在现有适配器。
+
+transfer_artifact(request_id, artifact_id, target_node_id) 只开放本机 Bearer RPC/本机 CLI，未注册 MCP 或 SSH。目标接收端是服务内私有绑定，不接受 RPC 传入目录或任意路径。当前生产绑定只有本机接收端；双目录跨主机为测试注入，不是网络传输。SSH 节点无已验证传输，固定 NODE_UNVERIFIED，不调用 SSH，不返回成功。
+
+artifact_transfers 保存请求键、产物 ID、目标节点、transferring/retryable/delivered/superseded、响应。接收端按请求键派生单个文件名，写入自身 received-artifacts 根目录；读取只允许已登记产物，64 MiB 上限，POSIX 逐级 O_NOFOLLOW 打开，Windows 保留文件身份复核（仍有前阶段所述重解析点残余竞态，未实机验证）。接收端对收到字节及暂存文件分别计算 SHA-256/大小，符合登记元数据后才写 artifact_receipts：artifact_id、target_node_id、sha256、size_bytes、received_at、superseded。缺文件、哈希不符、超时不记成功 receipt；超时暂存/持久字节可能存在，但发送端不得据此标 delivered。写文件和 SQLite receipt 不是跨资源原子事务；崩溃可能留下无收据文件，重试按同一文件名覆盖，不产生第二份。接收键内容冲突拒绝。
+
+发送端请求键重放返回原响应，内容冲突 IDEMPOTENCY_CONFLICT；同键重试不生成第二个产物文件，不推进验收。根任务锁下确认当前尝试，旧尝试收据只追加历史并标 superseded，不覆盖当前产物。重启将 transferring 恢复 retryable，不把在途传输当执行成功，不自动传输或重新生成。默认单次传输确认预算 30 秒，超时可按原键重试；同步文件系统调用不能保证立即中止，但返回后仍核对期限与停止标志。
+
+### 第二阶段修正与验证范围
+
+自动返工持续非 HubError 异常按 2/4 秒退避，累计第三次失败记一次上限错误并移除待返工项，停止本进程热循环。计数是进程内重试保护，重启仍按原持久化验收 run/次数上限恢复；验收 run 本身的异常恢复规则保留。README 外部检查示例补 controller_id/controller_epoch，说明有租约必须使用 claim 返回的值。
+
+新增双临时目录测试：能力拒绝、节点声明/本机选择、跨主机取回无路径、接收哈希不符无 receipt、重复请求不写第二份、重启在途可重试、缺文件与超时、未验证 SSH、旧尝试 superseded、返工故障上限。所有跨主机/Windows 身份都是同进程模拟，未接通真实 Windows、真实 SSH、模型或多媒体审核端。真实 HTTP/进程树测试保留；沙箱限制不通过修改既有测试规避。
+
+本轮最终实跑：Python 3.12 临时虚拟环境 `/private/tmp/phase3-venv`，依赖从本机 uv 缓存离线安装；全部测试命令设置 `AGENT_HUB_DATA_DIR=/private/tmp/phase3-isolated-default PYTHONPATH=src`（单类测试另加 tests）。`python -m unittest discover -s tests -p test_verification.py`：85 项，84 项通过，1 个回环 bind PermissionError，无断言失败；`python -m unittest discover -s tests -v`：245 项，232 项通过，12 个环境错误，1 项跳过，无断言失败。12 个错误为 5 个 ps 权限错误（含同一测试两次子用例）、5 个回环 bind 权限错误、2 个隔离后台启动失败/connection.json 缺失。单独 `python -m unittest test_verification.NodeTransferTests -v`：10 项全部通过。`python -m compileall -q src tests` 与 `git diff --check` 通过。日志分别在 `/private/tmp/phase3-verification-final.log`、`/private/tmp/phase3-regression-final.log`、`/private/tmp/phase3-nodes-final.log`；这不是真实 Windows、SSH 或模型调用验收。
+
+
+### 第三阶段评审修正
+
+七项评审均核实成立。Remote 适配器（含未指定 node_id 的旧路由）、持久化 remote_machine 权限或 node transport=ssh 的任务，file_exists/sha256/artifact_required 一律 inconclusive：远端工作区不在本机验收范围。执行前跳过本机文件快照，文件登记入口拒绝本机证据，不能以本机 cwd 无关文件证明远端产物，不因远端产物在本机缺失而 fail/自动返工。required 汇总和执行状态保持不变；目标 Hub 的验收仍须在目标工作区运行，发送端尚未接通远端验收结果回写。MCP 保留 list_nodes，stdio 集成断言更新为 16 并明确包含该工具。
+
+返工 pending/retry/failure 集合的工作线程读写与调度快照均用 Service.lock。幂等 spec 先构造和核对已有 request_id，再检查节点当前能力，同内容重放不会因节点消失而拒绝；不同内容仍 REQUEST_CONFLICT。
+
+非 local 节点声明本机 host_id 返回 INVALID_CONFIG；get_artifact 根据节点 transport 和 host_id 决定 local_file，即使旧数据库有非法同 host_id 的 SSH 声明也不暴露路径。RPC 不接受内部 target_transport。remote 平台必须显式声明有效字符串 darwin/windows/linux；本机 platform.system() 分别映射 Darwin/Windows/Linux，非法或非字符串平台返回 INVALID_CONFIG。
+
+artifact_receipts 主键改为 (sender_host_id, request_id)。旧单键表迁移到 legacy-unattributed 命名空间保存历史，不猜测发送方身份。received_blobs 按 SHA-256 索引实际文件，文件名由首次发送方 host_id 的哈希加内容哈希组成，暂存名纳入发送方及请求键；以后同内容的任何请求/发送方复用同一文件。接收端复核既有文件后才追加新收据；已有旧文件可核验时迁入索引。文件先落盘、数据库后提交的崩溃窗口仍可能留下无收据文件，原内容重试核对并复用文件，不额外落盘。
+
+artifact_transfer.max_received_bytes 默认 1073741824（1 GiB），范围 1–1099511627776；max_received_files 默认 10000，范围 1–1000000，并同时限制成功收据总数。只接受整数、拒绝未知字段。目录总量计算包含旧文件及崩溃遗留文件，达上限不写成功 receipt；复用内容不新增存储，但新收据仍受数量限制。未实现自动清理或生产跨机接收连接。
+
+新增回归覆盖 Remote/SSH 三类检查与不返工、工具声明、删除节点后的重放/内容冲突、非 local 同主机拒绝及旧声明不泄露路径、跨发送方同键/换键内容去重、配额、旧收据和文件迁移、显式平台及 Linux 映射。RemoteTests 的单机桥接 fixture 补有效 platform 声明，这是新配置契约的适配，不是规避沙箱。所有 Remote/SSH 执行仍为 mock 或本机脚本模拟，未连真实主机。
+
+本次评审修正最终实跑（仍在沙箱）：`AGENT_HUB_DATA_DIR=/private/tmp/phase3-review-isolated PYTHONPATH=src /private/tmp/phase3-venv/bin/python -m unittest discover -s tests -p test_verification.py`：93 项，92 项通过，1 个真实回环 bind PermissionError，无断言失败。相同环境运行 `-m unittest discover -s tests -v`：253 项，240 项通过，12 个环境错误、1 项 Windows 跳过，无断言失败；错误仍为 5 个 ps 权限错误、5 个回环 bind 权限错误、2 个隔离后台启动/connection.json 缺失错误。单独 `PYTHONPATH=src:tests ... -m unittest test_integration.IntegrationTests.test_mcp_tools_over_stdio -v`：16 项工具数量与 list_nodes 名单断言已通过，随后 /health 读取隔离后台 connection.json 缺失报错，未将该集成测试写成通过。`... -m unittest test_verification.NodeTransferTests -v`：18 项全部通过，包括不依赖监听的 MCP 工具声明检查。compileall 和 git diff --check 通过。日志为 `/private/tmp/phase3-review-verification-current.log`、`/private/tmp/phase3-review-regression-current.log`、`/private/tmp/phase3-review-stdio.log`、`/private/tmp/phase3-review-focused-final.log`。没有调用真实模型、连接真实 SSH、访问共享后台或提交 Git。

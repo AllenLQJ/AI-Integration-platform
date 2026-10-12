@@ -211,9 +211,19 @@ MediaFlow 以 context + acceptance 提交，通过 get_work_item / get_result.ve
 多媒体项目可以把已经完成的检查回写到已有验收条件，调用仅本机 RPC 的 record_external_verification：
 
 ```json
-{"request_id":"media-check-1","task_id":"TASK_ID","verifier_id":"media-project-checker","checks":[{"criterion_id":"dimensions","outcome":"pass","reason":"外部项目已检查尺寸符合要求","evidence":["REGISTERED_ARTIFACT_ID"]}]}
+{"request_id":"media-check-1","task_id":"TASK_ID","verifier_id":"media-project-checker","controller_id":"orchestrator","controller_epoch":1,"checks":[{"criterion_id":"dimensions","outcome":"pass","reason":"外部项目已检查尺寸符合要求","evidence":["REGISTERED_ARTIFACT_ID"]}]}
 ```
 
 通过 `python -m agent_hub rpc record_external_verification --data-dir DATA_DIR --arguments -` 从 stdin 提交。evidence 仅接受该尝试已登记的 artifact_id；criterion_id 必须属于 acceptance.criteria（外部尺寸/质量检查可预先声明为 content_review）。同请求幂等；旧尝试迟到结果仅记 superseded。审核与外部结果接口不进入 MCP/SSH，执行器不能写验收结果。Hub 不生成图片或解码视频，此接口尚未接通 Muse 或在真实 Windows 验证。
 
 CLI 过程事件只从 stdout 映射；stderr 仅脱敏写日志。CLI 会话只接受 stdout 的首个初始化记录，后续 init 或最终 result 不覆盖 session_id；缺少有效首个 init 时不提供原生续接。permission_denials 日志只保留工具名称和调用 ID。外部检查对非当前尝试（包括执行失败的旧尝试）只追加 superseded 历史，仍校验条件与证据归属。
+
+
+第三阶段：`list_nodes` 可从本机 RPC、MCP、SSH 读取节点声明。remote 配置必须显式声明 platform（darwin/windows/linux），可声明 node_id/host_id；非 local 节点不得使用本机 host_id，本机平台按系统登记，Linux 为 linux；配置本身不证明连通，remote_connection_verified 保持 false。submit_task 可带 node_id；省略保持原路由，指定时节点必须声明 agent 与 mode，否则 NODE_UNAVAILABLE。SSH 节点使用原 Remote 适配器的 delegate 模式，本机 cwd 不上传。
+
+跨主机 get_artifact 带 `target_host_id`（也可带 `target_node_id` 由登记节点推导主机），不同 host_id 返回 transfer_required，不含发送端路径。仅本机 Bearer RPC 可调用 `transfer_artifact`，参数：`{"request_id":"send-1","artifact_id":"artifact://REGISTERED_ID","target_node_id":"TARGET_NODE"}`。接收端核对哈希后写 receipt，同请求不复制第二份，重启/超时保留 retryable，不改变执行或验收状态。SSH 传输返回 NODE_UNVERIFIED；其他机器的 local 接收端目前仅支持测试内注入的双目录模拟，没有生产跨机器传输。外部检查示例的 controller_id/epoch 须替换为 claim_controller 返回的租约；无租约可省略。
+
+
+SSH 节点或 Remote 适配器任务的 `file_exists`、`sha256`、`artifact_required` 固定返回 inconclusive，原因是远端工作区不在本机验收范围；不读取本机 cwd 作为证据，也不因未看到远端产物而自动返工。所需检查须在目标 Hub 的任务工作区执行，发送端不能把远端成功自述当验收证据。
+
+接收收据以 `(sender_host_id, request_id)` 为键，文件命名含发送方 host_id 的哈希，按实际内容 SHA-256 复用已存文件；不同发送方使用相同请求键不会串号，更换请求键不会重复存同一内容。config.json 可设置 `artifact_transfer: {"max_received_bytes":1073741824,"max_received_files":10000}`，分别限制接收目录总字节、文件及收据总数（默认 1 GiB、10000）；达到上限返回 ARTIFACT_QUOTA_EXCEEDED，不写成功收据。旧收据迁移为 legacy-unattributed 历史，不能冒充任一已知发送方重放；可核验的旧接收文件加入内容索引。节点能力校验放在幂等重放之后，节点后来不可用时同键同内容仍返回原任务。
