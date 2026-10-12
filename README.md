@@ -1,6 +1,8 @@
 # 本地 Agent Hub
 
-当前进度（2026-10-12）：任务验收第一至第三阶段已在本地 main（`08f0542`、`b495f73`、`807ed0c`）。MCP 现为 16 个工具，含 `verify_task`、`get_work_item`、`claim_controller`、`switch_executor`、`list_nodes`。`transfer_artifact`、人工裁决和外部验收写入只在本机已认证 RPC。沙箱外完整回归 253 项：252 通过、1 项 Windows ACL 检查在 macOS 上跳过。真实 Windows、真实双机 SSH、Muse 验收回写，以及 Claude / Cursor CLI 流式事件的真实任务，均未验收。用法见下文第二、三阶段；设计见 [验收设计](docs/2026-10-12-verification-phase1-design.md)。
+当前进度（2026-10-12）：在 main 基线 `16110f2` 上完成 Claude content_review 自动审核阶段（每任务显式 `acceptance.review` 开启，见下文「Claude 自动内容审核」与 [设计记录](docs/2026-10-12-claude-content-review-design.md)），经 Claude 独立终验通过后合入 main。任务验收第一至第三阶段为 `08f0542`、`b495f73`、`807ed0c`。MCP 仍为 16 个工具，含 `verify_task`、`get_work_item`、`claim_controller`、`switch_executor`、`list_nodes`。`transfer_artifact`、人工裁决和外部验收写入只在本机已认证 RPC。本阶段沙箱外完整回归 287 项通过（208.165 秒，1 项 Windows ACL 检查在 macOS 上跳过），其中自动审核专项 28 项。
+
+真实 Cursor CLI 执行 + Claude CLI 审核闭环已验收：直接通过、审核 fail → 自动返工 → 通过、连续 fail 在 `max_auto_rework=1` 停止三条链路均符合预期，全程没有总控 continue_task 或 record_verification 介入；真实 headless Chrome 打开的工作台最终状态与接口一致。证据汇总在本机私有目录 `~/.agent-hub/auto-review-20261012/real-chain-summary.json`（直接通过链路来自 run-173812，返工与上限链路来自 run-174333）。此前的真实失败保留为历史证据、未被覆盖：run-172722 三条链路因审核登记 TypeError 失败；run-173812 中返工链路因 ECONNRESET 中断后在 run-174333 重跑。这些结果只说明本轮链路通过及非法输出按设计 fail closed，不代表模型总能输出合法结果。真实 Windows、真实双机 SSH、Muse 验收回写、非 headless 的 GUI 浏览器工作台仍未验收。用法见下文第二、三阶段；验收总设计见 [验收设计](docs/2026-10-12-verification-phase1-design.md)。
 
 截至 2026-10-11 的记录：Windows 第一版与 Mac 本机接入已实现，当时为 11 个 MCP 工具。新增 Cursor CLI / Grok Bot 双向接入，真实总控派发、执行器回复和续接通过，见 [接入记录](docs/2026-10-11-cursor-grokbot-validation.md)。该日完整自动回归 129 项：128 通过、1 项 Windows ACL 检查跳过（49.332 秒）。严格休眠超时恢复等仍未验证。当日状态见 [开发进度](docs/开发进度.md) 和 [第一版验收](docs/第一版验收.md)；该文件保留历史测试数，不代表现在的工具数量。Windows 记录来自 10-09/10-10，此后修改未在 Windows 重新回归。
 
@@ -186,7 +188,7 @@ MediaFlow 以 context + acceptance 提交，通过 get_work_item / get_result.ve
 
 ## 第二阶段：工作台与总控
 
-三个 CLI（Codex、Claude、Cursor CLI）使用结构化输出映射实际过程事件；缺失工具/审批信息明确标示，进度自述不算验收证据。本轮只核实 CLI help，没有调用真实模型。
+三个 CLI（Codex、Claude、Cursor CLI）使用结构化输出映射实际过程事件；缺失工具/审批信息明确标示，进度自述不算验收证据。第二阶段当时只核实了 CLI help；之后 Cursor CLI 与 Claude CLI 的结构化输出已在自动审核阶段的真实闭环中使用并验收，但这不等于各类工具/审批事件语义都已实测。
 
 本机工作台地址为当前独立后台的 `http://127.0.0.1:PORT/work/TASK_ID`。先由受信本机客户端向 `POST /work/TASK_ID/session` 发送 `Authorization: Bearer TOKEN`，接收绑定 TASK_ID 的 cookie 并交给同一浏览器会话；随后 GET 页面及 `/events?after_seq=N` 使用 HttpOnly cookie，访问其他任务路径返回 401。页面通过该任务的 events 接口及受归属校验的 attempt_id 参数读取同一尝试链，不扩大 cookie 的任务路径权限。也可直接用 Bearer 获取页面。不要把令牌加进 URL、HTML 或命令行参数。`show TASK_ID --data-dir DATA_DIR` 保留文本查看方式。
 
@@ -214,9 +216,37 @@ MediaFlow 以 context + acceptance 提交，通过 get_work_item / get_result.ve
 {"verification":{"max_auto_rework":2}}
 ```
 
-范围 0–5，0 关闭自动返工。只有 Hub 确定性 fail 且没有 inconclusive 的 rework_required 才自动续接原执行器/会话，最多累计该次数；保留全部尝试，同验收 run 不重复派发；验收已落盘但返工未派发时，重启会按同一 run 与次数上限补派，不重新验收。needs_review、审核失败或验证器不可用不自动派发。copied 文件只有同一路径的显式 expected SHA-256 匹配 Hub 实读值时，才可满足 artifact_required。
+范围 0–5，0 关闭自动返工。只有 Hub 确定性 fail 且没有 inconclusive 的 rework_required 才自动续接原执行器/会话，最多累计该次数；保留全部尝试，同验收 run 不重复派发；验收已落盘但返工未派发时，重启会按同一 run 与次数上限补派，不重新验收。needs_review、验证器不可用，以及未开启 `acceptance.review` 时的审核失败（人工或外部写入的 content_review fail）都不自动派发；开启后，只有 Hub 受信校验的 Claude 审核 fail 会自动返工，见下文「Claude 自动内容审核」。copied 文件只有同一路径的显式 expected SHA-256 匹配 Hub 实读值时，才可满足 artifact_required。
 
-审核写入仍只允许本机 RPC。record_verification 的 content_review 结果必须提供 `reason` 与已有 evidence 的 `artifact_id`。未收到审核结果时保持 inconclusive/needs_review，不会自动调用审核模型。
+审核写入仍只允许本机 RPC。record_verification 的 content_review 结果必须提供 `reason` 与已有 evidence 的 `artifact_id`。未开启 `acceptance.review` 的任务未收到审核结果时保持 inconclusive/needs_review，不会自动调用审核模型（开启方式见下节）。
+
+### Claude 自动内容审核（opt-in）
+
+在单个任务的 acceptance 中加入 `review`，criteria 写法不变：
+
+```json
+{"criteria":[{"id":"out","kind":"file_exists","path":"report.md"},
+             {"id":"quality","kind":"content_review","description":"报告覆盖三项结论并给出依据"}],
+ "review":{"agent":"claude","timeout_seconds":600}}
+```
+
+`agent` 目前只接受 `claude`，`timeout_seconds` 为 30–3600 的整数（缺省 600），至少需要一条 content_review。执行器为 claude 时拒绝（不允许自审核）。未带 `review` 的任务、历史任务和请求哈希都不变，content_review 仍为 needs_review，Hub 不批量派发模型。
+
+流程：确定性检查全部通过后，验收进入 `reviewing`（work_status 同名），Hub 以内部请求键 `auto-review:<review_run_id>` 创建一个**独立根任务**（Claude `text_only`，无工具，空私有 cwd，不是执行尝试的子任务，不改变 current_task_id），照常经过全局/按执行器并发调度。审核任务 ID 见 `verification.review.task_id`、`review` 事件和工作台；可对它单独 get_task / get_events / 打开工作台。若确定性检查本身失败，审核条件标为延后，不派发模型，按原规则返工。
+
+证据只取本次验收检查已登记的工作区文本产物：最多 10 个文件、单文件 32 KiB、总计 64 KiB，严格 UTF-8，不跟随符号链接、不越出任务工作区，读取时复核登记 SHA-256；内容放入带随机边界的提示中，明确为不可信数据。登记了媒体产物、远端工作区、二进制/超限/已改变的文件，均直接 needs_review 并写明原因，不派发模型。
+
+Claude 必须只输出一个纯 JSON 对象，例如（ID 为示意值，实际必须与提示中的审核上下文逐字一致）：
+
+```json
+{"schema":"agent-hub.content-review.v1","task_id":"d0d1eb9b8238495995fe4f2c17d01332","review_run_id":"4381dc4da64b419ab58145a6195140dc","verification_run_id":"0ee7778bdb2a4df0bb6418eb7197e956","checks":[{"criterion_id":"quality","outcome":"fail","reason":"内容不是 GOOD 加一个换行，请改为仅含 GOOD 并以单个 LF 结尾","evidence":["2eb0a44e321d5e1c81dc007971dd516d"]}]}
+```
+
+`outcome` 只能是 `pass`、`fail` 或 `inconclusive`；每条 content_review 恰好出现一次、reason 非空、evidence 只能引用提示中提供的 artifact_id。代码块包裹、自然语言、工具调用/DSML 文本、缺失/重复/未知条件、指纹不符、伪造证据、CLI 失败、超时、取消或审核端未配置，一律 fail closed 为 needs_review（`verification.review.state` 为 invalid/unavailable 等并保留原因），不自动重试、不返工。真实试跑中曾出现一次 DSML 格式的 Bash 工具调用文本（text_only 无工具，命令未执行），即按 invalid 处理；提示随后加强，但不保证模型每次都输出合法 JSON。
+
+采用结论前，Hub 按取证清单重读产物并核对 SHA-256；审核期间文件被修改、删除、替换为符号链接或越界时，记 `review.state=evidence_changed` 并转 needs_review，不采用旧结论、不返工。派发前若总控租约已变更，直接 superseded，不调用模型。对处于 reviewing 的执行尝试调用 cancel_task，会停止对应审核任务（响应含 `review.review_state` 为 stopping/stopped/not_dispatched），验收转 needs_review，执行 state 仍为 succeeded，不自动返工。
+
+全部 pass → passed / completed；任何 required fail → rework_required（`required=false` 的 content_review fail 只记录，不阻塞、不单独返工），并按 `max_auto_rework` 共享预算自动 continue_task（同一原生会话、继承 acceptance），新尝试重新确定性检查和 Claude 审核；到达上限保持 rework_required，pending_actions 写明上限。inconclusive 只转 needs_review。回写由 Hub 内部服务单事务完成并写 `auto-review-result:<run>` 收据：验收被 verify_task 重跑、人工/外部裁决、新尝试续接或总控 claim 改变 epoch 后到达的审核结果，只追加 superseded 历史；仍在 reviewing 时转 needs_review 便于接管。`reviewing` 期间总控可直接 record_verification 人工裁决或 verify_task 重验。`auto-review` 前缀请求键和 `hub-` 前缀 verifier_id 保留给内部，外部调用会被拒绝。重启时进行中的审核任务按原规则标 interrupted 并转 needs_review，已结束未回写的结果按收据只回写一次，均不重新提交模型。
 
 多媒体项目可以把已经完成的检查回写到已有验收条件，调用仅本机 RPC 的 record_external_verification：
 

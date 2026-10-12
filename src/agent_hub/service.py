@@ -42,6 +42,12 @@ class Service:
         from .nodes import Nodes
         self.nodes = Nodes(self)
         self.verification.adapters = self.adapters
+        from .review import Reviewer
+        self.reviewer = Reviewer(self)
+        # 重启只恢复已持久化的审核：已建任务不重发，终态任务按收据幂等回写。
+        self.review_pending = set(self.reviewer.recover())
+        self.review_failures = {}
+        self.review_retry_at = {}
         self.recover_auto_rework()
         self.thread = threading.Thread(target=self.schedule, daemon=True)
         self.thread.start()
@@ -55,6 +61,9 @@ class Service:
             if not isinstance(arguments, dict) or set(arguments) - {'task_id', 'after_seq', 'timeout_seconds'} or 'task_id' not in arguments:
                 raise HubError('INVALID_ARGUMENT', '等待参数不正确')
             return self.wait_for_task(**arguments)
+        if (tool in {'submit_task', 'continue_task', 'switch_executor'} and isinstance(arguments, dict)
+                and isinstance(arguments.get('request_id'), str) and arguments['request_id'].startswith('auto-review:')):
+            raise HubError('INVALID_ARGUMENT', 'auto-review: 请求键保留给内部审核服务')
         controlled = {'continue_task', 'cancel_task', 'verify_task', 'record_verification', 'switch_executor', 'record_external_verification'}
         if tool == 'claim_controller' or tool in controlled or tool == 'record_external_verification':
             if any(k.startswith('_') for k in arguments):
@@ -66,8 +75,9 @@ class Service:
                     self.verification.check_controller(args['task_id'], args.pop('controller_id', None), args.pop('controller_epoch', None))
                 if tool == 'claim_controller':
                     return self.verification.claim(**args)
-                if tool in {'record_verification', 'record_external_verification'} and isinstance(args.get('verifier_id'), str) and args['verifier_id'] in self.adapters:
-                    raise HubError('INVALID_ARGUMENT', '执行器不能写验收结果')
+                if tool in {'record_verification', 'record_external_verification'} and isinstance(args.get('verifier_id'), str) and (
+                        args['verifier_id'] in self.adapters or args['verifier_id'].startswith('hub-')):
+                    raise HubError('INVALID_ARGUMENT', '执行器不能写验收结果，hub- 前缀保留给内部验证器')
                 if tool == 'record_verification':
                     return self.verification.record(**args)
                 if tool == 'record_external_verification':
@@ -75,6 +85,7 @@ class Service:
                 if tool == 'verify_task':
                     result = self.verification.request(args['request_id'], dict(tool=tool, task_id=args['task_id']),
                                                        lambda: self.verification.run(args['task_id'], args['request_id']))
+                    self.reviewer.process(args['task_id'])
                     self.auto_rework(args['task_id'])
                     return result
                 with self.verification.task_lock(args['task_id']), self.lock:
@@ -188,6 +199,8 @@ class Service:
             spec['node_id'] = node_id
         validate(acceptance)
         if acceptance is not None:
+            if acceptance.get('review') and acceptance['review']['agent'] == agent:
+                raise HubError('INVALID_ARGUMENT', '执行器不能审核自己的产物；请选择不同的审核端')
             spec['acceptance'] = acceptance
         self.gateway.context(context)
         if context is not None:
@@ -307,11 +320,21 @@ class Service:
         checks = summary.get('checks', [])
         failed = [c for c in checks if c['outcome'] == 'fail']
         criteria = {c['id']: c for c in (task.get('acceptance') or {}).get('criteria', [])}
+        review = summary.get('review') or {}
+        def trusted(c):
+            name = c.get('verifier', {}).get('name')
+            if criteria.get(c['criterion_id'], {}).get('kind') != 'content_review':
+                return name == 'hub-deterministic'
+            # 仅接受受信审核服务按本次审核 run 严格校验后写入的 fail。
+            mark = c.get('auto_review') or {}
+            return (name == 'hub-claude-review' and review.get('state') == 'failed'
+                    and bool(review.get('review_run_id')) and mark.get('review_run_id') == review['review_run_id'])
+        def deferred(c):
+            return c.get('review_deferred') and c.get('verifier', {}).get('name') == 'hub-deterministic'
         return (summary['state'] == 'rework_required' and bool(failed)
                 and bool(summary.get('verification_run_id'))
-                and not any(c['outcome'] == 'inconclusive' for c in checks)
-                and all(criteria[c['criterion_id']]['kind'] != 'content_review'
-                        and c.get('verifier', {}).get('name') == 'hub-deterministic' for c in failed))
+                and not any(c['outcome'] == 'inconclusive' and not deferred(c) for c in checks)
+                and all(trusted(c) for c in failed))
 
     def recover_auto_rework(self):
         if self.max_auto_rework == 0:
@@ -399,6 +422,9 @@ class Service:
         if task['state'] == 'queued':
             self.store.finish(task_id, 'cancelled', {'error': reason, 'remote_cancelled': False,
                                                     'cancel_scope': 'not_started'})
+            if isinstance(task.get('review_of'), dict) and task['review_of'].get('task_id'):
+                with self.lock:
+                    self.review_pending.add(task['review_of']['task_id'])
         elif task['state'] not in TERMINAL:
             self.store.update(task_id, state='cancelling', cancel_reason=reason)
             if task_id in self.active:
@@ -408,9 +434,16 @@ class Service:
         if task['state'] == 'queued':
             scope = 'not_started'
         result = self.call('get_result', {'task_id': task_id}) if task['state'] in TERMINAL else {}
-        return {'contract_version': '1.0', 'task_id': task_id, 'state': self.store.get(task_id)['state'],
-                'remote_cancelled': result.get('remote_cancelled', False),
-                'cancel_scope': result.get('cancel_scope', scope)}
+        response = {'contract_version': '1.0', 'task_id': task_id, 'state': self.store.get(task_id)['state'],
+                    'remote_cancelled': result.get('remote_cancelled', False),
+                    'cancel_scope': result.get('cancel_scope', scope)}
+        if task['state'] in TERMINAL and (task.get('acceptance') or {}).get('review'):
+            # 执行已结束时取消作用于进行中的自动审核；执行状态不变。
+            review = self.reviewer.cancel(task_id, '取消执行尝试，审核已停止：' + str(reason)[:200])
+            if review:
+                response['review'] = review
+                response.update(self.verification.fields(self.store.get(task_id)))
+        return response
 
     def schedule(self):
         while not self.stopping.wait(.05):
@@ -418,14 +451,17 @@ class Service:
                 try:
                     with self.lock:
                         rework_pending = [i for i in self.auto_rework_pending if time.monotonic() >= self.auto_rework_retry_at.get(i, 0)]
-                    pending = (self.verification.pending() + rework_pending
+                        review_pending = [i for i in self.review_pending if time.monotonic() >= self.review_retry_at.get(i, 0)]
+                    pending = (self.verification.pending() + review_pending + rework_pending
                                if time.monotonic() >= self.verification_retry_at else [])
                     with self.lock:
                         for ident in pending:
                             if self.stopping.is_set() or len(self.verification_active) >= self.concurrency:
                                 break
                             if ident not in self.verification_active:
-                                worker = threading.Thread(target=self.verify, args=(ident, ident in self.auto_rework_pending), daemon=True)
+                                review_only = ident in self.review_pending
+                                worker = threading.Thread(target=self.verify, args=(
+                                    ident, not review_only and ident in self.auto_rework_pending, review_only), daemon=True)
                                 self.verification_active[ident] = worker
                                 try:
                                     worker.start()
@@ -481,14 +517,23 @@ class Service:
                 logging.getLogger(__name__).exception('任务调度失败，将短暂退避后重试')
                 self.stopping.wait(.2)
 
-    def verify(self, task_id, rework_only=False):
-        reworking = False
+    def verify(self, task_id, rework_only=False, review_only=False):
+        reworking = reviewing = False
         try:
             with self.lock:
                 if rework_only and self.auto_rework_failures.get(task_id, 0) >= 3:
                     return
-            if not rework_only:
+                if review_only:
+                    self.review_pending.discard(task_id)
+            if not rework_only and not review_only:
                 self.verification.run(task_id, automatic=True)
+            if not rework_only:
+                reviewing = True
+                self.reviewer.process(task_id)
+                reviewing = False
+                with self.lock:
+                    self.review_failures.pop(task_id, None)
+                    self.review_retry_at.pop(task_id, None)
             reworking = True
             self.auto_rework(task_id)
             with self.lock:
@@ -496,6 +541,22 @@ class Service:
                 self.auto_rework_failures.pop(task_id, None)
                 self.auto_rework_retry_at.pop(task_id, None)
         except Exception as error:
+            if reviewing and not self.stopping.is_set():
+                with self.lock:
+                    failures = self.review_failures.get(task_id, 0) + 1
+                    self.review_failures[task_id] = failures
+                    if failures < 3:
+                        self.review_pending.add(task_id)
+                        self.review_retry_at[task_id] = time.monotonic() + 2 ** failures
+                if failures >= 3:
+                    # 有界失败后 fail closed，保留原因，等待人工接管。
+                    try:
+                        self.reviewer.abort(task_id, '审核处理连续失败：' + type(error).__name__)
+                    except Exception:
+                        logging.getLogger(__name__).exception('自动审核无法转人工')
+            elif reviewing:
+                with self.lock:
+                    self.review_pending.add(task_id)
             with self.lock:
                 if reworking:
                     failures = self.auto_rework_failures.get(task_id, 0) + 1
@@ -616,6 +677,8 @@ class Service:
             except Exception as error:
                 self.store.event(ident, 'verification_enqueue_error', {'reason': type(error).__name__})
             finally:
+                if isinstance(task.get('review_of'), dict) and task['review_of'].get('task_id'):
+                    self.review_pending.add(task['review_of']['task_id'])
                 self.active.pop(ident, None)
 
     def close(self):

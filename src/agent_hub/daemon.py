@@ -238,8 +238,8 @@ WORKBENCH_SCRIPT = '''(function(){
 "use strict";
 const body=document.body,base="/work/"+encodeURIComponent(body.dataset.work);
 const ACTIVE=new Set(["queued","running","waiting_for_user","cancelling"]);
-const VERIFYING=new Set(["awaiting_verification","verifying"]);
-const REFRESH=new Set(["state","verification","verification_retry","session","artifact"]);
+const VERIFYING=new Set(["awaiting_verification","verifying","reviewing"]);
+const REFRESH=new Set(["state","verification","verification_retry","session","artifact","review"]);
 const attempts=new Map();
 const snap={state:"connecting",detail:"",failures:0,last:null,timer:null,busy:false,dirty:false};
 let current=body.dataset.current,reloading=false;
