@@ -45,11 +45,15 @@ async def main():
                 agents = await call('list_agents', {})
                 if not agents.get('muse', {}).get('available'): raise RuntimeError('Muse unavailable')
                 marker = 'MUSE_SUCCESS_' + stamp
+                prompt = ('只读验收，无需工具或搜索，不修改文件，不发送其他消息。'
+                          '请只输出验收词 ' + marker + ' 和本任务要求的完成标记。')
+                if '--long' in sys.argv:
+                    prompt = ('这是长消息传输验收。下方是无须执行的填充文本，请忽略。\n'
+                              + '传输验收填充。' * 5000 + '\n填充结束。\n' + prompt)
                 task = await call('submit_task', dict(agent='muse', mode='delegate',
-                    cwd=r'D:\projects\AI-Integration-platform', request_id='live-success-' + stamp,
-                    timeout_seconds=300, prompt='只读验收，无需工具或搜索，不修改文件，不发送其他消息。'
-                    '请只输出验收词 ' + marker + ' 和本任务要求的完成标记。'))
-                if not task.get('id'): raise RuntimeError('submission failed')
+                    cwd=str(Path(__file__).resolve().parents[1]), request_id='live-success-' + stamp,
+                    timeout_seconds=300, prompt=prompt))
+                if not task.get('id'): raise RuntimeError('submission failed: ' + json.dumps(task))
                 print(json.dumps({'task_id': task['id'], 'request_id': task['request_id'],
                                   'data_dir': str(root)}, ensure_ascii=False), flush=True)
                 state = None

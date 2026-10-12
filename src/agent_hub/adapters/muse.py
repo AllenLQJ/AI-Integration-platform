@@ -276,7 +276,10 @@ class Muse:
                         code = redact(error.get('code') or 'MUSE_ERROR')
                         message = redact(error.get('message') or 'Muse 请求失败')
                         raise HubError(code, stage + ': ' + code + ': ' + message,
-                                       {'stage': stage, 'upstream_code': code})
+                                       dict({'stage': stage, 'upstream_code': code}, **{
+                                           key: error[key] for key in
+                                           ('status', 'exception_type', 'dispatch_attempted') if key in error},
+                                           **({'muse_stage': error['stage']} if 'stage' in error else {})))
                     return payload
 
                 async def pause(seconds):
