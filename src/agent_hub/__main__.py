@@ -6,7 +6,8 @@ import sys
 TOOLS = ('list_agents', 'submit_task', 'get_task', 'get_events', 'wait_for_task',
          'get_result', 'continue_task', 'resume_task', 'cancel_task',
          'ide_next_task', 'ide_task_update', 'ide_task_status',
-         'verify_task', 'get_work_item', 'record_verification')
+         'verify_task', 'get_work_item', 'record_verification',
+         'claim_controller', 'switch_executor', 'record_external_verification')
 
 
 def main():

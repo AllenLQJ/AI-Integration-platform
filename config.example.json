@@ -1,5 +1,6 @@
 {
   "concurrency": {"global": 2, "per_agent": {"codex": 1, "claude": 1, "muse": 1, "cursor": 1, "grokbot": 1}},
+  "verification": {"max_auto_rework": 2},
   "agents": {
     "remote-worker": {"enabled": false, "kind": "remote", "ssh_host": "your-known-host",
       "python": "/path/to/AI-Integration-platform/.venv/bin/python",

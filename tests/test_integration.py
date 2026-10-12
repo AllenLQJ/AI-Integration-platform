@@ -43,7 +43,10 @@ class IntegrationTests(unittest.TestCase):
                 async with ClientSession(reader, writer) as session:
                     await session.initialize()
                     names = {t.name for t in (await session.list_tools()).tools}
-                    self.assertEqual(len(names), 13)
+                    self.assertEqual(len(names), 15)
+                    self.assertIn('claim_controller', names)
+                    self.assertIn('switch_executor', names)
+                    self.assertNotIn('record_external_verification', names)
                     self.assertIn('verify_task', names)
                     self.assertIn('get_work_item', names)
                     self.assertNotIn('record_verification', names)

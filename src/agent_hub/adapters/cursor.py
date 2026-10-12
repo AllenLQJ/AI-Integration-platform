@@ -16,7 +16,7 @@ class Cursor(CLI):
                 'scope_note': 'ask 模式或文件权限白名单；请求 CLI 沙箱，实际边界需实测；不自动批准工具'}
 
     def command(self, task):
-        args = [self.executable, '--print', '--output-format', 'json',
+        args = [self.executable, '--print', '--output-format', 'stream-json',
                 '--sandbox', 'enabled', '--workspace', task['workspace'], '--trust']
         if task['mode'] == 'read_only':
             args += ['--mode', 'ask']
@@ -57,7 +57,8 @@ class Cursor(CLI):
 
     def parse(self, output):
         try:
-            result = json.loads(output)
+            records = [json.loads(line) for line in output.splitlines() if line.strip()]
+            result = next((r for r in reversed(records) if isinstance(r, dict) and r.get('type') == 'result'), {})
         except ValueError:
             raise HubError('CLI_FAILED', 'Cursor 没有返回有效 JSON result') from None
         if (not isinstance(result, dict) or result.get('type') != 'result'

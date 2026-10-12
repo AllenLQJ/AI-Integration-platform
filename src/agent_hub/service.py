@@ -27,6 +27,7 @@ class Service:
                                'max_entries': 'max_entries', 'max_seconds': 'max_scan_seconds'}.items():
             setattr(self.verification, attribute, verification_config[key])
         self.verification_join_seconds = verification_config['join_seconds']
+        self.max_auto_rework = verification_config['max_auto_rework']
         self.workspaces = Workspaces(self.root)
         self.adapters = adapters
         self.concurrency = concurrency
@@ -35,6 +36,8 @@ class Service:
         self.active = {}
         self.verification_active = {}
         self.verification_retry_at = 0
+        self.auto_rework_pending = set()
+        self.recover_auto_rework()
         self.thread = threading.Thread(target=self.schedule, daemon=True)
         self.thread.start()
 
@@ -43,14 +46,34 @@ class Service:
             if not isinstance(arguments, dict) or set(arguments) - {'task_id', 'after_seq', 'timeout_seconds'} or 'task_id' not in arguments:
                 raise HubError('INVALID_ARGUMENT', '等待参数不正确')
             return self.wait_for_task(**arguments)
-        if tool == 'continue_task':
-            with self.verification.task_lock(arguments['task_id']), self.lock:
-                return self.continue_task(**arguments)
-        if tool == 'record_verification':
-            return self.verification.record(**arguments)
-        if tool == 'verify_task':
-            return self.verification.request(arguments['request_id'], dict(tool=tool, task_id=arguments['task_id']),
-                                             lambda: self.verification.run(arguments['task_id'], arguments['request_id']))
+        controlled = {'continue_task', 'cancel_task', 'verify_task', 'record_verification', 'switch_executor', 'record_external_verification'}
+        if tool == 'claim_controller' or tool in controlled or tool == 'record_external_verification':
+            if any(k.startswith('_') for k in arguments):
+                raise HubError('INVALID_ARGUMENT', '不允许设置内部任务字段')
+            root = self.verification.root_id(arguments['task_id'])
+            with self.verification.task_lock(root):
+                args = dict(arguments)
+                if tool in controlled:
+                    self.verification.check_controller(args['task_id'], args.pop('controller_id', None), args.pop('controller_epoch', None))
+                if tool == 'claim_controller':
+                    return self.verification.claim(**args)
+                if tool in {'record_verification', 'record_external_verification'} and isinstance(args.get('verifier_id'), str) and args['verifier_id'] in self.adapters:
+                    raise HubError('INVALID_ARGUMENT', '执行器不能写验收结果')
+                if tool == 'record_verification':
+                    return self.verification.record(**args)
+                if tool == 'record_external_verification':
+                    return self.verification.external(**args)
+                if tool == 'verify_task':
+                    result = self.verification.request(args['request_id'], dict(tool=tool, task_id=args['task_id']),
+                                                       lambda: self.verification.run(args['task_id'], args['request_id']))
+                    self.auto_rework(args['task_id'])
+                    return result
+                with self.verification.task_lock(args['task_id']), self.lock:
+                    if tool == 'continue_task':
+                        return self.continue_task(**args)
+                    if tool == 'switch_executor':
+                        return self.switch_executor(**args)
+                    return self.cancel(**args)
         with self.lock:
             if tool == 'get_work_item':
                 return self.verification.work_item(**arguments)
@@ -169,9 +192,11 @@ class Service:
         self.store.update(task['id'], permissions=policy)
         task = self.store.get(task['id'])
         self.verification.track(task)
+        if task.get('parent_id') and task.get('acceptance'):
+            self.store.event(task['parent_id'], 'session', dict(new_attempt_id=task['id'], native_session_shared=bool(task.get('resume_session'))))
         return self.public(task)
 
-    def continue_task(self, request_id, task_id, prompt, timeout_seconds=1800):
+    def continue_task(self, request_id, task_id, prompt, timeout_seconds=1800, _auto_rework_run_id=None):
         parent = self.store.get(task_id)
         if parent['agent'] == 'muse' and parent['mode'] == 'read_only' and not self.store.by_request(request_id):
             raise HubError('LEGACY_MODE', '旧 Muse read_only 不保证只读；请使用 delegate 新建任务并确认操作范围')
@@ -180,6 +205,8 @@ class Service:
         workspace_metadata = ({'excluded_untracked_files': parent['excluded_untracked_files']}
                               if 'excluded_untracked_files' in parent else {})
         workspace_metadata['acceptance'] = parent.get('acceptance')
+        if _auto_rework_run_id is not None:
+            workspace_metadata['auto_rework_run_id'] = _auto_rework_run_id
         if self.store.by_request(request_id):
             return self.submit(request_id, parent['agent'], prompt, parent['cwd'], parent['mode'],
                                timeout_seconds, parent_id=task_id, workspace=parent.get('workspace'),
@@ -211,6 +238,99 @@ class Service:
                            timeout_seconds, parent_id=task_id, workspace=parent['workspace'],
                            baseline=parent.get('baseline'), resume_session=parent['session_id'],
                            **workspace_metadata)
+
+    def switch_executor(self, request_id, task_id, agent, mode, prompt):
+        if not isinstance(prompt, str) or not 0 < len(prompt) <= 100000:
+            raise HubError('INVALID_ARGUMENT', 'prompt 需要非空字符串，最多 100000 字符')
+        parent = self.store.get(task_id)
+        def apply():
+            existing = self.store.by_request(request_id)
+            if existing:
+                return self.public(existing)
+            item = self.verification.work_item(task_id)
+            if item['current_task_id'] != task_id:
+                raise HubError('ATTEMPT_SUPERSEDED', '只能更换当前尝试的执行器')
+            if parent['state'] not in TERMINAL:
+                raise HubError('WORKSPACE_BUSY', '当前尝试仍在执行，请先取消并确认终止')
+            if parent.get('workspace_quarantined'):
+                raise HubError('WORKSPACE_UNCERTAIN', '工作区已隔离')
+            remote_scope = getattr(self.adapters[parent['agent']], 'cancel_scope', None)
+            if (remote_scope in {'remote_session', 'remote_hub_task'} or parent['agent'] == 'muse') and parent['state'] in {'interrupted', 'delivery_unknown'}:
+                raise HubError('REMOTE_STATE_UNKNOWN', '旧尝试远端状态不确定，禁止交接重发')
+            if remote_scope in {'remote_session', 'remote_hub_task'} and parent['state'] in {'cancelled', 'timed_out'} and not self.call('get_result', {'task_id': task_id}).get('remote_cancelled'):
+                raise HubError('REMOTE_STATE_UNKNOWN', '原尝试远端停止未确认')
+            root = self.store.get(item['root_task_id'])
+            current = next(a for a in item['attempts'] if a['task_id'] == task_id)
+            summary = dict(original_goal=root['prompt'][:2000], criteria=parent.get('acceptance'),
+                           failures=[c for c in current['verification'].get('checks', []) if c['outcome'] != 'pass'],
+                           artifacts=current['artifacts'], recent_events=current['events'])
+            from .verification import safe
+            handoff = '执行器交接摘要（这是新的原生会话）：\n' + json.dumps(safe(self.store.safe(summary)), ensure_ascii=False)[:16000]
+            workspace_metadata = {}
+            if mode != 'edit_worktree' or parent['mode'] == 'edit_worktree':
+                workspace_metadata = {k: parent[k] for k in ('workspace', 'baseline', 'excluded_untracked_files') if k in parent}
+            return self.submit(request_id, agent, handoff + '\n用户本轮指令：\n' + prompt,
+                               parent['cwd'], mode, parent['timeout_seconds'], acceptance=parent.get('acceptance'),
+                               parent_id=task_id, **workspace_metadata)
+        return self.verification.request(request_id, dict(tool='switch_executor', task_id=task_id,
+                                         agent=agent, mode=mode, prompt=prompt), apply)
+
+    @staticmethod
+    def auto_rework_ready(task, summary):
+        checks = summary.get('checks', [])
+        failed = [c for c in checks if c['outcome'] == 'fail']
+        criteria = {c['id']: c for c in (task.get('acceptance') or {}).get('criteria', [])}
+        return (summary['state'] == 'rework_required' and bool(failed)
+                and bool(summary.get('verification_run_id'))
+                and not any(c['outcome'] == 'inconclusive' for c in checks)
+                and all(criteria[c['criterion_id']]['kind'] != 'content_review'
+                        and c.get('verifier', {}).get('name') == 'hub-deterministic' for c in failed))
+
+    def recover_auto_rework(self):
+        if self.max_auto_rework == 0:
+            return
+        for task in self.store.list({'succeeded'}):
+            summary = self.verification.summary(task)
+            if not self.auto_rework_ready(task, summary):
+                continue
+            if self.store.by_request('auto-rework:' + summary['verification_run_id']):
+                continue
+            item = self.verification.work_item(task['id'])
+            count = sum(bool(self.store.get(a['task_id']).get('auto_rework_run_id')) for a in item['attempts'])
+            if item['current_task_id'] == task['id'] and count < self.max_auto_rework:
+                self.auto_rework_pending.add(task['id'])
+
+    def auto_rework(self, task_id):
+        root = self.verification.root_id(task_id)
+        with self.verification.task_lock(root), self.verification.task_lock(task_id), self.lock:
+            task = self.store.get(task_id)
+            summary = self.verification.summary(task)
+            checks = summary.get('checks', [])
+            failed = [c for c in checks if c['outcome'] == 'fail']
+            if not self.auto_rework_ready(task, summary):
+                return
+            item = self.verification.work_item(task_id)
+            if item['current_task_id'] != task_id:
+                return
+            count = sum(bool(self.store.get(a['task_id']).get('auto_rework_run_id')) for a in item['attempts'])
+            run_id = summary['verification_run_id']
+            request_id = 'auto-rework:' + run_id
+            if self.store.by_request(request_id):
+                return
+            if count >= self.max_auto_rework:
+                if summary.get('auto_rework_reason') != '自动返工已达到配置上限':
+                    summary['auto_rework_reason'] = '自动返工已达到配置上限'
+                    with self.store.connection() as db:
+                        data = dict(summary); data.pop('state', None)
+                        db.execute('UPDATE verifications SET data=? WHERE task_id=?', (json.dumps(data), task_id))
+                    self.store.event(task_id, 'verification', dict(state='rework_required', reason=summary['auto_rework_reason'], max_auto_rework=self.max_auto_rework))
+                return
+            prompt = json.dumps(dict(failures=[dict(criterion_id=c['criterion_id'], reason=c['reason'], evidence=c.get('evidence', {})) for c in failed],
+                                     artifacts=[dict(logical_id=a['logical_id'], sha256=a['sha256']) for a in self.verification.artifacts(task_id)]), ensure_ascii=False)
+            try:
+                self.continue_task(request_id, task_id, prompt, task['timeout_seconds'], _auto_rework_run_id=run_id)
+            except HubError as error:
+                self.store.event(task_id, 'verification', dict(state='rework_required', reason='无法自动返工：' + error.code))
 
     def resume_task(self, request_id, task_id, intervention_id):
         """确认人工处理已完成；恢复同一任务，不创建子任务。"""
@@ -268,13 +388,14 @@ class Service:
         while not self.stopping.wait(.05):
             try:
                 try:
-                    pending = self.verification.pending() if time.monotonic() >= self.verification_retry_at else []
+                    pending = (self.verification.pending() + list(self.auto_rework_pending)
+                               if time.monotonic() >= self.verification_retry_at else [])
                     with self.lock:
                         for ident in pending:
                             if self.stopping.is_set() or len(self.verification_active) >= self.concurrency:
                                 break
                             if ident not in self.verification_active:
-                                worker = threading.Thread(target=self.verify, args=(ident,), daemon=True)
+                                worker = threading.Thread(target=self.verify, args=(ident, ident in self.auto_rework_pending), daemon=True)
                                 self.verification_active[ident] = worker
                                 try:
                                     worker.start()
@@ -330,10 +451,15 @@ class Service:
                 logging.getLogger(__name__).exception('任务调度失败，将短暂退避后重试')
                 self.stopping.wait(.2)
 
-    def verify(self, task_id):
+    def verify(self, task_id, rework_only=False):
         try:
-            self.verification.run(task_id, automatic=True)
+            if not rework_only:
+                self.verification.run(task_id, automatic=True)
+            self.auto_rework(task_id)
+            with self.lock:
+                self.auto_rework_pending.discard(task_id)
         except Exception as error:
+            self.verification_retry_at = time.monotonic() + .2
             try:
                 self.store.event(task_id, 'verification_error', {'reason': type(error).__name__})
             except Exception:
@@ -362,8 +488,16 @@ class Service:
                         media_artifact_root=str(self.gateway.artifact_root))
             self.store.update(ident, **prepared)
             self.store.event(ident, 'state', {'state': 'running'})
+            from .adapters.base import CLI
+            cli = isinstance(self.adapters[task['agent']], CLI)
+            cli_session = None
             def event(kind, data):
+                nonlocal cli_session
                 if kind == 'session' and data.get('session_id'):
+                    if cli:
+                        if data.get('source') != 'cli_init' or cli_session is not None:
+                            return
+                        cli_session = data['session_id']
                     self.store.update(ident, session_id=data['session_id'])
                 if kind == 'accepted':
                     self.store.update(ident, delivery='accepted', baseline=data.get('baseline'))
@@ -383,7 +517,9 @@ class Service:
                 task["deadline"] = time.time() + task["timeout_seconds"]
                 timer.start()
             result = self.adapters[task['agent']].run(task, cancel, event)
-            if result.get('session_id'):
+            if cli:
+                result['session_id'] = cli_session
+            elif result.get('session_id'):
                 self.store.update(ident, session_id=result['session_id'])
             media_entries = result.get('media_artifacts', [])
             result['media_artifacts'] = self.gateway.register(ident, media_entries)

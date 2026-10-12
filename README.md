@@ -181,3 +181,39 @@ MediaFlow 以 context + acceptance 提交，通过 get_work_item / get_result.ve
 ```
 
 字段只接受范围内整数，未知字段也会返回 `INVALID_CONFIG`；范围见[设计文档](docs/2026-10-12-verification-phase1-design.md)。已登记媒体不占读取文件数额度；基线不完整时交给人工审核。相同内容重新生成仍可能标为 `copied`，不计作 `artifact_required` 证据。
+
+## 第二阶段：工作台与总控
+
+三个 CLI（Codex、Claude、Cursor CLI）使用结构化输出映射实际过程事件；缺失工具/审批信息明确标示，进度自述不算验收证据。本轮只核实 CLI help，没有调用真实模型。
+
+本机工作台地址为当前独立后台的 `http://127.0.0.1:PORT/work/TASK_ID`。先由受信本机客户端向 `POST /work/TASK_ID/session` 发送 `Authorization: Bearer TOKEN`，接收绑定 TASK_ID 的 cookie 并交给同一浏览器会话；随后 GET 页面及 `/events?after_seq=N` 使用 HttpOnly cookie，访问其他任务路径返回 401。页面通过该任务的 events 接口及受归属校验的 attempt_id 参数读取同一尝试链，不扩大 cookie 的任务路径权限。也可直接用 Bearer 获取页面。不要把令牌加进 URL、HTML 或命令行参数。页面展示每次尝试的执行事件与独立验收结论，使用 seq 长轮询；`show TASK_ID --data-dir DATA_DIR` 保留文本查看方式。
+
+总控通过 MCP 或本机 RPC 接管（SSH 也支持 claim 和 get_work_item）：
+
+```json
+{"tool":"claim_controller","arguments":{"request_id":"claim-1","task_id":"TASK_ID","controller_id":"controller-A"}}
+```
+
+返回 `controller_epoch`，随后 continue_task、cancel_task、verify_task、record_verification、record_external_verification 和 switch_executor 参数均带 `controller_id` 与 `controller_epoch`。另一个 claim 会递增 epoch，旧总控收到 CONTROLLER_STALE。相同 request_id 返回原接管收据；没有租约的旧任务仍可直接操作。
+
+`switch_executor` 参数为 `request_id, task_id, agent, mode, prompt` 加可选租约字段。须从已终止的当前尝试交接，创建新尝试并附目标、验收条件、失败原因、产物哈希与最近事件；不复用原生会话。同执行器续接仍调用 continue_task。
+
+独立数据目录的 config.json 可设置：
+
+```json
+{"verification":{"max_auto_rework":2}}
+```
+
+范围 0–5，0 关闭自动返工。只有 Hub 确定性 fail 且没有 inconclusive 的 rework_required 才自动续接原执行器/会话，最多累计该次数；保留全部尝试，同验收 run 不重复派发；验收已落盘但返工未派发时，重启会按同一 run 与次数上限补派，不重新验收。needs_review、审核失败或验证器不可用不自动派发。copied 文件只有同一路径的显式 expected SHA-256 匹配 Hub 实读值时，才可满足 artifact_required。
+
+审核写入仍只允许本机 RPC。record_verification 的 content_review 结果必须提供 `reason` 与已有 evidence 的 `artifact_id`。未收到审核结果时保持 inconclusive/needs_review，不会自动调用审核模型。
+
+多媒体项目可以把已经完成的检查回写到已有验收条件，调用仅本机 RPC 的 record_external_verification：
+
+```json
+{"request_id":"media-check-1","task_id":"TASK_ID","verifier_id":"media-project-checker","checks":[{"criterion_id":"dimensions","outcome":"pass","reason":"外部项目已检查尺寸符合要求","evidence":["REGISTERED_ARTIFACT_ID"]}]}
+```
+
+通过 `python -m agent_hub rpc record_external_verification --data-dir DATA_DIR --arguments -` 从 stdin 提交。evidence 仅接受该尝试已登记的 artifact_id；criterion_id 必须属于 acceptance.criteria（外部尺寸/质量检查可预先声明为 content_review）。同请求幂等；旧尝试迟到结果仅记 superseded。审核与外部结果接口不进入 MCP/SSH，执行器不能写验收结果。Hub 不生成图片或解码视频，此接口尚未接通 Muse 或在真实 Windows 验证。
+
+CLI 过程事件只从 stdout 映射；stderr 仅脱敏写日志。CLI 会话只接受 stdout 的首个初始化记录，后续 init 或最终 result 不覆盖 session_id；缺少有效首个 init 时不提供原生续接。permission_denials 日志只保留工具名称和调用 ID。外部检查对非当前尝试（包括执行失败的旧尝试）只追加 superseded 历史，仍校验条件与证据归属。
