@@ -1,6 +1,8 @@
 # 本地 Agent Hub
 
-当前进度（2026-10-11）：Windows 第一版与 Mac 本机接入已实现，提供 11 个 MCP 工具。新增 Cursor CLI / Grok Bot 双向接入，真实总控派发、执行器回复和续接通过，见 [接入记录](docs/2026-10-11-cursor-grokbot-validation.md)。Mac 最新完整自动回归 129 项：128 通过、1 项 Windows ACL 检查跳过（49.332 秒）。真实核心任务与补充异常验收已完成本轮记录；严格休眠超时恢复等仍未验证，不能宣称全部功能都已验收。当前状态与验证边界见 [开发进度](docs/开发进度.md) 和 [第一版验收](docs/第一版验收.md)。Windows 记录来自 10-09/10-10，最新修改未在 Windows 重新回归。
+当前进度（2026-10-12）：任务验收第一至第三阶段已在本地 main（`08f0542`、`b495f73`、`807ed0c`）。MCP 现为 16 个工具，含 `verify_task`、`get_work_item`、`claim_controller`、`switch_executor`、`list_nodes`。`transfer_artifact`、人工裁决和外部验收写入只在本机已认证 RPC。沙箱外完整回归 253 项：252 通过、1 项 Windows ACL 检查在 macOS 上跳过。真实 Windows、真实双机 SSH、Muse 验收回写，以及 Claude / Cursor CLI 流式事件的真实任务，均未验收。用法见下文第二、三阶段；设计见 [验收设计](docs/2026-10-12-verification-phase1-design.md)。
+
+截至 2026-10-11 的记录：Windows 第一版与 Mac 本机接入已实现，当时为 11 个 MCP 工具。新增 Cursor CLI / Grok Bot 双向接入，真实总控派发、执行器回复和续接通过，见 [接入记录](docs/2026-10-11-cursor-grokbot-validation.md)。该日完整自动回归 129 项：128 通过、1 项 Windows ACL 检查跳过（49.332 秒）。严格休眠超时恢复等仍未验证。当日状态见 [开发进度](docs/开发进度.md) 和 [第一版验收](docs/第一版验收.md)；该文件保留历史测试数，不代表现在的工具数量。Windows 记录来自 10-09/10-10，此后修改未在 Windows 重新回归。
 
 Muse 原会话远端取消、SSH 跨机器 Hub 调度已实现。Muse 取消/期限/正常退出在同一专用会话实测通过；SSH 调度完成两个隔离 Hub 的逻辑验证，真实双机 SSH 尚未验收。配置与使用见 [新增功能记录](docs/2026-10-11-muse-cancel-remote-hub.md)。
 
@@ -100,7 +102,7 @@ request_id 应为稳定且唯一的请求键。相同键和内容只执行一次
   Muse 发送使用 fire_and_forget，只取得派发确认；回复由 Hub 的历史轮询统一回收，不在发送工具内重复等待回复。
   Hub 专用 Muse 子进程启用 `MUSE_MCP_REUSE_GATEWAY=1`，配套 muse-mcp 支持在锁保护下复用连接，减少重复 HTTPS 认证；连接异常会丢弃缓存，不重放业务操作。普通 Muse 工具默认仍使用独立连接。配套兼容性补丁和基线安装步骤见 [vendor/muse-mcp/README.md](vendor/muse-mcp/README.md)，部署时需应用补丁并配置自己的认证与 Python 路径。
 - 后台重启：running/cancelling 标 interrupted，不按旧 PID 杀进程，也不自动重跑。无法确认旧执行已停止的工作区隔离，拒绝直接续接；同工作区此前已排队的任务也转 interrupted，其他工作区 queued 继续。需人工核对，在新工作区提交。正常终态使用已保存的 session_id 续接。Mac 上强制杀死后台不保证旧执行器停止。
-- Mac 已完成本机核心闭环及补充实机验收，详见 [Mac 验收记录](docs/2026-10-11-macos-full-acceptance.md) 与 [补充异常验收](docs/2026-10-11-macos-resilience-validation.md)。严格的睡眠期间到期后恢复处理仍未验证。DeepSeek Harness、Claude 订阅模式未验收；跨机器 Hub 调度和 Muse 远端取消不属于当前实现能力。Mac 不使用 Windows lock 文件：创建环境后 `pip install -e .`，按本机路径配置。
+- Mac 已完成本机核心闭环及补充实机验收，详见 [Mac 验收记录](docs/2026-10-11-macos-full-acceptance.md) 与 [补充异常验收](docs/2026-10-11-macos-resilience-validation.md)。严格的睡眠期间到期后恢复处理仍未验证。DeepSeek Harness、Claude 订阅模式未验收。Muse 原会话远端取消和 SSH 跨机器调度已实现；真实双机 SSH 尚未验收，见开头说明。Mac 不使用 Windows lock 文件：创建环境后 `pip install -e .`，按本机路径配置。
 
 ## 诊断与验证
 
@@ -114,7 +116,7 @@ request_id 应为稳定且唯一的请求键。相同键和内容只执行一次
 
 开发设计、实施计划、开发进度和验收记录位于 docs。认证和运行数据不进入 Git；完整日志仅在用户私有数据目录保存。
 
-Mac 最新记录分为 [核心验收](docs/2026-10-11-macos-full-acceptance.md) 与 [异常及稳定性验收](docs/2026-10-11-macos-resilience-validation.md)。仍未验证严格的睡眠期间到期后恢复处理、Muse 底层浏览器动作独立审计、数小时持续稳定性、真实登录自然过期后的恢复。跨机器 Hub 调度和 Muse 远端取消尚未实现；DeepSeek Harness、Claude 订阅模式按本轮范围排除。
+Mac 2026-10-11 的记录分为 [核心验收](docs/2026-10-11-macos-full-acceptance.md) 与 [异常及稳定性验收](docs/2026-10-11-macos-resilience-validation.md)。仍未验证严格的睡眠期间到期后恢复处理、Muse 底层浏览器动作独立审计、数小时持续稳定性、真实登录自然过期后的恢复。Muse 远端取消和 SSH 调度随后已实现，真实双机 SSH 仍未验收。DeepSeek Harness、Claude 订阅模式按该轮范围排除。
 
 `scripts/macos_*.py` 是本轮隔离验收及证据复核脚本，使用固定私有目录和请求键，不能把重放旧结果当作新验收。涉及真实账号的脚本会使用账号额度；休眠脚本会让整台 Mac 休眠，须每次明确授权并准备手动唤醒。它们不由普通自动回归执行。
 
@@ -137,7 +139,7 @@ list_agents 的 permissions 按模式说明 enforced_by、enforced、allows_writ
 
 ## HubGateway v1（服务版本 0.2.1）
 
-新增 `get_capabilities()`、`get_artifact(artifact_id)`，MCP 当前共十一个工具（包括同期新增的 resume_task）。
+新增 `get_capabilities()`、`get_artifact(artifact_id)`。该版本 MCP 共十一个工具（包括同期新增的 resume_task）；当前工具数见文首。
 `submit_task` 新增可选 `context`，省略或 null 保持旧请求哈希兼容；对象内容全部参与幂等哈希。
 任务状态保留原始 `state`；结果另提供 `gateway_state`、`execution_uncertain`、`errors` 和 `media_artifacts`。
 实现边界、配置和测试见 [HubGateway 交接说明](docs/HubGateway-v1-实现交接.md)。
@@ -152,7 +154,7 @@ Muse 遇到人机验证、登录或审批时，可报告 `waiting_for_user`（�
 
 当前检测优先使用派发提示中约定的 `[HUB_WAIT:<task_id>:human_verification|login|approval]` 消息标记，保守识别最新助手消息中的明确阻碍和接管请求作为辅助，并标明 `evidence`。尚未验证 Muse 原生结构化人工等待字段；这不是通用浏览器状态探测，模型不报告时可能仍需人工查看。Hub 不操作人机验证。
 
-本机 MCP 增至 11 工具；后台需在无在途任务时重载，Cursor/Codex 客户端需重新连接 MCP 才能发现 resume_task 和新版等待说明。已开始的旧 worker 不会热升级。SSH 执行器的人工等待透传不在本次实现范围。
+该版本本机 MCP 增至 11 工具；后台需在无在途任务时重载，Cursor/Codex 客户端需重新连接 MCP 才能发现 resume_task 和新版等待说明。已开始的旧 worker 不会热升级。SSH 执行器的人工等待透传不在该次实现范围。
 
 HubGateway 媒体接入已完成首轮真实文本审核与 Muse 默认图片路由验收：`text.review/deepseek-flash[1m]` 和 `image.generate/muse:auto` 已登记证据。`muse:auto` 表示默认路由，底层模型未知；仅支持已验收的一张 PNG 无参考图路径。
 
@@ -168,7 +170,7 @@ python -m agent_hub show TASK_ID --data-dir /path/to/private-data
 python -m agent_hub rpc record_verification --data-dir /path/to/private-data --arguments '{"request_id":"review-1","task_id":"TASK_ID","verifier_id":"human","decision":"pass","reason":"已核对"}'
 ```
 
-MediaFlow 以 context + acceptance 提交，通过 get_work_item / get_result.verification 读取；统一多媒体验收写入留到第二阶段。设计与边界见 [第一阶段设计](docs/2026-10-12-verification-phase1-design.md)。本机 MCP 新增 verify_task、get_work_item，共 13 个工具；客户端需重新加载新版工具。
+MediaFlow 以 context + acceptance 提交，通过 get_work_item / get_result.verification 读取。外部检查结果由下文的 `record_external_verification` 写入，Hub 仍不生成图片或解码视频，也尚未接通 Muse。设计与边界见 [验收设计](docs/2026-10-12-verification-phase1-design.md)。第一阶段当时新增 verify_task、get_work_item；加上后续阶段后，MCP 现为 16 个工具。客户端需重新加载后才能看到新工具。
 
 带 acceptance 的尝试链保持线性：只能从当前末端 continue_task，旧尝试的新请求返回 ATTEMPT_SUPERSEDED（同键重放仍幂等）。artifact_required 要求本次新增或内容哈希改变，已有声明文件、touch 及复用其他任务媒体均不算产物。验收异常有界重试后转 needs_review。
 

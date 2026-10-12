@@ -40,7 +40,7 @@ continue_task 创建新尝试并继承 acceptance，attempt 按 parent_id 链深
 
 ## 多媒体与第二阶段
 
-MediaFlow 通过 context 携带关联信息，同时提交 acceptance；读取 get_work_item 或 get_result.verification。Gateway 媒体契约及原始审核回答保持不变。第一阶段只提供确定性检查与人工裁决；统一多媒体验收结果写入、审核端与质量门禁对接留到第二阶段。
+MediaFlow 通过 context 携带关联信息，同时提交 acceptance；读取 get_work_item 或 get_result.verification。Gateway 媒体契约及原始审核回答保持不变。第一阶段只提供确定性检查与人工裁决。第二阶段已实现外部结果写入和人工裁决约束，见下文「第二阶段实现」；审核模型不会自动派发，Muse 仍未接通。
 
 第二阶段以“工作项 = 根任务 + 尝试链”管理持续会话和总控接管。引入 controller_id 租约与递增 epoch，每次控制指令校验 epoch，拒绝失效总控。更换执行器创建新尝试，生成交接摘要（目标、约束、检查失败原因、产物和事件），不冒充同一原生会话；原生 session_id 仅在兼容执行器内续接。
 
@@ -158,3 +158,5 @@ artifact_transfer.max_received_bytes 默认 1073741824（1 GiB），范围 1–1
 新增回归覆盖 Remote/SSH 三类检查与不返工、工具声明、删除节点后的重放/内容冲突、非 local 同主机拒绝及旧声明不泄露路径、跨发送方同键/换键内容去重、配额、旧收据和文件迁移、显式平台及 Linux 映射。RemoteTests 的单机桥接 fixture 补有效 platform 声明，这是新配置契约的适配，不是规避沙箱。所有 Remote/SSH 执行仍为 mock 或本机脚本模拟，未连真实主机。
 
 本次评审修正最终实跑（仍在沙箱）：`AGENT_HUB_DATA_DIR=/private/tmp/phase3-review-isolated PYTHONPATH=src /private/tmp/phase3-venv/bin/python -m unittest discover -s tests -p test_verification.py`：93 项，92 项通过，1 个真实回环 bind PermissionError，无断言失败。相同环境运行 `-m unittest discover -s tests -v`：253 项，240 项通过，12 个环境错误、1 项 Windows 跳过，无断言失败；错误仍为 5 个 ps 权限错误、5 个回环 bind 权限错误、2 个隔离后台启动/connection.json 缺失错误。单独 `PYTHONPATH=src:tests ... -m unittest test_integration.IntegrationTests.test_mcp_tools_over_stdio -v`：16 项工具数量与 list_nodes 名单断言已通过，随后 /health 读取隔离后台 connection.json 缺失报错，未将该集成测试写成通过。`... -m unittest test_verification.NodeTransferTests -v`：18 项全部通过，包括不依赖监听的 MCP 工具声明检查。compileall 和 git diff --check 通过。日志为 `/private/tmp/phase3-review-verification-current.log`、`/private/tmp/phase3-review-regression-current.log`、`/private/tmp/phase3-review-stdio.log`、`/private/tmp/phase3-review-focused-final.log`。没有调用真实模型、连接真实 SSH、访问共享后台或提交 Git。
+
+以上两段回归数字是实现方在受限环境中的记录，其中的 ps、回环监听和隔离后台错误不能当成代码失败。总控随后在沙箱外、使用项目 `.venv` 与 `PYTHONPATH` 指向本工作区 `src`，运行 `.venv/bin/python -m unittest discover -s tests`：253 项，252 通过，1 项 Windows ACL 检查在 macOS 上跳过，无失败。这次复跑没有改写上面的沙箱日志。
