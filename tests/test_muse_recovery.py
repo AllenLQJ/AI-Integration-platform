@@ -96,6 +96,18 @@ class MuseRecoveryTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 'DELIVERY_UNKNOWN')
         self.assertEqual(self.calls.count('muse_send'), 1)
 
+    def test_send_error_preserves_safe_upstream_diagnostics(self):
+        error = self.error()
+        error['error'].update(status=503, exception_type='GatewayError',
+                              stage='send.preflight_history', dispatch_attempted=False)
+        with self.assertRaises(HubError) as caught:
+            self.execute({'muse_raw': [{'session_id': 'sid'}], 'muse_history': [[]],
+                          'muse_send': [error]})
+        self.assertEqual(caught.exception.details['status'], 503)
+        self.assertEqual(caught.exception.details['muse_stage'], 'send.preflight_history')
+        self.assertFalse(caught.exception.details['dispatch_attempted'])
+        self.assertEqual(self.calls.count('muse_send'), 1)
+
     def test_invalid_history_after_send_reports_remote_uncertainty(self):
         with self.assertRaises(HubError) as caught:
             self.execute({'muse_raw': [{'session_id': 'sid'}], 'muse_send': [{'sent': True}],

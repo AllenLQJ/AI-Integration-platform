@@ -23,10 +23,52 @@ index 3f5c2d2..50c17cc 100755
          raise RuntimeError((r.stderr or r.stdout)[:200] or f"exit {r.returncode}")
      try:
 diff --git a/muse.py b/muse.py
-index f43338b..0ac161d 100644
+index f43338b..b032f71 100644
 --- a/muse.py
 +++ b/muse.py
-@@ -100,8 +100,24 @@ def _require_http():
+@@ -60,6 +60,41 @@ with open(_asset_path("routes.json"), encoding="utf-8") as fh:
+     ROUTES = {e["method"]: e for e in json.load(fh)}
+ 
+ SERVICE_IDS = {"daemon": 0, "sentinel": 1, "vault": 2, "authd": 3}
++NOISE_CHUNK_BYTES = 65489
++NOISE_MAX_CHUNKS = 256
++
++
++class NoiseFrameDecoder:
++    """Bounded reassembly matching the Muse web client's Noise framing."""
++
++    def __init__(self):
++        self.pending = {}
++
++    def decode(self, data):
++        frame = NoiseTransportFrame()
++        frame.ParseFromString(data)
++        total = frame.total_chunks if frame.HasField('total_chunks') else 1
++        index = frame.chunk_index
++        if not 1 <= total <= NOISE_MAX_CHUNKS or not 0 <= index < total:
++            raise GatewayError(-1, 'invalid Noise chunk metadata')
++        if len(frame.payload) > NOISE_CHUNK_BYTES:
++            raise GatewayError(-1, 'Noise chunk payload exceeds limit')
++        now = time.monotonic()
++        if any(now - item['created'] > 30 for item in self.pending.values()):
++            raise GatewayError(-1, 'Noise chunk assembly expired')
++        key = frame.chunk_id
++        if key not in self.pending:
++            if len(self.pending) >= 16:
++                raise GatewayError(-1, 'too many pending Noise assemblies')
++            self.pending[key] = {'total': total, 'chunks': {}, 'created': now}
++        item = self.pending[key]
++        if item['total'] != total or index in item['chunks']:
++            raise GatewayError(-1, 'inconsistent or duplicate Noise chunk')
++        item['chunks'][index] = bytes(frame.payload)
++        if len(item['chunks']) < total:
++            return None
++        del self.pending[key]
++        return b''.join(item['chunks'][i] for i in range(total))
+ 
+ 
+ class AuthError(RuntimeError):
+@@ -100,8 +135,24 @@ def _require_http():
      return rq
  
  
@@ -52,7 +94,7 @@ index f43338b..0ac161d 100644
                  data=b"", impersonate="chrome", timeout=20)
      if r.status_code != 200:
          raise AuthError(f"auth/check -> {r.status_code} {r.text[:120]} (cookies expired? re-export)")
-@@ -109,8 +125,8 @@ def fetch_access_token(cookies):
+@@ -109,8 +160,8 @@ def fetch_access_token(cookies):
  
  
  def fetch_hatch_token(cookies, access_token, vm_id):
@@ -63,7 +105,7 @@ index f43338b..0ac161d 100644
          headers=_hatch_headers(cookies, access_token),
          json={"vmAddress": f"wss://{vm_id}.metaaivm.com/", "vmName": vm_id},
          impersonate="chrome", timeout=20,
-@@ -153,7 +169,7 @@ def load_cookies(path):
+@@ -153,7 +204,7 @@ def load_cookies(path):
  
  def fetch_session_info(cookies):
      """Discover the user's assigned personal VM (id + gateway URL)."""
@@ -72,8 +114,54 @@ index f43338b..0ac161d 100644
                              impersonate="chrome", timeout=20)
      if r.status_code != 200:
          raise AuthError(f"api/session -> {r.status_code} (cookies expired? re-export)")
+@@ -200,15 +251,22 @@ class Gateway:
+         self.stream = 1
+         self._send_lock = threading.Lock()
+         self._recv_lock = threading.Lock()
++        self._frame_decoder = NoiseFrameDecoder()
+ 
+     # -- low-level framing -------------------------------------------------
+     def _send_envelope(self, service_id, frame_bytes):
+         outer = ServiceRequest(service=service_id, payload=frame_bytes)
++        payload = outer.SerializeToString()
++        total = max(1, (len(payload) + NOISE_CHUNK_BYTES - 1) // NOISE_CHUNK_BYTES)
++        if total > NOISE_MAX_CHUNKS:
++            raise ValueError('Muse request exceeds Noise framing limit')
+         chunk_id = struct.unpack("<q", os.urandom(8))[0]
+-        fr = NoiseTransportFrame(chunk_id=chunk_id, chunk_index=0, total_chunks=1,
+-                                 payload=outer.SerializeToString())
+         with self._send_lock:
+-            self.ws.send_bytes(bytes(self.noise.encrypt(fr.SerializeToString())))
++            for index in range(total):
++                start = index * NOISE_CHUNK_BYTES
++                fr = NoiseTransportFrame(chunk_id=chunk_id, chunk_index=index, total_chunks=total,
++                                         payload=payload[start:start + NOISE_CHUNK_BYTES])
++                self.ws.send_bytes(bytes(self.noise.encrypt(fr.SerializeToString())))
+ 
+     def _read_frame(self):
+         # Serialized so two threads can never interleave ws.recv / Noise
+@@ -216,12 +274,14 @@ class Gateway:
+         # Callers must still avoid *logical* races: only one thread should
+         # be consuming frames at a time, or responses get misrouted.
+         with self._recv_lock:
+-            data, _flags = self.ws.recv()
+-            pt = bytes(self.noise.decrypt(bytes(data)))
+-        ntf = NoiseTransportFrame()
+-        ntf.ParseFromString(pt)
++            while True:
++                data, _flags = self.ws.recv()
++                pt = bytes(self.noise.decrypt(bytes(data)))
++                payload = self._frame_decoder.decode(pt)
++                if payload is not None:
++                    break
+         sr = ServiceResponse()
+-        sr.ParseFromString(ntf.payload)
++        sr.ParseFromString(payload)
+         sf = ServiceFrame()
+         sf.ParseFromString(sr.payload)
+         return sf
 diff --git a/muse_mcp/client.py b/muse_mcp/client.py
-index 4d7c3d0..a9a3903 100644
+index 4d7c3d0..464aa85 100644
 --- a/muse_mcp/client.py
 +++ b/muse_mcp/client.py
 @@ -4,6 +4,7 @@ import json
@@ -144,6 +232,74 @@ index 4d7c3d0..a9a3903 100644
          gateway = self._gateway_factory(cookies, vm_id=config.get("vm_id"))
          try:
              yield gateway
+@@ -163,13 +196,18 @@ class MuseClient:
+             except Exception:
+                 pass
+ 
+-    def _execute(self, operation: Callable[[Any, Dict[str, Any]], Any], thread: Optional[str] = None) -> Any:
++    def _execute(self, operation: Callable[[Any, Dict[str, Any]], Any], thread: Optional[str] = None,
++                 diagnostics: Optional[Callable[[], Dict[str, Any]]] = None) -> Any:
+         try:
+             config = self._config_loader()
+             with self._gateway(config) as gateway:
+                 return operation(gateway, config)
+         except Exception as exc:
+-            return _exception_error(exc, thread=thread)
++            result = _exception_error(exc, thread=thread)
++            result["error"]["exception_type"] = type(exc).__name__
++            if diagnostics:
++                result["error"].update(diagnostics())
++            return result
+ 
+     def status(self) -> Dict[str, Any]:
+         def operation(gateway: Any, _config: Dict[str, Any]) -> Dict[str, Any]:
+@@ -241,7 +279,11 @@ class MuseClient:
+         wait_seconds: Optional[float] = 90,
+         fire_and_forget: bool = False,
+     ) -> Any:
++        stage = "connect"
++        dispatch_attempted = False
++
+         def operation(gateway: Any, config: Dict[str, Any]) -> Dict[str, Any]:
++            nonlocal stage, dispatch_attempted
+             resolved = resolve_thread(config, thread)
+             if not isinstance(message, str) or not message.strip():
+                 raise MCPInputError("message must be a non-empty string")
+@@ -256,6 +298,7 @@ class MuseClient:
+                 params["session_id"] = resolved
+             scope = {"session_id": resolved} if resolved else {}
+             baseline = 0
++            stage = "send.preflight_history"
+             try:
+                 history = gateway.call_json("chat.history", body={"limit": 1, **scope})
+                 events = history.get("chat_events", []) if isinstance(history, dict) else []
+@@ -267,6 +310,8 @@ class MuseClient:
+             except GatewayError:
+                 raise
+ 
++            stage = "send.dispatch"
++            dispatch_attempted = True
+             stream_id = gateway._open("chat.stream", body=params)
+             result: Dict[str, Any] = {"ok": True, "sent": True, "stream_id": stream_id}
+             if fire_and_forget or wait_seconds == 0:
+@@ -275,6 +320,7 @@ class MuseClient:
+                 result["note"] = "request dispatched; inspect muse_history for progress or completion"
+                 return result
+ 
++            stage = "send.reply_history"
+             timeout = 90 if wait_seconds is None else float(wait_seconds)
+             deadline = time.monotonic() + timeout
+             while time.monotonic() < deadline:
+@@ -306,7 +352,8 @@ class MuseClient:
+             result["waiting"] = True
+             return result
+ 
+-        return self._execute(operation, thread=thread)
++        return self._execute(operation, thread=thread, diagnostics=lambda: {
++            "stage": stage, "dispatch_attempted": dispatch_attempted})
+ 
+     def feed(self, limit: Optional[int] = None, raw: bool = False) -> Any:
+         def operation(gateway: Any, _config: Dict[str, Any]) -> Any:
 diff --git a/muse_mcp/server.py b/muse_mcp/server.py
 index 252ca7c..2194d39 100644
 --- a/muse_mcp/server.py
@@ -172,9 +328,41 @@ index 252ca7c..2194d39 100644
      return _client
  
  
+diff --git a/tests/test_mcp.py b/tests/test_mcp.py
+index 3df9728..8457f47 100644
+--- a/tests/test_mcp.py
++++ b/tests/test_mcp.py
+@@ -72,6 +72,28 @@ class MCPClientTests(unittest.TestCase):
+             gateway_factory=lambda *a, **k: gateway,
+         )
+ 
++    def test_send_preflight_failure_has_diagnostics_without_dispatch_or_secret(self):
++        def fail():
++            raise GatewayError(503, 'Bearer private-secret')
++        gateway = FakeGateway(history=[fail])
++        result = self.make_client(gateway).send('test', fire_and_forget=True)
++        self.assertEqual(result['error']['stage'], 'send.preflight_history')
++        self.assertEqual(result['error']['status'], 503)
++        self.assertEqual(result['error']['exception_type'], 'GatewayError')
++        self.assertFalse(result['error']['dispatch_attempted'])
++        self.assertEqual(gateway.opened, [])
++        self.assertNotIn('private-secret', json.dumps(result))
++
++    def test_send_dispatch_failure_preserves_uncertainty(self):
++        class BrokenGateway(FakeGateway):
++            def _open(self, *args, **kwargs):
++                raise ConnectionError('private connection details')
++        result = self.make_client(BrokenGateway()).send('test', fire_and_forget=True)
++        self.assertEqual(result['error']['stage'], 'send.dispatch')
++        self.assertTrue(result['error']['dispatch_attempted'])
++        self.assertEqual(result['error']['exception_type'], 'ConnectionError')
++        self.assertNotIn('private connection details', json.dumps(result))
++
+ 
+     def test_auth_export_reports_missing_agent_browser(self):
+         stderr = io.StringIO()
 diff --git a/tests/test_gateway_reuse.py b/tests/test_gateway_reuse.py
 new file mode 100644
-index 0000000..d8df216
 --- /dev/null
 +++ b/tests/test_gateway_reuse.py
 @@ -0,0 +1,92 @@
@@ -272,7 +460,6 @@ index 0000000..d8df216
 +        client.close()
 diff --git a/tests/test_https_recovery.py b/tests/test_https_recovery.py
 new file mode 100644
-index 0000000..ac03bbc
 --- /dev/null
 +++ b/tests/test_https_recovery.py
 @@ -0,0 +1,53 @@
@@ -329,3 +516,77 @@ index 0000000..ac03bbc
 +            with self.assertRaises(muse.AuthError):
 +                muse.fetch_session_info("test-cookie")
 +            self.assertEqual(request.call_count, 1)
+diff --git a/tests/test_noise_framing.py b/tests/test_noise_framing.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_noise_framing.py
+@@ -0,0 +1,69 @@
++import threading
++import unittest
++from types import SimpleNamespace
++from muse import (Gateway, GatewayError, NoiseFrameDecoder, NoiseTransportFrame,
++                  ServiceRequest, NOISE_CHUNK_BYTES)
++
++
++class NoiseFramingTests(unittest.TestCase):
++    def frames(self, payload):
++        sent = []
++        def encrypt(data):
++            # Include the AES-GCM tag in the Noise wire message limit.
++            self.assertLessEqual(len(data) + 16, 65535)
++            return data
++        gateway = Gateway.__new__(Gateway)
++        gateway._send_lock = threading.Lock()
++        gateway.ws = SimpleNamespace(send_bytes=sent.append)
++        gateway.noise = SimpleNamespace(encrypt=encrypt)
++        gateway._send_envelope(0, payload)
++        return sent
++
++    def test_long_request_round_trip_and_chunk_order(self):
++        payload = ('长文档内容' * 20000).encode()
++        frames = self.frames(payload)
++        self.assertGreater(len(frames), 1)
++        decoder = NoiseFrameDecoder()
++        decoded = None
++        chunk_ids = set()
++        for index, data in enumerate(frames):
++            frame = NoiseTransportFrame.FromString(data)
++            chunk_ids.add(frame.chunk_id)
++            self.assertEqual(frame.chunk_index, index)
++            self.assertEqual(frame.total_chunks, len(frames))
++            decoded = decoder.decode(data)
++            if index < len(frames) - 1:
++                self.assertIsNone(decoded)
++        self.assertEqual(len(chunk_ids), 1)
++        self.assertEqual(ServiceRequest.FromString(decoded).payload, payload)
++        self.assertEqual(decoder.pending, {})
++
++    def test_boundary_and_small_requests(self):
++        for size in (0, 1, NOISE_CHUNK_BYTES - 5, NOISE_CHUNK_BYTES, 98052):
++            with self.subTest(size=size):
++                decoder = NoiseFrameDecoder()
++                for frame in self.frames(b'x' * size):
++                    decoded = decoder.decode(frame)
++                self.assertEqual(ServiceRequest.FromString(decoded).payload, b'x' * size)
++
++    def test_reordered_chunks_are_reassembled(self):
++        decoder = NoiseFrameDecoder()
++        payload = b'x' * 150000
++        for frame in reversed(self.frames(payload)):
++            decoded = decoder.decode(frame)
++        self.assertEqual(ServiceRequest.FromString(decoded).payload, payload)
++
++    def test_duplicate_chunk_is_rejected(self):
++        decoder = NoiseFrameDecoder()
++        frame = self.frames(b'x' * 150000)[0]
++        self.assertIsNone(decoder.decode(frame))
++        with self.assertRaises(GatewayError):
++            decoder.decode(frame)
++
++    def test_oversized_request_is_rejected_before_send(self):
++        with self.assertRaises(ValueError):
++            self.frames(b'x' * (NOISE_CHUNK_BYTES * 256))
++
++
++if __name__ == '__main__':
++    unittest.main()
