@@ -7,7 +7,8 @@
       "cwd": "/home/your-name/project", "mode": "read_only"},
     "codex": {"executable": "C:/path/to/codex.exe"},
     "claude": {"executable": "C:/path/to/claude.exe"},
-    "cursor": {"enabled": false, "executable": "/Users/your-name/.local/bin/agent"},
+    "cursor": {"enabled": false, "kind": "ide"},
+    "cursor_cli": {"enabled": false, "executable": "/Users/your-name/.local/bin/agent"},
     "grokbot": {"enabled": false, "bot_name": "Agent Hub Worker", "session_id": "YOUR_VERIFIED_EXISTING_SESSION_ID",
       "credentials_file": "/Users/your-name/.config/agent-serve/credentials.json"},
     "muse": {

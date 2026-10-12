@@ -33,6 +33,14 @@ class Service:
                 raise HubError('INVALID_ARGUMENT', '等待参数不正确')
             return self.wait_for_task(**arguments)
         with self.lock:
+            if tool in {'ide_next_task', 'ide_task_update', 'ide_task_status'}:
+                from .adapters.cursor_ide import CursorIDE
+                adapter = self.adapters.get('cursor')
+                if not isinstance(adapter, CursorIDE):
+                    raise HubError('AGENT_UNAVAILABLE', 'Cursor IDE 桥接未配置')
+                method = {'ide_next_task': adapter.next_task, 'ide_task_update': adapter.update,
+                          'ide_task_status': adapter.status}[tool]
+                return method(**arguments)
             if tool == 'get_capabilities':
                 return self.gateway.capabilities(self.adapters)
             if tool == 'get_artifact':

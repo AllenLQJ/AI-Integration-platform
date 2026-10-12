@@ -6,6 +6,7 @@ from .adapters.codex import Codex
 from .adapters.claude import Claude
 from .adapters.muse import Muse
 from .adapters.cursor import Cursor
+from .adapters.cursor_ide import CursorIDE
 from .adapters.grokbot import GrokBot
 from .adapters.remote import Remote
 from .models import HubError
@@ -74,10 +75,12 @@ def adapters(root):
             result[name] = Remote(item['ssh_host'], item['python'], item['data_dir'],
                                   item['agent'], item['cwd'], item['mode'])
     for name, cls in [('codex', Codex), ('claude', Claude), ('muse', Muse),
-                      ('cursor', Cursor), ('grokbot', GrokBot)]:
+                      ('cursor', Cursor), ('cursor_cli', Cursor), ('grokbot', GrokBot)]:
         item = config.get('agents', {}).get(name)
         if item and item.get('enabled', True) and item.get('kind') != 'remote':
-            if name == 'grokbot':
+            if name == 'cursor' and item.get('kind') == 'ide':
+                result[name] = CursorIDE(root)
+            elif name == 'grokbot':
                 result[name] = cls(item['bot_name'], item.get('credentials_file'),
                                    item.get('state_file'), item.get('env'), item.get('session_id'))
             elif name == 'muse': result[name] = cls(item['executable'], item.get('args'), item.get('env'), item.get('session_id'))
