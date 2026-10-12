@@ -430,6 +430,128 @@ class VerificationTests(unittest.TestCase):
         child = self.service.call('continue_task', dict(request_id='workbench-next', task_id=ident, prompt='next'))['id']
         self.wait(child)
         self.assertIn('200', request('do_GET', '/events?after_seq=0&attempt_id=' + child, {'Cookie': cookie}))
+        self.assertIn('200', request('do_GET', '/snapshot', {'Cookie': cookie}))
+        self.assertIn('401', request('do_GET', '/snapshot'))
+        self.assertIn('401', request('do_GET', '/snapshot', {'Cookie': cookie, 'Sec-Fetch-Site': 'cross-site'}))
+
+    def test_workbench_snapshot_http_auth_and_semantics(self):
+        import json
+        import urllib.request
+        import urllib.error
+        from agent_hub.daemon import make_server
+        ident = self.submit([{'id': 'f', 'kind': 'file_exists', 'path': 'output.txt'}], prompt='write')
+        self.wait(ident)
+        token = 'snapshot-private-token'
+        server = make_server(self.service, token)
+        worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
+        origin = 'http://127.0.0.1:' + str(server.server_port)
+        def get(path, **headers):
+            try:
+                with urllib.request.urlopen(urllib.request.Request(origin + path, headers=headers)) as response:
+                    return response.status, response.headers, response.read().decode()
+            except urllib.error.HTTPError as error:
+                return error.code, error.headers, error.read().decode()
+        def view(attempts):
+            return [(a['task_id'], a['attempt'], a['state'], a['work_status'], a['verification']) for a in attempts]
+        try:
+            snapshot = '/work/' + ident + '/snapshot'
+            self.assertEqual(get(snapshot)[0], 401)
+            self.assertEqual(get(snapshot, Authorization='Bearer wrong')[0], 401)
+            request = urllib.request.Request(origin + '/work/' + ident + '/session', method='POST', headers={'Authorization': 'Bearer ' + token})
+            with urllib.request.urlopen(request) as response:
+                cookie = response.headers['Set-Cookie'].split(';')[0]
+            self.assertEqual(get(snapshot, Cookie=cookie, Origin='https://example.com')[0], 401)
+            self.assertEqual(get(snapshot, Cookie=cookie, **{'Sec-Fetch-Site': 'cross-site'})[0], 401)
+            self.assertEqual(get(snapshot, Cookie='hub_work=forged')[0], 401)
+            other = self.submit(request_id='snapshot-other'); self.wait(other)
+            self.assertEqual(get('/work/' + other + '/snapshot', Cookie=cookie)[0], 401)
+            self.assertEqual(get('/work/' + ident + '/unknown', Cookie=cookie)[0], 404)
+            status, headers, html = get('/work/' + ident, Cookie=cookie)
+            self.assertEqual(status, 200)
+            self.assertIn("default-src 'none'", headers['Content-Security-Policy'])
+            self.assertEqual(headers['X-Content-Type-Options'], 'nosniff')
+            status, headers, text = get(snapshot, Cookie=cookie)
+            self.assertEqual(status, 200); self.assertEqual(headers['Cache-Control'], 'no-store')
+            body = json.loads(text)
+            item = self.service.call('get_work_item', {'task_id': ident})
+            self.assertEqual((body['current_task_id'], body['work_status'], body['verification']['state']), (ident, 'completed', 'passed'))
+            self.assertEqual(view(body['attempts']), view(item['attempts']))
+            self.assertEqual([a['artifact_id'] for a in body['attempts'][0]['artifacts']],
+                             [a['artifact_id'] for a in item['attempts'][0]['artifacts']])
+            for secret in (token, cookie.split('=', 1)[1], 'fake-session'):
+                self.assertNotIn(secret, text)
+            self.assertNotIn('controller', body)
+            self.assertEqual(set(body['attempts'][0]), {'task_id', 'parent_id', 'attempt', 'state', 'work_status', 'verification', 'artifacts'})
+            self.assertEqual(get(snapshot, Authorization='Bearer ' + token)[0], 200)
+            child = self.service.call('continue_task', dict(request_id='snapshot-next', task_id=ident, prompt='next'))['id']
+            self.wait(child)
+            body = json.loads(get(snapshot, Cookie=cookie)[2])
+            item = self.service.call('get_work_item', {'task_id': ident})
+            self.assertEqual(body['current_task_id'], child)
+            self.assertEqual(view(body['attempts']), view(item['attempts']))
+            self.assertEqual(body['work_status'], item['work_status'])
+            self.assertEqual(body['verification'], next(a['verification'] for a in item['attempts'] if a['task_id'] == child))
+        finally:
+            server.shutdown(); server.server_close(); worker.join()
+
+    def test_workbench_html_separates_work_execution_and_verification(self):
+        import json
+        from html.parser import HTMLParser
+        from agent_hub.daemon import render_workbench, WORKBENCH_SCRIPT
+        class Tree(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.root = dict(tag='root', attrs={}, children=[], text='')
+                self.stack = [self.root]
+            def handle_starttag(self, tag, attrs):
+                node = dict(tag=tag, attrs=dict(attrs), children=[], text='')
+                self.stack[-1]['children'].append(node)
+                if tag not in {'meta', 'br', 'hr', 'img', 'input', 'link'}:
+                    self.stack.append(node)
+            def handle_endtag(self, tag):
+                while len(self.stack) > 1 and self.stack.pop()['tag'] != tag:
+                    pass
+            def handle_data(self, data):
+                for node in self.stack:
+                    node['text'] += data
+        def walk(node):
+            for child in node['children']:
+                yield child; yield from walk(child)
+        def find(node, **attrs):
+            return [n for n in walk(node) if all(attrs[k] in n['attrs'].get(k, '').split() if k == 'class' else n['attrs'].get(k) == v
+                                                  for k, v in attrs.items())]
+        artifact = dict(artifact_id='a1', logical_id='artifact://a1', sha256='0' * 64, path='first.txt')
+        item = dict(root_task_id='root', current_task_id='child', work_status='running', pending_actions=[], attempts=[
+            dict(task_id='root', parent_id=None, attempt=1, state='succeeded', work_status='rework_required', criteria=[],
+                 verification=dict(state='rework_required', reason='旧结论'), artifacts=[artifact, dict(artifact)],
+                 events=[dict(seq=1, kind='state', data=dict(state='succeeded'), timestamp=1)]),
+            dict(task_id='child', parent_id='root', attempt=2, state='running', work_status='running', criteria=[],
+                 verification=dict(state='not_requested'), artifacts=[],
+                 events=[dict(seq=2, kind='state', data=dict(state='running'), timestamp=2),
+                         dict(seq=3, kind='message', data=dict(message='</pre><script>alert(1)</script>'), timestamp=3)])])
+        html = render_workbench(item)
+        tree = Tree(); tree.feed(html)
+        text = lambda ident: find(tree.root, id=ident)[0]['text']
+        self.assertEqual((text('work-status'), text('current-attempt'), text('current-state'), text('verification-status')),
+                         ('running', 'child', 'running', 'not_requested'))
+        self.assertNotIn('验收：running', html)
+        self.assertEqual(len(find(tree.root, id='connection')), 1)
+        self.assertEqual(len([n for n in walk(tree.root) if n['tag'] == 'script']), 1)
+        self.assertNotIn('<script>alert', html)
+        self.assertFalse(find(tree.root, **{'class': 'live-verdict'}))
+        for section in [n for n in walk(tree.root) if 'data-task' in n['attrs']]:
+            self.assertEqual([c['tag'] for c in section['children']], ['h3', 'p', 'p', 'div'])
+            self.assertEqual(section['children'][2]['attrs'].get('class'), 'note')
+            events = section['children'][3]
+            self.assertEqual(events['attrs'].get('class'), 'events')
+            self.assertTrue(events['children'])
+            self.assertTrue(all(c['tag'] == 'pre' and c['attrs']['data-seq'].isdigit() for c in events['children']))
+        panels = {n['attrs']['data-verification']: n for n in walk(tree.root) if 'data-verification' in n['attrs']}
+        self.assertEqual(json.loads(find(panels['root'], **{'class': 'verdict'})[0]['text'])['state'], 'rework_required')
+        self.assertEqual(json.loads(find(panels['root'], **{'class': 'artifacts'})[0]['text']), [artifact])
+        self.assertEqual(json.loads(find(panels['child'], **{'class': 'artifacts'})[0]['text']), [])
+        self.assertEqual(find(panels['child'], **{'class': 'verification-state'})[0]['text'], 'not_requested')
+        self.assertNotIn('\\', WORKBENCH_SCRIPT); self.assertNotIn('</', WORKBENCH_SCRIPT)
 
     def test_mixed_inconclusive_and_fail_does_not_auto_rework(self):
         self.service.max_auto_rework = 2
