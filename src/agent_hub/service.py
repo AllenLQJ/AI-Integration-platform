@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import os
 import threading
@@ -8,22 +9,32 @@ from .models import HubError, TERMINAL
 from .store import Store
 from .gateway import Gateway, result_fields
 from .workspaces import Workspaces
+from .verification import Verification, validate
 
 
 class Service:
     def __init__(self, data_dir, adapters, concurrency=2, per_agent_concurrency=None):
         self.root = Path(data_dir)
         self.root.mkdir(parents=True, exist_ok=True)
+        from .config import verification_options
+        verification_config = verification_options(self.root)
         self.store = Store(self.root / 'tasks.db')
         self.store.recover()
         self.gateway = Gateway(self.root, self.store)
+        self.stopping = threading.Event()
+        self.verification = Verification(self.store, self.gateway, self.stopping)
+        for key, attribute in {'max_files': 'max_files', 'max_bytes': 'max_total_bytes',
+                               'max_entries': 'max_entries', 'max_seconds': 'max_scan_seconds'}.items():
+            setattr(self.verification, attribute, verification_config[key])
+        self.verification_join_seconds = verification_config['join_seconds']
         self.workspaces = Workspaces(self.root)
         self.adapters = adapters
         self.concurrency = concurrency
         self.per_agent_concurrency = dict(per_agent_concurrency or {})
         self.lock = threading.RLock()
         self.active = {}
-        self.stopping = threading.Event()
+        self.verification_active = {}
+        self.verification_retry_at = 0
         self.thread = threading.Thread(target=self.schedule, daemon=True)
         self.thread.start()
 
@@ -32,7 +43,17 @@ class Service:
             if not isinstance(arguments, dict) or set(arguments) - {'task_id', 'after_seq', 'timeout_seconds'} or 'task_id' not in arguments:
                 raise HubError('INVALID_ARGUMENT', '等待参数不正确')
             return self.wait_for_task(**arguments)
+        if tool == 'continue_task':
+            with self.verification.task_lock(arguments['task_id']), self.lock:
+                return self.continue_task(**arguments)
+        if tool == 'record_verification':
+            return self.verification.record(**arguments)
+        if tool == 'verify_task':
+            return self.verification.request(arguments['request_id'], dict(tool=tool, task_id=arguments['task_id']),
+                                             lambda: self.verification.run(arguments['task_id'], arguments['request_id']))
         with self.lock:
+            if tool == 'get_work_item':
+                return self.verification.work_item(**arguments)
             if tool in {'ide_next_task', 'ide_task_update', 'ide_task_status'}:
                 from .adapters.cursor_ide import CursorIDE
                 adapter = self.adapters.get('cursor')
@@ -48,7 +69,7 @@ class Service:
             if tool == 'list_agents':
                 return {name: adapter.diagnose() for name, adapter in self.adapters.items()}
             if tool == 'submit_task':
-                allowed = {'request_id', 'agent', 'prompt', 'cwd', 'mode', 'timeout_seconds', 'context'}
+                allowed = {'request_id', 'agent', 'prompt', 'cwd', 'mode', 'timeout_seconds', 'context', 'acceptance'}
                 if set(arguments) - allowed:
                     raise HubError('INVALID_ARGUMENT', '不允许设置内部任务字段')
                 return self.submit(**arguments)
@@ -63,13 +84,13 @@ class Service:
             if tool == 'get_result':
                 task = self.store.get(arguments['task_id'])
                 if task['state'] not in TERMINAL:
-                    return dict(ready=False, state=task['state'], intervention=task.get('intervention'), permissions=self.permissions(task),
+                    return dict(ready=False, state=task['state'], intervention=task.get('intervention'), permissions=self.permissions(task), **self.verification.fields(task),
                                 **result_fields(task['state'], {}))
                 result = dict(task.get('result', {}))
                 if result.get('path'):
                     result = json.loads(Path(result['path']).read_text(encoding='utf-8'))
                 result.update(result_fields(task['state'], result))
-                return dict(result, ready=True, state=task['state'], permissions=self.permissions(task))
+                return dict(result, ready=True, state=task['state'], permissions=self.permissions(task), **self.verification.fields(task))
             if tool == 'cancel_task':
                 return self.cancel(**arguments)
             raise HubError('UNKNOWN_TOOL', '未知工具')
@@ -110,10 +131,11 @@ class Service:
         result = {k: v for k, v in task.items() if k not in {'prompt', 'resume_session'}}
         result['permissions'] = self.permissions(task)
         result['contract_version'] = '1.0'
+        result.update(self.verification.fields(task))
         result_fields(task['state'], {})
         return result
 
-    def submit(self, request_id, agent, prompt, cwd, mode, timeout_seconds=1800, context=None, **internal):
+    def submit(self, request_id, agent, prompt, cwd, mode, timeout_seconds=1800, context=None, acceptance=None, **internal):
         if not isinstance(request_id, str) or not request_id or len(request_id) > 200:
             raise HubError('INVALID_ARGUMENT', 'request_id 需要非空字符串，最多 200 字符')
         if not isinstance(prompt, str) or not prompt or len(prompt) > 100000:
@@ -122,6 +144,9 @@ class Service:
             raise HubError('INVALID_ARGUMENT', '期限须在 10–7200 秒内')
         spec = dict(agent=agent, prompt=prompt, cwd=str(Path(cwd).resolve()), mode=mode,
                     timeout_seconds=timeout_seconds, **internal)
+        validate(acceptance)
+        if acceptance is not None:
+            spec['acceptance'] = acceptance
         self.gateway.context(context)
         if context is not None:
             spec['context'] = context
@@ -143,6 +168,7 @@ class Service:
         policy = adapter.permission_policy(mode) if hasattr(adapter, 'permission_policy') else self.permissions(task)
         self.store.update(task['id'], permissions=policy)
         task = self.store.get(task['id'])
+        self.verification.track(task)
         return self.public(task)
 
     def continue_task(self, request_id, task_id, prompt, timeout_seconds=1800):
@@ -153,11 +179,16 @@ class Service:
             parent = dict(parent, mode='text_only')
         workspace_metadata = ({'excluded_untracked_files': parent['excluded_untracked_files']}
                               if 'excluded_untracked_files' in parent else {})
+        workspace_metadata['acceptance'] = parent.get('acceptance')
         if self.store.by_request(request_id):
             return self.submit(request_id, parent['agent'], prompt, parent['cwd'], parent['mode'],
                                timeout_seconds, parent_id=task_id, workspace=parent.get('workspace'),
                                baseline=parent.get('baseline'), resume_session=parent.get('session_id'),
                                **workspace_metadata)
+        if parent.get('acceptance'):
+            current = self.verification.work_item(task_id)['current_task_id']
+            if current != task_id or any(t.get('parent_id') == task_id for t in self.store.list()):
+                raise HubError('ATTEMPT_SUPERSEDED', '只能从当前尝试续接返工', {'current_task_id': current})
         if parent.get('workspace_quarantined'):
             raise HubError('WORKSPACE_UNCERTAIN', '旧执行状态不确定，工作区已隔离；请人工核对后在新工作区提交')
         if (getattr(self.adapters[parent['agent']], 'cancel_scope', None) in {'remote_session', 'remote_hub_task'}
@@ -235,35 +266,81 @@ class Service:
 
     def schedule(self):
         while not self.stopping.wait(.05):
+            try:
+                try:
+                    pending = self.verification.pending() if time.monotonic() >= self.verification_retry_at else []
+                    with self.lock:
+                        for ident in pending:
+                            if self.stopping.is_set() or len(self.verification_active) >= self.concurrency:
+                                break
+                            if ident not in self.verification_active:
+                                worker = threading.Thread(target=self.verify, args=(ident,), daemon=True)
+                                self.verification_active[ident] = worker
+                                try:
+                                    worker.start()
+                                except Exception:
+                                    self.verification_active.pop(ident, None)
+                                    raise
+                except Exception as error:
+                    # 全局发现失败退避，执行调度仍继续；可用时记录受影响任务。
+                    self.verification_retry_at = time.monotonic() + 1
+                    try:
+                        for task in self.store.list({'succeeded'}):
+                            if task.get('acceptance') and self.verification.summary(task)['state'] == 'awaiting_verification':
+                                self.store.event(task['id'], 'verification_dispatch_error', {'reason': type(error).__name__})
+                    except Exception:
+                        pass
+                with self.lock:
+                    from collections import Counter
+                    used_agents = Counter(a['agent'] for a in self.active.values())
+                    used_workspaces = {a['workspace'] for a in self.active.values()}
+                    for task in self.store.list({'queued'}):
+                        if len(self.active) >= self.concurrency:
+                            break
+                        actual_workspace = task.get('workspace') or (
+                            str(self.workspaces.root / task['id']) if task['mode'] == 'edit_worktree' else task['cwd'])
+                        workspace_key = os.path.normcase(str(Path(actual_workspace).resolve()))
+                        quarantined = {os.path.normcase(str(Path(t.get('workspace') or t['cwd']).resolve()))
+                                       for t in self.store.list() if t.get('workspace_quarantined')}
+                        if workspace_key in quarantined:
+                            self.store.update(task['id'], workspace=actual_workspace, workspace_quarantined=True)
+                            self.store.finish(task['id'], 'interrupted', {
+                                'error_code': 'WORKSPACE_UNCERTAIN',
+                                'error': '工作区旧执行状态不确定，排队任务未启动；请人工核对后使用新工作区'})
+                            continue
+                        if (used_agents[task['agent']] >= self.per_agent_concurrency.get(task['agent'], 1)
+                                or workspace_key in used_workspaces):
+                            continue
+                        cancel = threading.Event()
+                        worker = threading.Thread(target=self.execute, args=(task, cancel), daemon=True)
+                        self.active[task['id']] = dict(agent=task['agent'], workspace=workspace_key,
+                                                       cancel=cancel, thread=worker)
+                        used_agents[task['agent']] += 1
+                        used_workspaces.add(workspace_key)
+                        try:
+                            self.store.update(task['id'], state='running')
+                            worker.start()
+                        except Exception:
+                            if worker.ident is None:
+                                self.active.pop(task['id'], None)
+                                if self.store.get(task['id'])['state'] == 'running':
+                                    self.store.update(task['id'], state='queued')
+                            raise
+            except Exception:
+                logging.getLogger(__name__).exception('任务调度失败，将短暂退避后重试')
+                self.stopping.wait(.2)
+
+    def verify(self, task_id):
+        try:
+            self.verification.run(task_id, automatic=True)
+        except Exception as error:
+            try:
+                self.store.event(task_id, 'verification_error', {'reason': type(error).__name__})
+            except Exception:
+                pass
+        finally:
             with self.lock:
-                from collections import Counter
-                used_agents = Counter(a['agent'] for a in self.active.values())
-                used_workspaces = {a['workspace'] for a in self.active.values()}
-                for task in self.store.list({'queued'}):
-                    if len(self.active) >= self.concurrency:
-                        break
-                    actual_workspace = task.get('workspace') or (
-                        str(self.workspaces.root / task['id']) if task['mode'] == 'edit_worktree' else task['cwd'])
-                    workspace_key = os.path.normcase(str(Path(actual_workspace).resolve()))
-                    quarantined = {os.path.normcase(str(Path(t.get('workspace') or t['cwd']).resolve()))
-                                   for t in self.store.list() if t.get('workspace_quarantined')}
-                    if workspace_key in quarantined:
-                        self.store.update(task['id'], workspace=actual_workspace, workspace_quarantined=True)
-                        self.store.finish(task['id'], 'interrupted', {
-                            'error_code': 'WORKSPACE_UNCERTAIN',
-                            'error': '工作区旧执行状态不确定，排队任务未启动；请人工核对后使用新工作区'})
-                        continue
-                    if (used_agents[task['agent']] >= self.per_agent_concurrency.get(task['agent'], 1)
-                            or workspace_key in used_workspaces):
-                        continue
-                    cancel = threading.Event()
-                    worker = threading.Thread(target=self.execute, args=(task, cancel), daemon=True)
-                    self.active[task['id']] = dict(agent=task['agent'], workspace=workspace_key,
-                                                   cancel=cancel, thread=worker)
-                    used_agents[task['agent']] += 1
-                    used_workspaces.add(workspace_key)
-                    self.store.update(task['id'], state='running')
-                    worker.start()
+                self.verification_active.pop(task_id, None)
 
     def execute(self, task, cancel):
         ident = task['id']
@@ -277,7 +354,8 @@ class Service:
                     timed_out.set(); cancel.set(); return
         timer = threading.Thread(target=expire)
         timer.daemon = True
-        timer.start()
+        if not task.get("acceptance"):
+            timer.start()
         try:
             prepared = self.workspaces.prepare(task)
             task.update(prepared, deadline=deadline, log_dir=str(self.root / 'logs' / ident),
@@ -297,14 +375,28 @@ class Service:
                             self.store.update(ident, state='waiting_for_user' if kind == 'waiting_for_user' else 'running',
                                               intervention=self.store.safe(data) if kind == 'waiting_for_user' else None)
                 self.store.event(ident, kind, data)
+            if task.get("acceptance"):
+                self.verification.snapshot(task, cancel)
+                self.verification.checkpoint()
+                if cancel.is_set():
+                    raise HubError("CANCELLED", "任务已取消")
+                task["deadline"] = time.time() + task["timeout_seconds"]
+                timer.start()
             result = self.adapters[task['agent']].run(task, cancel, event)
             if result.get('session_id'):
                 self.store.update(ident, session_id=result['session_id'])
-            result['media_artifacts'] = self.gateway.register(ident, result.get('media_artifacts', []))
+            media_entries = result.get('media_artifacts', [])
+            result['media_artifacts'] = self.gateway.register(ident, media_entries)
+            self.verification.media(task, media_entries, result['media_artifacts'])
             result['artifacts'] = dict(result.get('artifacts', {}), **self.workspaces.artifacts(task))
             state = 'timed_out' if timed_out.is_set() else 'cancelled' if cancel.is_set() else 'succeeded'
         except HubError as error:
-            state = {'CANCELLED': 'cancelled', 'TIMED_OUT': 'timed_out',
+            if error.code == 'VERIFICATION_STOPPED' and self.stopping.is_set():
+                # 停机时保留在途状态，由 recover 标 interrupted 并隔离工作区。
+                with self.lock:
+                    self.active.pop(ident, None)
+                return
+            state = {'CANCELLED': 'cancelled', 'VERIFICATION_STOPPED': 'cancelled', 'TIMED_OUT': 'timed_out',
                      'DELIVERY_UNKNOWN': 'delivery_unknown', 'REMOTE_STATE_UNKNOWN': 'interrupted'}.get(error.code, 'failed')
             if timed_out.is_set() and state == 'cancelled':
                 state = 'timed_out'
@@ -313,7 +405,8 @@ class Service:
             state, result = 'failed', {'error': type(error).__name__, 'error_code': 'EXECUTION_ERROR'}
         finally:
             watchdog_stop.set()
-            timer.join(1)
+            if timer.ident is not None:
+                timer.join(1)
         if state != 'succeeded' and task.get('workspace') and task['mode'] == 'edit_worktree':
             try:
                 result['artifacts'] = dict(result.get('artifacts', {}), **self.workspaces.artifacts(task))
@@ -333,11 +426,18 @@ class Service:
         with self.lock:
             if state == 'succeeded' and self.store.get(ident)['state'] == 'cancelling':
                 state = 'timed_out' if timed_out.is_set() else 'cancelled'
-            self.store.finish(ident, state, {'path': str(path)})
-            self.active.pop(ident, None)
+            try:
+                self.store.finish(ident, state, {'path': str(path)})
+                self.verification.track(self.store.get(ident))
+                self.verification.ensure(self.store.get(ident))
+            except Exception as error:
+                self.store.event(ident, 'verification_enqueue_error', {'reason': type(error).__name__})
+            finally:
+                self.active.pop(ident, None)
 
     def close(self):
-        self.stopping.set()
+        with self.verification.lock:
+            self.stopping.set()
         self.thread.join(5)
         with self.lock:
             workers = list(self.active.values())
@@ -346,3 +446,8 @@ class Service:
         for active in workers:
             adapter = self.adapters[active['agent']]
             active['thread'].join(30 if getattr(adapter, 'cancel_scope', None) in {'remote_session', 'remote_hub_task'} else 20)
+        with self.lock:
+            verifiers = list(self.verification_active.values())
+        end = time.monotonic() + getattr(self, "verification_join_seconds", 20)
+        for worker in verifiers:
+            worker.join(max(0, end - time.monotonic()))

@@ -155,3 +155,29 @@ Muse 遇到人机验证、登录或审批时，可报告 `waiting_for_user`（�
 本机 MCP 增至 11 工具；后台需在无在途任务时重载，Cursor/Codex 客户端需重新连接 MCP 才能发现 resume_task 和新版等待说明。已开始的旧 worker 不会热升级。SSH 执行器的人工等待透传不在本次实现范围。
 
 HubGateway 媒体接入已完成首轮真实文本审核与 Muse 默认图片路由验收：`text.review/deepseek-flash[1m]` 和 `image.generate/muse:auto` 已登记证据。`muse:auto` 表示默认路由，底层模型未知；仅支持已验收的一张 PNG 无参考图路径。
+
+## 独立任务验收（第一阶段）
+
+`submit_task` 可传 `acceptance={"criteria":[{"id":"output","kind":"file_exists","path":"output.txt"},{"id":"digest","kind":"sha256","path":"output.txt"}]}`，路径相对于任务实际工作区。还支持 `artifact_required` 和 `content_review`（需人工裁决）；`required` 默认 true。验收条件参与 request_id 幂等哈希，continue_task 自动继承。
+
+执行 state 和 Gateway 契约保持原样；读取新增的 `verification`、`work_status`：只有验收 passed 映射为 completed；无条件的旧任务成功仍为 succeeded。`ready=true` 只表示执行结束。`get_work_item(task_id)` 汇总尝试链、检查原因、产物逻辑 ID/哈希及待处理动作，`verify_task(request_id, task_id)` 幂等重验。
+
+```sh
+python -m agent_hub show TASK_ID --data-dir /path/to/private-data
+# needs_review 的人工裁决仅开放本机已认证 RPC，不注册 MCP
+python -m agent_hub rpc record_verification --data-dir /path/to/private-data --arguments '{"request_id":"review-1","task_id":"TASK_ID","verifier_id":"human","decision":"pass","reason":"已核对"}'
+```
+
+MediaFlow 以 context + acceptance 提交，通过 get_work_item / get_result.verification 读取；统一多媒体验收写入留到第二阶段。设计与边界见 [第一阶段设计](docs/2026-10-12-verification-phase1-design.md)。本机 MCP 新增 verify_task、get_work_item，共 13 个工具；客户端需重新加载新版工具。
+
+带 acceptance 的尝试链保持线性：只能从当前末端 continue_task，旧尝试的新请求返回 ATTEMPT_SUPERSEDED（同键重放仍幂等）。artifact_required 要求本次新增或内容哈希改变，已有声明文件、touch 及复用其他任务媒体均不算产物。验收异常有界重试后转 needs_review。
+
+`show TASK_ID --ssh-host HOST --remote-python /path/to/python --remote-data-dir /path/to/data` 可读取远端交接包（SSH 放行只读 get_work_item）。verify_task 和 record_verification 不经 SSH；人工裁决仍只使用本机已认证 RPC。
+
+验收扫描与关机等待预算可在本数据目录的 `config.json` 中配置（下例为缺省值）：
+
+```json
+{"verification":{"max_files":1000,"max_bytes":268435456,"max_entries":5000,"max_seconds":10,"join_seconds":20}}
+```
+
+字段只接受范围内整数，未知字段也会返回 `INVALID_CONFIG`；范围见[设计文档](docs/2026-10-12-verification-phase1-design.md)。已登记媒体不占读取文件数额度；基线不完整时交给人工审核。相同内容重新生成仍可能标为 `copied`，不计作 `artifact_required` 证据。

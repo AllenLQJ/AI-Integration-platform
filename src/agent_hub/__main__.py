@@ -5,13 +5,14 @@ import sys
 
 TOOLS = ('list_agents', 'submit_task', 'get_task', 'get_events', 'wait_for_task',
          'get_result', 'continue_task', 'resume_task', 'cancel_task',
-         'ide_next_task', 'ide_task_update', 'ide_task_status')
+         'ide_next_task', 'ide_task_update', 'ide_task_status',
+         'verify_task', 'get_work_item', 'record_verification')
 
 
 def main():
     parser = argparse.ArgumentParser(description='Local Agent Hub')
-    parser.add_argument('command', choices=['mcp', 'daemon', 'status', 'stop', 'rpc'])
-    parser.add_argument('tool', nargs='?', choices=TOOLS)
+    parser.add_argument('command', choices=['mcp', 'daemon', 'status', 'stop', 'rpc', 'show'])
+    parser.add_argument('tool', nargs='?')
     parser.add_argument('--arguments', default='{}', help='rpc 参数 JSON 对象；用 - 从 stdin 读取')
     parser.add_argument('--data-dir')
     parser.add_argument('--ssh-host', help='已有 SSH 主机别名；调用目标机 Hub')
@@ -20,10 +21,14 @@ def main():
     args = parser.parse_args()
     if args.command == 'rpc' and not args.tool:
         parser.error('rpc 需要工具名称')
-    if args.command != 'rpc' and args.tool:
+    if args.command == 'rpc' and args.tool not in TOOLS:
+        parser.error('未知 RPC 工具')
+    if args.command == 'show' and not args.tool:
+        parser.error('show 需要 task_id')
+    if args.command not in {'rpc', 'show'} and args.tool:
         parser.error('只有 rpc 接受工具名称')
     if args.ssh_host and (args.command in {'daemon', 'stop'} or not args.remote_python or not args.remote_data_dir):
-        parser.error('SSH 仅支持 mcp/status/rpc，需 remote-python 和 remote-data-dir')
+        parser.error('SSH 仅支持 mcp/status/rpc/show，需 remote-python 和 remote-data-dir')
     if not args.ssh_host and (args.remote_python or args.remote_data_dir):
         parser.error('远端路径需要 ssh-host')
     try:
@@ -59,10 +64,15 @@ def main():
             else:
                 client = Client()
             result = (client.stop() if args.command == 'stop' else
-                      client.call(args.tool, arguments) if args.command == 'rpc' else client.call('list_agents'))
+                      client.call(args.tool, arguments) if args.command == 'rpc' else
+                      client.call('get_work_item', {'task_id': args.tool}) if args.command == 'show' else client.call('list_agents'))
         except HubError as error:
             print(json.dumps({'error': {'code': error.code, 'message': redact(str(error))}}, ensure_ascii=False))
             raise SystemExit(1)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if args.command == 'show':
+            from .verification import render
+            print(render(result))
+        else:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
 
 if __name__ == '__main__': main()

@@ -22,7 +22,7 @@ def list_agents() -> dict:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def submit_task(request_id: str, agent: str, prompt: str, cwd: str,
-                mode: str, timeout_seconds: int = 1800, context: dict | None = None) -> dict:
+                mode: str, timeout_seconds: int = 1800, context: dict | None = None, acceptance: dict | None = None) -> dict:
     """提交后台任务并立即返回 ID。同一个 request_id 和内容幂等。
 
     Claude: text_only/read_only/edit_worktree；Codex、cursor_cli: read_only/edit_worktree。
@@ -63,7 +63,7 @@ def get_result(task_id: str) -> dict:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def continue_task(request_id: str, task_id: str, prompt: str, timeout_seconds: int = 1800) -> dict:
-    """续接原生会话并创建子任务，保留旧结果和同一工作区。"""
+    """续接原生会话并创建子任务，保留旧结果和同一工作区；已被续接的验收尝试返回 ATTEMPT_SUPERSEDED。"""
     return invoke('continue_task', locals())
 
 
@@ -102,3 +102,15 @@ def resume_task(request_id: str, task_id: str, intervention_id: str) -> dict:
     不代替用户完成验证，不创建新任务；确认后继续查询原 task_id。
     """
     return invoke('resume_task', locals())
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+def verify_task(request_id: str, task_id: str) -> dict:
+    """由 Hub 重新检查当前执行尝试；相同请求键只检查一次；非 succeeded 任务返回 INVALID_STATE。"""
+    return invoke('verify_task', locals())
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
+def get_work_item(task_id: str) -> dict:
+    """读取根任务及所有尝试、验收历史、产物和待处理动作。"""
+    return invoke('get_work_item', locals())

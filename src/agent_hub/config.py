@@ -27,6 +27,24 @@ def scheduler_options(root):
     return {'concurrency': global_limit, 'per_agent_concurrency': per_agent}
 
 
+def verification_options(root):
+    path = Path(root) / 'config.json'
+    config = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+    values = config.get('verification', {})
+    ranges = {'max_files': (1000, 1, 1000000), 'max_bytes': (256 * 1024 * 1024, 1, 1024 ** 4),
+              'max_entries': (5000, 1, 10000000), 'max_seconds': (10, 1, 3600),
+              'join_seconds': (20, 1, 300)}
+    if not isinstance(values, dict) or set(values) - set(ranges):
+        raise HubError('INVALID_CONFIG', 'verification 必须为对象，且仅含支持的预算字段')
+    result = {}
+    for key, (default, minimum, maximum) in ranges.items():
+        value = values.get(key, default)
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise HubError('INVALID_CONFIG', f'verification.{key} 必须为 {minimum}–{maximum} 的整数')
+        result[key] = value
+    return result
+
+
 def data_dir():
     return Path(os.environ.get('AGENT_HUB_DATA_DIR', str(Path.home() / '.agent-hub'))).resolve()
 
