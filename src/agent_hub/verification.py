@@ -29,12 +29,25 @@ def relative_path(value):
             and '..' not in value.replace('\\', '/').split('/'))
 
 
+REVIEW_AGENTS = {'claude'}
+
+
 def validate(acceptance):
     if acceptance is None:
         return
-    if (not isinstance(acceptance, dict) or set(acceptance) != {'criteria'}
+    if (not isinstance(acceptance, dict) or 'criteria' not in acceptance or set(acceptance) - {'criteria', 'review'}
             or not isinstance(acceptance['criteria'], list) or not 1 <= len(acceptance['criteria']) <= 100):
         raise HubError('INVALID_ARGUMENT', 'acceptance.criteria 需要 1–100 条检查')
+    if 'review' in acceptance:
+        review = acceptance['review']
+        if (not isinstance(review, dict) or 'agent' not in review or set(review) - {'agent', 'timeout_seconds'}
+                or not isinstance(review['agent'], str) or review['agent'] not in REVIEW_AGENTS):
+            raise HubError('INVALID_ARGUMENT', "acceptance.review 仅支持 {agent:'claude', timeout_seconds?}")
+        if 'timeout_seconds' in review and (type(review['timeout_seconds']) is not int
+                                            or not 30 <= review['timeout_seconds'] <= 3600):
+            raise HubError('INVALID_ARGUMENT', 'acceptance.review.timeout_seconds 需要 30–3600 的整数')
+        if not any(isinstance(c, dict) and c.get('kind') == 'content_review' for c in acceptance['criteria']):
+            raise HubError('INVALID_ARGUMENT', 'acceptance.review 需要至少一条 content_review 条件')
     ids = set()
     for c in acceptance['criteria']:
         if not isinstance(c, dict):
@@ -171,7 +184,7 @@ class Verification:
             self.store.event(task['id'], 'artifact', safe(self.store.safe(item)))
         return item
 
-    def read_file(self, root, name, limit=None):
+    def read_file(self, root, name, limit=None, keep=False):
         self.checkpoint()
         self.charge("files", 1, self.max_files)
         if not relative_path(name):
@@ -185,7 +198,7 @@ class Verification:
                 raise HubError('INVALID_ARGUMENT', '符号链接路径不允许作为验收产物')
         if not path.resolve().is_relative_to(root):
             raise HubError('INVALID_ARGUMENT', '符号链接逃逸工作区')
-        digest, size = hashlib.sha256(), 0
+        digest, size, content = hashlib.sha256(), 0, []
         try:
             before = path.stat()
             if not stat.S_ISREG(before.st_mode):
@@ -216,6 +229,8 @@ class Verification:
                 for chunk in iter(lambda: f.read(1024 * 1024), b''):
                     self.charge("bytes", len(chunk), self.max_total_bytes)
                     digest.update(chunk); size += len(chunk)
+                    if keep:
+                        content.append(chunk)
                     if limit is not None and size > limit:
                         raise HubError('VERIFICATION_UNCERTAIN', '文件超过验收哈希上限，请人工核对')
                 after = path.stat()
@@ -225,7 +240,10 @@ class Verification:
                     raise HubError('VERIFICATION_UNCERTAIN', '读取期间文件改变，请人工核对')
         except FileNotFoundError:
             raise HubError('ARTIFACT_NOT_FOUND', '文件不存在：' + name) from None
-        return dict(sha256=digest.hexdigest(), size_bytes=size, identity=[opened.st_dev, opened.st_ino])
+        result = dict(sha256=digest.hexdigest(), size_bytes=size, identity=[opened.st_dev, opened.st_ino])
+        if keep:
+            result['content'] = b''.join(content)
+        return result
 
     def remote_workspace(self, task):
         from .adapters.remote import Remote
@@ -268,7 +286,7 @@ class Verification:
     def workspace_files(self, task):
         root = Path(task.get('workspace') or task['cwd']).resolve()
         data_root = Path(self.store.path).parent.resolve()
-        owned_dirs = {'logs', 'results', 'media-artifacts', 'received-artifacts', 'worktrees'}
+        owned_dirs = {'logs', 'results', 'media-artifacts', 'received-artifacts', 'worktrees', 'review-workspaces'}
         if any(root.is_relative_to(data_root / name) for name in {'logs', 'results'}):
             return
         directories = [root]
@@ -402,6 +420,8 @@ class Verification:
         if kind in {'file_exists', 'sha256', 'artifact_required'} and self.remote_workspace(task):
             return 'inconclusive', '远端工作区不在本机验收范围，未检查本机 cwd 或判定远端产物缺失', {}
         if kind == 'content_review':
+            if task['acceptance'].get('review'):
+                return 'inconclusive', '等待自动审核', {}
             return 'inconclusive', '没有配置审核端，请人工审核：' + criterion['description'], {}
         if kind in {'file_exists', 'sha256'}:
             evidence = self.file(task, criterion['path'])
@@ -489,9 +509,33 @@ class Verification:
         outcomes = [c['outcome'] for c in checks if c['criterion_id'] in required]
         return 'rework_required' if 'fail' in outcomes else 'needs_review' if 'inconclusive' in outcomes else 'passed'
 
-    def save(self, task_id, state, checks, run_id, request_id=None, history=None, extra=None, expected_run=None):
+    def review_decision(self, task, checks, run_id):
+        """只有其他检查全部通过时才进入 reviewing；否则审核条件标为延后，不派发模型。"""
+        criteria = task['acceptance']['criteria']
+        config = task['acceptance'].get('review')
+        if not config:
+            return self.decision(criteria, checks), None
+        kinds = {c['id']: c['kind'] for c in criteria}
+        deferred = [c for c in checks if kinds.get(c['criterion_id']) == 'content_review' and c['outcome'] == 'inconclusive']
+        for c in deferred:
+            c['review_deferred'] = True
+        base = self.decision(criteria, [c for c in checks if not c.get('review_deferred')])
+        if base != 'passed' or not deferred:
+            for c in deferred:
+                c['reason'] = ('确定性检查未通过，暂不派发自动审核' if base == 'rework_required'
+                               else '其他检查需人工核对，未派发自动审核')
+            return self.decision(criteria, checks), None
+        for c in deferred:
+            c['reason'] = '等待 ' + config['agent'] + ' 自动审核'
+        lease = self.controller(self.root_id(task['id']))
+        review = dict(state='pending', review_run_id=uuid.uuid4().hex, verification_run_id=run_id,
+                      agent=config['agent'], timeout_seconds=config.get('timeout_seconds', 600),
+                      controller_epoch=lease['epoch'] if lease else None, task_id=None)
+        return 'reviewing', dict(review=review)
+
+    def save(self, task_id, state, checks, run_id, request_id=None, history=None, extra=None, expected_run=None, data_extra=None):
         self.checkpoint()
-        data = dict(checks=checks, verification_run_id=run_id, checked_at=time.time())
+        data = dict(checks=checks, verification_run_id=run_id, checked_at=time.time(), **(data_extra or {}))
         response = dict(verification=dict(safe(self.store.safe(data)), state=state),
                         work_status='completed' if state == 'passed' else state, **(extra or {}))
         with self.lock, self.store.connection() as db:
@@ -546,9 +590,10 @@ class Verification:
                     checks.append(dict(criterion_id=c['id'], outcome=outcome, reason=reason, evidence=evidence,
                                        verifier={'name': 'hub-deterministic', 'version': '1'}, checked_at=time.time(), verification_run_id=run_id))
                 self.local.budget = None
+                state, data_extra = self.review_decision(task, checks, run_id)
                 with self.lock:
-                    return self.save(task_id, self.decision(task['acceptance']['criteria'], checks), checks, run_id,
-                                     request_id, expected_run=run_id)
+                    return self.save(task_id, state, checks, run_id,
+                                     request_id, expected_run=run_id, data_extra=data_extra)
             except VerificationStopped:
                 with self.lock, self.store.connection() as db:
                     row = db.execute('SELECT * FROM verifications WHERE task_id=?', (task_id,)).fetchone()
@@ -611,6 +656,8 @@ class Verification:
     def request(self, request_id, content, operation):
         if not isinstance(request_id, str) or not 0 < len(request_id) <= 200:
             raise HubError('INVALID_ARGUMENT', 'request_id 需要非空字符串，最多 200 字符')
+        if request_id.startswith('auto-review'):
+            raise HubError('INVALID_ARGUMENT', 'auto-review 请求键保留给内部审核服务')
         digest = hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
         with self.lock:
             request_lock = self.request_locks.setdefault(request_id, threading.RLock())
@@ -662,6 +709,14 @@ class Verification:
         current = leaves[-1] if task.get('acceptance') else attempts[-1]
         status = current['work_status']
         actions = ['人工审核并调用 record_verification'] if status == 'needs_review' else ['调用 continue_task 续接返工'] if status == 'rework_required' else []
+        review = current['verification'].get('review') or {}
+        if status == 'reviewing':
+            actions = [f"等待 {review.get('agent', '审核端')} 自动审核（审核任务 {review.get('task_id') or '派发中'}）；"
+                       '需接管时可 record_verification 人工裁决或 verify_task 重验']
+        elif status == 'needs_review' and review.get('reason') and review.get('state') != 'passed':
+            actions.append(f"自动审核{review.get('state')}：{review['reason']}")
+        elif status == 'rework_required' and current['verification'].get('auto_rework_reason'):
+            actions.append(current['verification']['auto_rework_reason'] + '，请人工决定是否 continue_task')
         return safe(dict(controller=self.controller(root), root_task_id=root, current_task_id=current['task_id'], work_status=status, attempts=attempts, pending_actions=actions))
 
     def expected_artifact(self, task, digest, path):
@@ -765,8 +820,8 @@ class Verification:
                 raise HubError('INVALID_ARGUMENT', 'content_review 必须引用已登记 evidence 的 artifact_id')
             superseded = self.work_item(task_id)['current_task_id'] != task_id
             summary = self.summary(task)
-            if not superseded and summary['state'] != 'needs_review':
-                raise HubError('INVALID_STATE', '只有 needs_review 可以人工裁决')
+            if not superseded and summary['state'] not in {'needs_review', 'reviewing'}:
+                raise HubError('INVALID_STATE', '只有 needs_review 或审核中的尝试可以人工裁决')
             run_id = uuid.uuid4().hex
             check = dict(criterion_id=criterion_id, outcome=decision, reason=reason, evidence={'artifact_id': artifact_id} if artifact_id else {},
                          verifier={'name': verifier_id, 'version': 'human-1'}, checked_at=time.time(),
@@ -796,6 +851,9 @@ def render(item):
     lines = [f"工作项 {item['root_task_id']}  当前 {item['current_task_id']}  {item['work_status']}"]
     for attempt in item['attempts']:
         lines.append(f"尝试 {attempt['attempt']} {attempt['task_id']} 执行={attempt['state']} 验收={attempt['verification']['state']}")
+        review = attempt['verification'].get('review')
+        if review:
+            lines.append(f"  自动审核 {review.get('state')} 审核任务={review.get('task_id')} {review.get('reason', '')}".rstrip())
         for check in attempt['checks']:
             lines.append(f"  {check['criterion_id']}: {check['outcome']} {check['reason']}")
         for artifact in attempt['artifacts']:
