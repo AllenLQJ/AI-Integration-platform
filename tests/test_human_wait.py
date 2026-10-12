@@ -216,14 +216,25 @@ class MuseFlowTests(unittest.TestCase):
 
 class ProcessDeadlineTests(unittest.TestCase):
     def test_worker_event_extends_parent_process_deadline(self):
+        self.run_worker(extend=True)
+
+    def test_worker_without_extension_expires_after_ready(self):
+        with self.assertRaises(HubError) as caught:
+            self.run_worker(extend=False)
+        self.assertEqual(caught.exception.code, 'TIMED_OUT')
+
+    def run_worker(self, extend):
         import sys
         from agent_hub.processes import run_process, environment
         with tempfile.TemporaryDirectory() as td:
-            deadline = [time.time() + .4]
+            # Startup time varies on Windows; arm the short deadline after ready.
+            deadline = [time.time() + 10]
             def event(kind, data):
-                if kind == 'waiting_for_user':
+                if kind == 'worker_ready':
+                    deadline[0] = time.time() + .4
+                if kind == 'waiting_for_user' and extend:
                     deadline[0] = time.time() + 2
-            code = "import json,time; print(json.dumps({'hub_event':{'kind':'waiting_for_user','data':{}}}),flush=True); time.sleep(.6); print('done')"
+            code = "import json,time; print(json.dumps({'hub_event':{'kind':'worker_ready','data':{}}}),flush=True); print(json.dumps({'hub_event':{'kind':'waiting_for_user','data':{}}}),flush=True); time.sleep(.6); print('done')"
             rc, stdout, _, _ = run_process([sys.executable, '-c', code], td, environment(),
                 threading.Event(), lambda: deadline[0], td, event)
             self.assertEqual(rc, 0)
