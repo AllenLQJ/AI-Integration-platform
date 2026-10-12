@@ -188,7 +188,15 @@ MediaFlow 以 context + acceptance 提交，通过 get_work_item / get_result.ve
 
 三个 CLI（Codex、Claude、Cursor CLI）使用结构化输出映射实际过程事件；缺失工具/审批信息明确标示，进度自述不算验收证据。本轮只核实 CLI help，没有调用真实模型。
 
-本机工作台地址为当前独立后台的 `http://127.0.0.1:PORT/work/TASK_ID`。先由受信本机客户端向 `POST /work/TASK_ID/session` 发送 `Authorization: Bearer TOKEN`，接收绑定 TASK_ID 的 cookie 并交给同一浏览器会话；随后 GET 页面及 `/events?after_seq=N` 使用 HttpOnly cookie，访问其他任务路径返回 401。页面通过该任务的 events 接口及受归属校验的 attempt_id 参数读取同一尝试链，不扩大 cookie 的任务路径权限。也可直接用 Bearer 获取页面。不要把令牌加进 URL、HTML 或命令行参数。页面展示每次尝试的执行事件与独立验收结论，使用 seq 长轮询；`show TASK_ID --data-dir DATA_DIR` 保留文本查看方式。
+本机工作台地址为当前独立后台的 `http://127.0.0.1:PORT/work/TASK_ID`。先由受信本机客户端向 `POST /work/TASK_ID/session` 发送 `Authorization: Bearer TOKEN`，接收绑定 TASK_ID 的 cookie 并交给同一浏览器会话；随后 GET 页面及 `/events?after_seq=N` 使用 HttpOnly cookie，访问其他任务路径返回 401。页面通过该任务的 events 接口及受归属校验的 attempt_id 参数读取同一尝试链，不扩大 cookie 的任务路径权限。也可直接用 Bearer 获取页面。不要把令牌加进 URL、HTML 或命令行参数。`show TASK_ID --data-dir DATA_DIR` 保留文本查看方式。
+
+页面顶部分别显示工作状态（当前尝试的综合 `work_status`）、当前尝试、当前尝试执行状态与当前尝试验收状态；执行 `succeeded` 只表示执行结束，不等于验收通过。每次尝试单独显示执行状态、执行时间线、验收条件、当前结论与原因，以及按 `artifact_id` 去重的产物列表；新结论整体替换旧结论。
+
+页面数据分两个通道：
+- 事件通道：每次尝试使用 `/events?attempt_id=...&after_seq=N` 的 seq 长轮询（服务端最长等待 10 秒）。当前尝试和未结束的尝试连续轮询；已结束的非当前尝试每 30 秒轮询一次，以收到后续的人工验收或续接事件。执行状态事件会立即更新对应尝试的执行状态。
+- 状态快照通道：`GET /work/TASK_ID/snapshot`，鉴权与页面相同，响应 `Cache-Control: no-store`。只返回当前尝试 ID、工作状态、当前验收结论、待处理事项，以及每次尝试的 `task_id`、`parent_id`、`attempt`、执行状态、`work_status`、验收结论和产物；不含事件、会话、工作区路径与总控租约。顶部状态和验收结论以快照为准。收到执行状态、验收、验收重试、会话或产物事件后立即刷新一次快照；另外，有尝试在执行或验收中时每 3 秒刷新，全部结束后每 15 秒刷新，用来覆盖没有事件的阶段（如进入 `verifying`，或没有验收条件的续接）。快照出现新尝试时整页刷新。
+
+两个通道的故障分别记录、分别恢复，一个通道成功不会清除另一个通道的故障。网络错误或非 2xx 响应时，页面显示“连接中断”，注明是哪个通道、原因、失败次数，并说明页面停留在哪个时间点的快照；该通道按 1、2、4…最长 30 秒退避重试。返回 401 时显示“未授权”，提示由总控重新调用 `POST /work/TASK_ID/session` 签发会话，并每 5 秒重试；会话恢复后自动继续同步。快照通道在一次快照成功后恢复；事件通道在每个出错尝试各自的轮询重新成功后恢复。两个通道都正常时才显示“实时同步中”。
 
 总控通过 MCP 或本机 RPC 接管（SSH 也支持 claim 和 get_work_item）：
 
