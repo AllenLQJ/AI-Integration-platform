@@ -4,6 +4,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from agent_hub.adapters.cursor_ide import CursorIDE
 from agent_hub.config import adapters
 from agent_hub.models import HubError
@@ -35,6 +36,23 @@ class CursorIDEBridgeTests(unittest.TestCase):
 
     def claim(self):
         return self.adapter.next_task('worker')['task']
+
+    def test_bridge_reads_persisted_chinese_as_utf8(self):
+        original = Path.read_text
+        def read(path, *args, **kwargs):
+            self.assertEqual(kwargs.get('encoding'), 'utf-8')
+            return original(path, *args, **kwargs)
+        with patch.object(Path, 'read_text', read):
+            self.assertEqual(self.claim()['prompt'], '真实任务')
+
+    def test_configured_windows_ide_executable(self):
+        executable = Path(self.temp.name) / 'Cursor.exe'
+        executable.touch()
+        Path(self.temp.name, 'config.json').write_text(json.dumps({'agents': {
+            'cursor': {'kind': 'ide', 'executable': str(executable)}}}))
+        configured = adapters(self.temp.name)['cursor']
+        self.assertTrue(configured.diagnose()['available'])
+        self.assertTrue(configured.diagnose()['requires_ui_worker'])
 
     def test_claim_once_and_matching_result(self):
         self.assertEqual(self.claim()['prompt'], '真实任务')

@@ -18,6 +18,41 @@ from agent_hub.__main__ import main
 
 
 class CursorTests(unittest.TestCase):
+    def test_native_node_launcher_and_existing_credentials(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            credentials = root / 'credentials.json'
+            credentials.write_text(json.dumps({'backendUrl': 'https://api2.cursor.sh', 'apiKey': 'test-key'}))
+            credentials.chmod(0o600)
+            (root / 'config.json').write_text(json.dumps({'agents': {'cursor_cli': {
+                'executable': 'node.exe', 'args': ['index.js'], 'credentials_file': str(credentials)}}}))
+            cursor = adapters(root)['cursor_cli']
+            task = dict(workspace=td, log_dir=str(root/'data/logs/task'), mode='read_only', prompt='hello')
+            self.assertEqual(cursor.command(task)[:2], ['node.exe', 'index.js'])
+            self.assertEqual(cursor.version_command(), ['node.exe', 'index.js', '--version'])
+            with patch('agent_hub.adapters.cursor.CLI.run', return_value={}) as run:
+                cursor.run(task, threading.Event(), lambda *args: None)
+            isolated = run.call_args.args[0]
+            self.assertEqual(isolated.command(task)[:2], ['node.exe', 'index.js'])
+            self.assertEqual(isolated.env['CURSOR_API_KEY'], 'test-key')
+            self.assertNotIn('test-key', (root/'config.json').read_text())
+            cursor.env['CURSOR_API_KEY'] = 'explicit-key'
+            with patch('agent_hub.adapters.cursor.CLI.run', return_value={}) as run:
+                cursor.run(task, threading.Event(), lambda *args: None)
+            self.assertEqual(run.call_args.args[0].env['CURSOR_API_KEY'], 'explicit-key')
+
+    def test_allowlist_mode_requires_explicit_configuration(self):
+        task = dict(workspace='workspace', mode='read_only', prompt='hello')
+        self.assertIn('enabled', Cursor('unused').command(task))
+        cursor = Cursor('node.exe', args=['index.js'], sandbox='disabled')
+        self.assertIn('disabled', cursor.command(task))
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, 'config.json').write_text(json.dumps({'agents': {'cursor_cli': {
+                'executable': 'node.exe', 'args': ['index.js'], 'sandbox': 'disabled'}}}))
+            self.assertEqual(adapters(td)['cursor_cli'].sandbox, 'disabled')
+        with self.assertRaises(HubError):
+            Cursor('unused', sandbox='automatic')
+
     def test_only_terminal_success_is_result(self):
         c = Cursor('unused')
         result = dict(type='result', subtype='success', is_error=False, result='done', session_id='sid')

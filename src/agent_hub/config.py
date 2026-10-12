@@ -97,12 +97,15 @@ def adapters(root):
         item = config.get('agents', {}).get(name)
         if item and item.get('enabled', True) and item.get('kind') != 'remote':
             if name == 'cursor' and item.get('kind') == 'ide':
-                result[name] = CursorIDE(root)
+                result[name] = CursorIDE(root, item.get('executable'))
             elif name == 'grokbot':
                 result[name] = cls(item['bot_name'], item.get('credentials_file'),
                                    item.get('state_file'), item.get('env'), item.get('session_id'))
             elif name == 'muse': result[name] = cls(item['executable'], item.get('args'), item.get('env'), item.get('session_id'))
             elif name == 'codex': result[name] = cls(item['executable'], item.get('env'), item.get('windows_sandbox', 'mxc'))
+            elif name in {'cursor', 'cursor_cli'}:
+                result[name] = cls(item['executable'], item.get('env'), item.get('args'), item.get('credentials_file'),
+                                   item.get('sandbox', 'enabled'))
             else: result[name] = cls(item['executable'], item.get('env'))
     return result
 

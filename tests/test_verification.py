@@ -64,9 +64,12 @@ class VerificationTests(unittest.TestCase):
         from types import SimpleNamespace
         def process(*args, **kwargs):
             return SimpleNamespace(pid=12345, poll=lambda: 0, wait=lambda timeout: 0,
+                                   close_tree=lambda: None, close=lambda: None,
                                    stdout=BytesIO(('\n'.join(json.dumps(row) for row in stdout) + '\n').encode()),
                                    stderr=BytesIO(('\n'.join(json.dumps(row) for row in stderr) + '\n').encode()))
-        with patch('agent_hub.processes.subprocess.Popen', side_effect=process) as popen, \
+        target = ('agent_hub.windows_process.WindowsProcess' if os.name == 'nt'
+                  else 'agent_hub.processes.subprocess.Popen')
+        with patch(target, side_effect=process) as popen, \
                 patch('agent_hub.processes.stop_descendants'):
             yield popen
 
@@ -802,18 +805,21 @@ class VerificationTests(unittest.TestCase):
     def test_snapshot_time_excluded_from_execution_deadline(self):
         original = self.service.verification.snapshot
         deadlines = []
+        snapshot_finished = []
         class DeadlineFake(Fake):
             def run(inner, task, cancel, event):
-                deadlines.append(task['deadline'] - time.time())
+                deadlines.append(task['deadline'])
                 return super().run(task, cancel, event)
         self.service.adapters['fake'] = DeadlineFake()
         def slow(task, cancel=None):
             time.sleep(.25)
-            return original(task, cancel)
+            result = original(task, cancel)
+            snapshot_finished.append(time.time())
+            return result
         with patch.object(self.service.verification, 'snapshot', side_effect=slow):
             ident = self.submit([{'id': 'artifact', 'kind': 'artifact_required'}], prompt='write', timeout_seconds=10)
             self.assertEqual(self.wait(ident)['state'], 'succeeded')
-        self.assertGreater(deadlines[0], 9.9)
+        self.assertGreaterEqual(deadlines[0], snapshot_finished[0] + 10)
 
     def test_copy_of_existing_file_is_not_new_artifact(self):
         (self.workspace / 'existing').write_bytes(b'hello')
@@ -934,8 +940,14 @@ class VerificationTests(unittest.TestCase):
         for path in ('../secret', '/tmp/secret', 'C:\\secret', 'a/../../secret'):
             with self.subTest(path=path), self.assertRaises(HubError):
                 self.submit([{'id': 'p', 'kind': 'file_exists', 'path': path}])
+    def test_symlink_path_escape(self):
         outside = self.root / 'secret'; outside.write_text('secret')
-        (self.workspace / 'link').symlink_to(outside)
+        try:
+            (self.workspace / 'link').symlink_to(outside)
+        except OSError as error:
+            if getattr(error, 'winerror', None) == 1314:
+                self.skipTest('Windows account lacks symbolic-link privilege')
+            raise
         result = self.wait(self.submit([{'id': 'p', 'kind': 'file_exists', 'path': 'link'}]))
         self.assertEqual(result['work_status'], 'rework_required')
     def test_review_idempotency_and_late_record(self):

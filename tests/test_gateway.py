@@ -85,15 +85,26 @@ class GatewayTests(unittest.TestCase):
         path = self.image()
         outside = self.root / 'outside.png'
         outside.write_bytes(path.read_bytes())
-        link = path.parent / 'link.png'
-        link.symlink_to(outside)
-        for bad in (outside, link):
-            with self.assertRaises(HubError):
-                self.service.gateway.register('task', [{'path': str(bad)}])
+        with self.assertRaises(HubError):
+            self.service.gateway.register('task', [{'path': str(outside)}])
         path.write_bytes(b'\x89PNG\r\n\x1a\ninvalid')
         with self.assertRaises(HubError) as error:
             self.service.gateway.register('task', [{'path': str(path)}])
         self.assertEqual(error.exception.code, 'INVALID_ARTIFACT')
+
+    def test_no_symlink_escape(self):
+        path = self.image()
+        outside = self.root / 'outside.png'
+        outside.write_bytes(path.read_bytes())
+        link = path.parent / 'link.png'
+        try:
+            link.symlink_to(outside)
+        except OSError as error:
+            if getattr(error, 'winerror', None) == 1314:
+                self.skipTest('Windows account lacks symbolic-link privilege')
+            raise
+        with self.assertRaises(HubError):
+            self.service.gateway.register('task', [{'path': str(link)}])
 
     def test_states_and_source_urls(self):
         task = self.submit()

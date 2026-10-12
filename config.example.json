@@ -8,8 +8,11 @@
       "cwd": "/home/your-name/project", "mode": "read_only"},
     "codex": {"executable": "C:/path/to/codex.exe"},
     "claude": {"executable": "C:/path/to/claude.exe"},
-    "cursor": {"enabled": false, "kind": "ide"},
-    "cursor_cli": {"enabled": false, "executable": "/Users/your-name/.local/bin/agent"},
+    "cursor": {"enabled": false, "kind": "ide", "executable": "C:/path/to/Cursor.exe"},
+    "cursor_cli": {"enabled": false, "executable": "C:/path/to/cursor-cli/node.exe",
+      "args": ["C:/path/to/cursor-cli/index.js"],
+      "sandbox": "enabled",
+      "credentials_file": "C:/Users/your-name/.config/agent-serve/credentials.json"},
     "grokbot": {"enabled": false, "bot_name": "Agent Hub Worker", "session_id": "YOUR_VERIFIED_EXISTING_SESSION_ID",
       "credentials_file": "/Users/your-name/.config/agent-serve/credentials.json"},
     "muse": {
