@@ -143,7 +143,10 @@ class RemoteTests(unittest.TestCase):
                 subprocess.run(argv,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             proxy=Remote('fixture',sys.executable,str(remote_root),'worker',str(repo),'edit_worktree')
             proxy.client=client
-            controller=Service(self.root/'controller',{'target-worker':proxy})
+            controller_root = self.root / 'controller'
+            controller_root.mkdir()
+            (controller_root / 'config.json').write_text(json.dumps({'agents': {'target-worker': {'platform': 'darwin'}}}))
+            controller=Service(controller_root,{'target-worker':proxy})
             try:
                 job=controller.call('submit_task',dict(request_id='proxy',agent='target-worker',cwd=str(self.root),mode='delegate',prompt='PROXY-MARKER',timeout_seconds=30))
                 for _ in range(100):

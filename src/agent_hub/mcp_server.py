@@ -22,7 +22,7 @@ def list_agents() -> dict:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def submit_task(request_id: str, agent: str, prompt: str, cwd: str,
-                mode: str, timeout_seconds: int = 1800, context: dict | None = None, acceptance: dict | None = None) -> dict:
+                mode: str, timeout_seconds: int = 1800, context: dict | None = None, acceptance: dict | None = None, node_id: str | None = None) -> dict:
     """提交后台任务并立即返回 ID。同一个 request_id 和内容幂等。
 
     Claude: text_only/read_only/edit_worktree；Codex、cursor_cli: read_only/edit_worktree。
@@ -89,7 +89,7 @@ def get_capabilities() -> dict:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
-def get_artifact(artifact_id: str) -> dict:
+def get_artifact(artifact_id: str, target_host_id: str | None = None, target_node_id: str | None = None) -> dict:
     """返回已登记媒体附件的授权取回描述；仅支持同主机 local_file。"""
     return invoke('get_artifact', locals())
 
@@ -127,3 +127,9 @@ def switch_executor(request_id: str, task_id: str, agent: str, mode: str, prompt
                     controller_id: str | None = None, controller_epoch: int | None = None) -> dict:
     """从当前已终止尝试交接到新执行器，不复用原生 session_id。"""
     return invoke('switch_executor', locals())
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))
+def list_nodes() -> dict:
+    """读取节点声明；SSH 配置不代表已连通。"""
+    return invoke('list_nodes', {})

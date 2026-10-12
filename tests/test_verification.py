@@ -1152,5 +1152,261 @@ class VerificationTests(unittest.TestCase):
         self.assertEqual(self.wait(ident)['verification']['state'], 'not_requested')
         self.assertEqual(self.wait(ident)['work_status'], 'cancelled')
 
+
+class NodeTransferTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.workspace = self.root / 'workspace'
+        self.workspace.mkdir()
+        self.sender = Service(self.root / 'sender', {'fake': Fake()})
+        self.receiver = Service(self.root / 'receiver', {'fake': Fake()})
+        # Same process, two directories: explicitly simulated host identity.
+        self.receiver.gateway.host_id = 'simulated-windows-host'
+        self.sender.nodes.register('simulated-windows', 'windows', 'simulated-windows-host', {'fake': ['read_only']}, 'local')
+        self.sender.nodes.receivers['simulated-windows'] = self.receiver.nodes
+        self.sender.max_auto_rework = 0
+        self.task = self.sender.call('submit_task', dict(request_id='task', agent='fake', prompt='done', cwd=str(self.workspace), mode='read_only'))['id']
+        for _ in range(200):
+            if self.sender.store.get(self.task)['state'] == 'succeeded':
+                break
+            time.sleep(.02)
+        (self.workspace / 'output.txt').write_bytes(b'hello')
+        self.artifact = self.sender.verification.file(self.sender.store.get(self.task), 'output.txt')['artifact_id']
+        self.args = dict(request_id='transfer', artifact_id='artifact://' + self.artifact, target_node_id='simulated-windows')
+    def tearDown(self):
+        self.sender.close()
+        self.receiver.close()
+        self.tmp.cleanup()
+    def test_remote_registration_and_local_selection(self):
+        from agent_hub.adapters.remote import Remote
+        import json
+        self.sender.close()
+        config = {'agents': {'remote-fake': {'kind': 'remote', 'node_id': 'declared-ssh',
+                  'platform': 'windows', 'host_id': 'declared-host'}}}
+        (self.root / 'sender' / 'config.json').write_text(json.dumps(config))
+        adapter = Remote('mock-host', '/python', '/data', 'fake', '/remote-work', 'read_only')
+        with patch.object(adapter.client, 'call', side_effect=AssertionError('No SSH calls')):
+            self.sender = Service(self.root / 'sender', {'fake': Fake(), 'remote-fake': adapter})
+            nodes = self.sender.call('list_nodes', {})['nodes']
+            remote = next(n for n in nodes if n['node_id'] == 'declared-ssh')
+            self.assertFalse(remote['remote_connection_verified'])
+            self.assertEqual(remote['transport'], 'ssh')
+            self.assertEqual(remote['capabilities'], {'remote-fake': ['delegate']})
+            task = self.sender.call('submit_task', dict(request_id='selected-local', agent='fake',
+                   prompt='done', cwd=str(self.workspace), mode='read_only', node_id=self.sender.nodes.local_id))
+            self.assertEqual(task['node_id'], self.sender.nodes.local_id)
+
+    def test_remote_workspace_checks_are_inconclusive(self):
+        from agent_hub.adapters.remote import Remote
+        import json
+        self.sender.close()
+        (self.root / 'sender' / 'config.json').write_text(json.dumps({'agents': {'remote-fake': {'platform': 'windows'}}}))
+        adapter = Remote('fixture', '/python', '/remote-data', 'worker', '/remote-work', 'read_only')
+        # Only a local fixture writes an unrelated file; no SSH call is made.
+        def simulated_run(task, cancel, event):
+            (self.workspace / 'unrelated.txt').write_bytes(b'unrelated local file')
+            return {'answer': 'fixture remote success', 'session_id': 'remote-fixture',
+                    'remote_artifacts': {'workspace': '/remote-work', 'files': ['real-remote-output']}}
+        with patch.object(adapter, 'run', side_effect=simulated_run), patch.object(adapter.client, 'call', side_effect=AssertionError('No SSH')):
+            self.sender = Service(self.root / 'sender', {'remote-fake': adapter, 'fake': Fake()})
+            criteria = [{'id': 'exists', 'kind': 'file_exists', 'path': 'output.txt'},
+                        {'id': 'hash', 'kind': 'sha256', 'path': 'output.txt', 'expected': hashlib.sha256(b'hello').hexdigest()},
+                        {'id': 'artifact', 'kind': 'artifact_required'}]
+            with patch.object(self.sender.verification, 'snapshot_files', side_effect=AssertionError('No local snapshot')):
+                remote = self.sender.call('submit_task', dict(request_id='remote-acceptance', agent='remote-fake', mode='delegate',
+                    prompt='fixture', cwd=str(self.workspace), acceptance={'criteria': criteria}))['id']
+                for _ in range(200):
+                    result = self.sender.call('get_result', {'task_id': remote})
+                    if result['ready'] and result['verification']['state'] == 'needs_review':
+                        break
+                    time.sleep(.02)
+            self.assertEqual(result['work_status'], 'needs_review')
+            self.assertEqual([c['outcome'] for c in result['verification']['checks']], ['inconclusive'] * 3)
+            self.assertTrue(all('远端工作区不在本机验收范围' in c['reason'] for c in result['verification']['checks']))
+            self.assertEqual(len(self.sender.verification.work_item(remote)['attempts']), 1)
+            self.assertEqual(self.sender.verification.artifacts(remote), [])
+            # A pre-fix persisted remote failure must not be dispatched during recovery either.
+            old_summary = dict(result['verification'], state='rework_required', checks=[dict(c, outcome='fail') for c in result['verification']['checks']])
+            original_summary = self.sender.verification.summary
+            with patch.object(self.sender.verification, 'summary', side_effect=lambda task: old_summary if task['id'] == remote else original_summary(task)), patch.object(self.sender, 'continue_task') as dispatch:
+                self.sender.auto_rework(remote)
+                self.sender.recover_auto_rework()
+                dispatch.assert_not_called()
+                self.assertNotIn(remote, self.sender.auto_rework_pending)
+            historic = dict(self.sender.store.get(remote), agent='removed-remote-adapter')
+            self.assertEqual(self.sender.verification.check(historic, {'id': 'missing', 'kind': 'file_exists', 'path': 'absent.txt'})[0], 'inconclusive')
+            # SSH node declaration is also sufficient even for a non-Remote fixture adapter.
+            self.sender.nodes.register('ssh-shadow', 'windows', 'fixture-remote-host', {'fake': ['read_only']}, 'ssh')
+            task = dict(self.sender.store.get(self.task), node_id='ssh-shadow')
+            for c in criteria:
+                self.assertEqual(self.sender.verification.check(task, c)[0], 'inconclusive')
+
+    def test_node_replay_survives_removed_node(self):
+        args = dict(request_id='node-replay', agent='fake', mode='read_only', prompt='done',
+                    cwd=str(self.workspace), node_id=self.sender.nodes.local_id)
+        first = self.sender.call('submit_task', args)
+        with self.sender.store.connection() as db:
+            db.execute('DELETE FROM nodes WHERE node_id=?', (self.sender.nodes.local_id,))
+        self.assertEqual(first['id'], self.sender.call('submit_task', args)['id'])
+        with self.assertRaises(HubError) as error:
+            self.sender.call('submit_task', dict(args, prompt='changed'))
+        self.assertEqual(error.exception.code, 'REQUEST_CONFLICT')
+
+    def test_nonlocal_host_identity_cannot_expose_paths(self):
+        with self.assertRaises(HubError) as error:
+            self.sender.nodes.register('forged-ssh', 'windows', self.sender.gateway.host_id, {'fake': ['delegate']}, 'ssh')
+        self.assertEqual(error.exception.code, 'INVALID_CONFIG')
+        # Defense in depth against an invalid persisted declaration from an older version.
+        with self.sender.store.connection() as db:
+            db.execute('INSERT INTO nodes VALUES (?,?,?,?,?)', ('legacy-forged', 'windows', self.sender.gateway.host_id, '{}', 'ssh'))
+        result = self.sender.call('get_artifact', dict(artifact_id=self.artifact, target_node_id='legacy-forged'))
+        self.assertEqual(result['transfer']['kind'], 'transfer_required')
+        self.assertNotIn('path', result['transfer'])
+        result = self.sender.call('get_artifact', dict(artifact_id=self.artifact, target_host_id=self.sender.gateway.host_id))
+        self.assertNotIn('path', result['transfer'])
+
+    def test_sender_scoped_receipts_and_content_dedup(self):
+        _, metadata, _ = self.sender.nodes.source(self.artifact)
+        first = self.receiver.nodes.receive('same-request', 'one', 'receiver', b'hello', metadata, sender_host_id='sender-one')
+        second = self.receiver.nodes.receive('same-request', 'two', 'receiver', b'hello', metadata, sender_host_id='sender-two')
+        third = self.receiver.nodes.receive('new-request', 'one', 'receiver', b'hello', metadata, sender_host_id='sender-one')
+        self.assertNotEqual(first['sender_host_id'], second['sender_host_id'])
+        self.assertEqual(first['sha256'], third['sha256'])
+        self.assertEqual(len(list((self.receiver.root / 'received-artifacts').iterdir())), 1)
+        with self.receiver.store.connection() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM artifact_receipts').fetchone()[0], 3)
+            self.assertEqual(db.execute('SELECT count(*) FROM received_blobs').fetchone()[0], 1)
+        with self.assertRaises(HubError) as error:
+            self.receiver.nodes.receive('same-request', 'different', 'receiver', b'hello', metadata, sender_host_id='sender-one')
+        self.assertEqual(error.exception.code, 'IDEMPOTENCY_CONFLICT')
+
+    def test_receiver_quota_does_not_write_receipt(self):
+        self.receiver.nodes.max_received_bytes = 4
+        with self.assertRaises(HubError) as error:
+            self.sender.call('transfer_artifact', self.args)
+        self.assertEqual(error.exception.code, 'ARTIFACT_QUOTA_EXCEEDED')
+        with self.receiver.store.connection() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM artifact_receipts').fetchone()[0], 0)
+        self.receiver.nodes.max_received_bytes = 10
+        self.receiver.nodes.max_received_files = 1
+        self.sender.call('transfer_artifact', self.args)
+        with self.assertRaises(HubError) as error:
+            self.sender.call('transfer_artifact', dict(self.args, request_id='second-receipt'))
+        self.assertEqual(error.exception.code, 'ARTIFACT_QUOTA_EXCEEDED')
+
+    def test_node_platform_validation_and_linux(self):
+        from agent_hub.config import remote_node_declaration
+        from agent_hub.nodes import Nodes
+        for value in (None, [], {}, 1, 'unknown'):
+            with self.subTest(platform=value), self.assertRaises(HubError) as error:
+                self.sender.nodes.register('invalid-platform', value, 'other-host', {}, 'ssh')
+            self.assertEqual(error.exception.code, 'INVALID_CONFIG')
+        for value in (None, [], {}, 1):
+            with self.subTest(remote_platform=value), self.assertRaises(HubError) as error:
+                self.sender.nodes.register(*remote_node_declaration('fixture', {'platform': value}, 'fixture'), {}, 'ssh')
+            self.assertEqual(error.exception.code, 'INVALID_CONFIG')
+        self.sender.close()
+        with patch('agent_hub.nodes.platform.system', return_value='Linux'):
+            self.sender = Service(self.root / 'sender', {'fake': Fake()})
+        self.assertEqual(self.sender.nodes.get(self.sender.nodes.local_id)['platform'], 'linux')
+
+    def test_receipt_schema_upgrade_preserves_history(self):
+        from agent_hub.nodes import Nodes
+        import json
+        self.receiver.close()
+        with self.receiver.store.connection() as db:
+            db.execute('DROP TABLE artifact_receipts')
+            db.execute('CREATE TABLE artifact_receipts (request_id TEXT PRIMARY KEY, data TEXT NOT NULL)')
+            db.execute('INSERT INTO artifact_receipts VALUES (?,?)', ('legacy-key', json.dumps({'artifact_id': 'old-artifact', 'sha256': hashlib.sha256(b'hello').hexdigest(), 'size_bytes': 5})))
+        legacy_root = self.receiver.root / 'received-artifacts'
+        legacy_root.mkdir()
+        (legacy_root / hashlib.sha256(b'legacy-key').hexdigest()).write_bytes(b'hello')
+        self.receiver = Service(self.root / 'receiver', {'fake': Fake()})
+        with self.receiver.store.connection() as db:
+            row = db.execute('SELECT * FROM artifact_receipts').fetchone()
+            self.assertEqual(row['sender_host_id'], 'legacy-unattributed')
+            self.assertEqual(json.loads(row['data'])['artifact_id'], 'old-artifact')
+        _, metadata, _ = self.sender.nodes.source(self.artifact)
+        self.receiver.nodes.receive('new-key', self.artifact, 'receiver', b'hello', metadata, sender_host_id='new-sender')
+        self.assertEqual(len(list(legacy_root.iterdir())), 1)
+
+    def test_mcp_declarations_include_list_nodes(self):
+        import asyncio
+        from agent_hub.mcp_server import mcp
+        names = {tool.name for tool in asyncio.run(mcp.list_tools())}
+        self.assertEqual(len(names), 16)
+        self.assertIn('list_nodes', names)
+        self.assertNotIn('transfer_artifact', names)
+
+    def test_capability_rejection(self):
+        with self.assertRaises(HubError) as error:
+            self.sender.call('submit_task', dict(request_id='bad', agent='fake', prompt='done', cwd=str(self.workspace), mode='edit_worktree', node_id='simulated-windows'))
+        self.assertEqual(error.exception.code, 'NODE_UNAVAILABLE')
+    def test_duplicate_request_and_receipt(self):
+        first = self.sender.call('transfer_artifact', self.args)
+        self.assertEqual(first['state'], 'delivered')
+        self.assertEqual(first, self.sender.call('transfer_artifact', self.args))
+        self.assertEqual(len(list((self.receiver.root / 'received-artifacts').iterdir())), 1)
+        with self.receiver.store.connection() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM artifact_receipts').fetchone()[0], 1)
+        self.assertEqual(self.sender.call('get_result', {'task_id': self.task})['work_status'], 'succeeded')
+    def test_receiver_hash_mismatch(self):
+        original = self.receiver.nodes.receive
+        def corrupt(*args, **kw):
+            args = list(args); args[3] = b'corrupted'
+            return original(*args, **kw)
+        with patch.object(self.receiver.nodes, 'receive', side_effect=corrupt):
+            with self.assertRaises(HubError) as error:
+                self.sender.call('transfer_artifact', self.args)
+        self.assertEqual(error.exception.code, 'ARTIFACT_HASH_MISMATCH')
+        with self.receiver.store.connection() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM artifact_receipts').fetchone()[0], 0)
+    def test_missing_and_timeout_no_receipt(self):
+        (self.workspace / 'output.txt').unlink()
+        with self.assertRaises(HubError):
+            self.sender.call('transfer_artifact', self.args)
+        (self.workspace / 'output.txt').write_bytes(b'hello')
+        self.sender.nodes.timeout_seconds = 0
+        with self.assertRaises(HubError) as error:
+            self.sender.call('transfer_artifact', self.args)
+        self.assertEqual(error.exception.code, 'TRANSFER_TIMED_OUT')
+        with self.receiver.store.connection() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM artifact_receipts').fetchone()[0], 0)
+    def test_restart_preserves_retryable(self):
+        with self.sender.store.connection() as db:
+            db.execute("INSERT INTO artifact_transfers VALUES (?,?,?,'transferring',NULL)", tuple(self.args.values()))
+        self.sender.close()
+        self.sender = Service(self.root / 'sender', {'fake': Fake()})
+        with self.sender.store.connection() as db:
+            row = db.execute('SELECT * FROM artifact_transfers').fetchone()
+            self.assertEqual(row['state'], 'retryable'); self.assertIsNone(row['response'])
+        self.assertEqual(self.sender.store.get(self.task)['state'], 'succeeded')
+    def test_unverified_ssh(self):
+        self.sender.nodes.register('ssh-test', 'windows', 'ssh-host', {'fake': ['delegate']}, 'ssh')
+        with self.assertRaises(HubError) as error:
+            self.sender.call('transfer_artifact', dict(self.args, target_node_id='ssh-test'))
+        self.assertEqual(error.exception.code, 'NODE_UNVERIFIED')
+    def test_cross_host_artifact_no_absolute_path(self):
+        from PIL import Image
+        root = self.sender.gateway.artifact_root; root.mkdir()
+        path = root / 'image.png'; Image.new('RGB', (1, 1)).save(path)
+        artifact = self.sender.gateway.register(self.task, [{'path': str(path)}])[0]
+        result = self.sender.call('get_artifact', dict(artifact_id=artifact['artifact_id'], target_host_id='simulated-windows-host'))
+        self.assertEqual(result['transfer']['kind'], 'transfer_required')
+        self.assertNotIn('path', result['transfer']); self.assertNotIn('allowed_root', result['transfer'])
+    def test_late_transfer_superseded(self):
+        self.sender.call('continue_task', dict(request_id='next', task_id=self.task, prompt='next'))
+        result = self.sender.call('transfer_artifact', self.args)
+        self.assertEqual(result['state'], 'superseded')
+        self.assertTrue(result['receipt']['superseded'])
+    def test_auto_rework_database_error_is_bounded(self):
+        self.sender.auto_rework_pending.add(self.task)
+        with patch.object(self.sender, 'auto_rework', side_effect=RuntimeError('database unavailable')):
+            for _ in range(3):
+                self.sender.verify(self.task, rework_only=True)
+        self.assertNotIn(self.task, self.sender.auto_rework_pending)
+        self.assertEqual(self.sender.auto_rework_failures[self.task], 3)
+
 if __name__ == '__main__':
     unittest.main()
