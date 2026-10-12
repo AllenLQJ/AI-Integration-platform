@@ -16,12 +16,15 @@ class CLI:
     def permission_policy(self, mode):
         return {'enforced_by': 'unknown', 'enforced': False, 'allows_write': None}
 
+    def version_command(self):
+        return [self.executable, '--version']
+
     def diagnose(self):
         exists = Path(self.executable).is_file()
         version = None
         if exists:
             try:
-                version = subprocess.run([self.executable, '--version'], env=environment(self.env),
+                version = subprocess.run(self.version_command(), env=environment(self.env),
                                          capture_output=True, text=True, timeout=10).stdout.strip()[:100]
             except (OSError, subprocess.TimeoutExpired):
                 pass

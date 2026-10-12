@@ -37,6 +37,8 @@ uv pip install --python .venv/bin/python exceptiongroup
 
 在 `%USERPROFILE%\.agent-hub\config.json` 配置实际路径，参见 `config.example.json`。代理按实际环境填写，7897 是网络代理，Claude 的 CCR 3456 保留在 Claude 自己的配置中。无需把 Cookie 或模型密钥写进 Hub 配置。
 
+Windows 新执行器接入与真实问候验收见 [2026-10-12 Windows 记录](docs/2026-10-12-windows-executor-validation.md)。Cursor IDE 可配置 `executable` 为实际桌面程序路径，仍需在线界面 worker。Cursor CLI 可通过原生 Node 的 `executable` 与入口脚本 `args` 启动，并用 `credentials_file` 引用 BDK 的既有私有凭据；`sandbox` 默认 enabled，本轮经用户明确批准仅 Windows CLI 使用 disabled 权限白名单模式，不提供 OS 沙箱。
+
 并发在 config.json 的 `concurrency` 中设置：`{"global":2,"per_agent":{"codex":1,"claude":1,"muse":1}}`。各额度允许 1–32 的整数；未配置的执行器默认 1。修改后在没有在途任务时停止后台，下次调用自动加载新配置。同一实际工作区始终串行。
 
 ```powershell

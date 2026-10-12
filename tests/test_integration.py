@@ -11,6 +11,30 @@ from agent_hub.daemon import InstanceLock
 from agent_hub.models import HubError
 
 
+def stop_and_wait(client):
+    # connection.json removal precedes process exit; Windows still locks daemon.log.
+    handle = None
+    if os.name == 'nt':
+        import win32api, win32con, win32event
+        handle = win32api.OpenProcess(win32con.SYNCHRONIZE, False,
+                                      client.request('/health')['pid'])
+    try:
+        client.stop()
+        if handle is not None:
+            if win32event.WaitForSingleObject(handle, 10000) != win32event.WAIT_OBJECT_0:
+                raise AssertionError('daemon did not exit after shutdown')
+        else:
+            for _ in range(100):
+                if not (client.root / 'connection.json').exists():
+                    break
+                time.sleep(.05)
+        if (client.root / 'connection.json').exists():
+            raise AssertionError('daemon connection descriptor remains after shutdown')
+    finally:
+        if handle is not None:
+            handle.Close()
+
+
 class IntegrationTests(unittest.TestCase):
     def test_daemon_autostart_singleton_restart(self):
         with tempfile.TemporaryDirectory() as td:
@@ -20,18 +44,10 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual(Client(td).call('list_agents'), {})
             self.assertEqual(client.request('/health')['pid'], first)
             with self.assertRaises(HubError): InstanceLock(td)
-            client.stop()
-            for _ in range(100):
-                if not (Path(td) / 'connection.json').exists(): break
-                time.sleep(.05)
-            time.sleep(.3)
+            stop_and_wait(client)
             self.assertEqual(client.call('list_agents'), {})
             self.assertNotEqual(client.request('/health')['pid'], first)
-            client.stop()
-            for _ in range(100):
-                if not (Path(td) / 'connection.json').exists(): break
-                time.sleep(.05)
-            time.sleep(.3)
+            stop_and_wait(client)
 
     def test_mcp_tools_over_stdio(self):
         async def check(td):
@@ -58,10 +74,6 @@ class IntegrationTests(unittest.TestCase):
                     self.assertFalse(response.isError)
             # Closing MCP frontend does not stop the independent daemon.
             self.assertTrue(Client(td).request('/health')['ok'])
-            Client(td).stop()
-            for _ in range(100):
-                if not (Path(td) / 'connection.json').exists(): break
-                await asyncio.sleep(.05)
-            await asyncio.sleep(.3)
+            await asyncio.to_thread(stop_and_wait, Client(td))
         with tempfile.TemporaryDirectory() as td:
             asyncio.run(check(td))

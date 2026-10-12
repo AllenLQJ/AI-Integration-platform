@@ -24,7 +24,7 @@ class SleepEvidenceTests(unittest.TestCase):
     def test_seconds_precision_cannot_prove_sleep_started_before_expiry(self):
         cycle = evaluate_cycle(['2026-10-11 15:05:26 +0800 Sleep'],
                                ['2026-10-11 15:05:30 +0800 Wake'],
-                               datetime.fromisoformat('2026-10-11T15:05:26.5+08:00').timestamp())
+                               datetime.fromisoformat('2026-10-11T15:05:26.500+08:00').timestamp())
         self.assertFalse(cycle['deadline_crossed'])
 
     def test_missing_wake_is_unverified(self):

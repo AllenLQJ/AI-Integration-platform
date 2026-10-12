@@ -10,7 +10,8 @@ class CursorIDE:
     remote_cancel = False
     cancel_scope = 'remote_session'
 
-    def __init__(self, root):
+    def __init__(self, root, executable=None):
+        self.executable = executable
         self.root = Path(root) / 'cursor-ide-bridge'
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.root.chmod(0o700)
@@ -24,7 +25,7 @@ class CursorIDE:
                     scope_note='delegate 不保证只读；IDE 权限仍由客户端控制，需要外部界面 worker 在线')
 
     def diagnose(self):
-        return dict(available=Path('/Applications/Cursor.app').is_dir(),
+        return dict(available=Path(self.executable).is_file() if self.executable else Path('/Applications/Cursor.app').is_dir(),
                     transport='native_ui_bridge', capabilities=self.capabilities,
                     authentication='使用 IDE 已有登录；账号额度需真实回合确认',
                     requires_ui_worker=True, unattended=False, remote_cancel=False,
@@ -47,7 +48,7 @@ class CursorIDE:
                 return {'ready': False}
             # 重启后的未确认派发同样阻止新任务，需人工核对原窗口。
             for path in self.root.glob('*.json'):
-                old = json.loads(path.read_text())
+                old = json.loads(path.read_text(encoding='utf-8'))
                 if old['status'] in {'claimed', 'dispatched', 'stop_requested'} and old['task_id'] not in self.active:
                     raise HubError('IDE_STATE_UNKNOWN', '旧界面任务未核对，禁止继续派发')
             for job in self.active.values():

@@ -8,16 +8,31 @@ from ..models import HubError
 
 
 class Cursor(CLI):
+    def __init__(self, executable, env=None, args=None, credentials_file=None, sandbox='enabled'):
+        super().__init__(executable, env)
+        if args is not None and (not isinstance(args, list) or any(not isinstance(v, str) for v in args)):
+            raise HubError('INVALID_CONFIG', 'Cursor args 必须为字符串列表')
+        self.args = list(args or [])
+        self.credentials_file = credentials_file
+        if not isinstance(sandbox, str) or sandbox not in {'enabled', 'disabled'}:
+            raise HubError('INVALID_CONFIG', 'Cursor sandbox 必须为 enabled 或 disabled')
+        self.sandbox = sandbox
+
+    def version_command(self):
+        return [self.executable, *self.args, '--version']
+
     def permission_policy(self, mode):
         return {'enforced_by': 'cursor_cli_mode_and_permissions', 'enforced': True,
                 'allows_file_read': True, 'allows_write': mode == 'edit_worktree',
                 'allows_commands': False, 'os_sandbox': False,
                 'workspace': 'git_worktree' if mode == 'edit_worktree' else 'original',
-                'scope_note': 'ask 模式或文件权限白名单；请求 CLI 沙箱，实际边界需实测；不自动批准工具'}
+                'scope_note': ('ask 模式或文件权限白名单；请求 CLI 沙箱，实际边界需实测；不自动批准工具'
+                               if self.sandbox == 'enabled' else
+                               '显式权限白名单模式，无 OS 沙箱；禁止 Shell/MCP/WebFetch，不自动批准工具')}
 
     def command(self, task):
-        args = [self.executable, '--print', '--output-format', 'stream-json',
-                '--sandbox', 'enabled', '--workspace', task['workspace'], '--trust']
+        args = [self.executable, *self.args, '--print', '--output-format', 'stream-json',
+                '--sandbox', self.sandbox, '--workspace', task['workspace'], '--trust']
         if task['mode'] == 'read_only':
             args += ['--mode', 'ask']
         elif task['mode'] != 'edit_worktree':
@@ -52,7 +67,12 @@ class Cursor(CLI):
             temporary.chmod(0o600)
             temporary.write_text(json.dumps(payload), encoding='utf-8')
             os.replace(temporary, path)
-        isolated = Cursor(self.executable, dict(self.env, CURSOR_CONFIG_DIR=str(root)))
+        env = dict(self.env, CURSOR_CONFIG_DIR=str(root))
+        if self.credentials_file:
+            from .grokbot import GrokBot
+            # Reuse the officially stored key without copying it into Hub config.
+            env['CURSOR_API_KEY'] = GrokBot('cursor-cli-auth', self.credentials_file, env=self.env).key()
+        isolated = Cursor(self.executable, env, self.args, sandbox=self.sandbox)
         return CLI.run(isolated, task, cancel, event)
 
     def parse(self, output):
