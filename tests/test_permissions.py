@@ -39,10 +39,13 @@ class PermissionTests(unittest.TestCase):
             time.sleep(.03)
         self.fail('任务未完成')
     def legacy(self, agent):
-        task = self.service.store.create('legacy', dict(agent=agent, mode='read_only',
-            prompt='old', cwd=str(self.root), timeout_seconds=1800,
-            workspace=str(self.root), session_id='sid'))
-        self.service.store.finish(task['id'], 'succeeded', {'answer': 'old'})
+        # Publish the synthetic historical task atomically relative to the
+        # scheduler, which otherwise may execute its temporary queued state.
+        with self.service.lock:
+            task = self.service.store.create('legacy', dict(agent=agent, mode='read_only',
+                prompt='old', cwd=str(self.root), timeout_seconds=1800,
+                workspace=str(self.root), session_id='sid'))
+            self.service.store.finish(task['id'], 'succeeded', {'answer': 'old'})
         return task
     def test_muse_cannot_submit_false_read_only_or_continue_as_mode(self):
         for mode in ('read_only', 'continue'):

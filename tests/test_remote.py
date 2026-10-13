@@ -486,7 +486,9 @@ class WindowsSshTests(unittest.TestCase):
                     launcher = (['cmd.exe', '/c', command] if shell == 'cmd' else
                                 ['powershell.exe', '-c', command])
                     with self.subTest(shell=shell, exit_code=code):
-                        result = subprocess.run(launcher, input=payload, capture_output=True, timeout=15)
+                        # Real user profiles and first-use module initialization
+                        # can take longer than 15 seconds on Windows.
+                        result = subprocess.run(launcher, input=payload, capture_output=True, timeout=60)
                         self.assertEqual(result.returncode, code, result.stderr)
                         response = json.loads(result.stdout.decode('utf-8'))
                         self.assertEqual(base64.b64decode(response['raw']), payload)
@@ -502,7 +504,7 @@ class WindowsSshTests(unittest.TestCase):
                            "[Console]::WriteLine([Convert]::ToBase64String($bytes)); "
                            "[Console]::WriteLine([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($escaped)))")
                 result = subprocess.run(['powershell.exe', '-c', command], input=b'',
-                                        capture_output=True, timeout=15, check=True)
+                                        capture_output=True, timeout=60, check=True)
                 lines = result.stdout.splitlines()
                 self.assertEqual(len(lines), 2, result.stdout)
                 self.assertEqual(base64.b64decode(lines[0]).decode('utf-8'), value)
