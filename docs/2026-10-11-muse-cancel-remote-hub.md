@@ -39,11 +39,19 @@
 
 SSH 参数使用独立 argv，目标命令逐项引用，prompt 只走 stdin JSON。请求 ID 与目标 ID 在私有日志 remote-task.json 原子保存；发送响应不确定不自动重发，读取失联保留目标 ID 与 interrupted。服务重启不自动恢复在途远端任务，仍按既有规则隔离等待人工核对。list_agents 的远端条目只报告已配置 SSH，不递归探测另一 Hub，避免双向配置形成诊断循环；实际任务或远端 status 确认可达性。
 
-自动验证使用 SSH 命令模拟器及两个隔离 Hub 实例，经真实 CLI/回环 RPC 检查提交幂等、原生续接、目标工作区修改与差异、原仓库保持基线、取消目标及断线后不重发。命令模拟器不会验收 SSH 登录、加密链路或真实双机网络；本轮仅有一台 Mac，以上仍须目标设备实测。测试代码见 tests/test_remote.py。
+自动验证使用 SSH 命令模拟器及两个隔离 Hub 实例，经真实 CLI/回环 RPC 检查提交幂等、原生续接、目标工作区修改与差异、原仓库保持基线、取消目标及断线后不重发。命令模拟器不会验收 SSH 登录、加密链路或真实双机网络；本轮仅有一台 Mac，当时仍须目标设备实测。2026-10-13 的跨网络实机见文末。测试代码见 tests/test_remote.py。
 
 
 ## 最终收尾
 
 完整自动回归 129 项：128 通过、1 项 Windows ACL 跳过（49.332 秒），依赖与差异检查通过。共享后台已在空闲时重载，新 PID 73396，Muse/Grok 声明原会话取消路径，五执行器已启用，排队及在途 0；没有停止用户其他任务或更改账号配置。测试日志存放私有 `~/.agent-hub/remaining-features-20261011/full-regression.log`。
 
-Muse 取消和 SSH Hub 调度的代码已实现；真实双机 SSH、严格物理休眠期间到期、自然登录过期、长时稳定性、Muse 底层浏览器动作独立审计与 Cursor IDE 实际派发尚未完成验收。Grok 同 Bot 的正常退出实际 interrupt 已补测通过，但强制期限中断仍未覆盖（再次自然结束）。DeepSeek Harness、Claude 订阅模式保持排除。
+Muse 取消和 SSH Hub 调度的代码已实现；写本文时真实双机 SSH、严格物理休眠期间到期、自然登录过期、长时稳定性、Muse 底层浏览器动作独立审计与 Cursor IDE 实际派发尚未完成验收。Grok 同 Bot 的正常退出实际 interrupt 已补测通过，但强制期限中断仍未覆盖（再次自然结束）。DeepSeek Harness、Claude 订阅模式保持排除。
+
+## 后续：Tailscale 跨网络实机（2026-10-13）
+
+上文「本轮仅有一台 Mac」和收尾里的「真实双机 SSH 尚未验收」是 2026-10-11 的范围。2026-10-13 已在不同网络的 Windows 与 Mac 上，用 Tailscale 加标准 SSH 验证 Windows 调用 Mac Hub，Codex、Claude、Muse、Grok、Cursor 成功。专用私钥在 Windows 用户 `.ssh`，对应公钥在 Mac `authorized_keys`。
+
+这是用户自己的 Tailscale 与标准 SSH 配置。Hub 仍调用本机 `ssh`，使用主机别名、`BatchMode=yes` 和 `StrictHostKeyChecking=yes`；端口、密钥和 ProxyJump 留在 `~/.ssh/config`。配置步骤见 README「额外说明」。SSH 传输修复在 main `5ca9724`（UTF-8 二进制 JSON、远端 `-X utf8`、RPC 错误与任务失败区分、不确定投递保留任务 ID）。
+
+Hub 没有内置 Tailscale 管理。密钥和 Hub 配置留在本机私有目录。国内网络下 Tailscale 可能偶发不稳定。Windows 作为 SSH 目标机仍没有新的实测结论；目标机命令仍要求 POSIX shell 与绝对路径。自动审核闭环的 Windows 真实任务、Muse 验收回写和非 headless GUI 工作台不在这次实机范围内。

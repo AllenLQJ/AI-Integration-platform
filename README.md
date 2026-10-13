@@ -1,12 +1,14 @@
 # 本地 Agent Hub
 
+当前进度（2026-10-13）：Windows 与 Mac 分处不同网络，已用 Tailscale 加标准 SSH 实机验证 Windows 调用 Mac Hub，Codex、Claude、Muse、Grok、Cursor 成功。产品继续使用 SSH，Hub 不监听公网，也没有内置 Tailscale 管理。配置见下文「额外说明」。SSH 通用修复在 main `5ca9724`。
+
 当前进度（2026-10-12）：在 main 基线 `16110f2` 上完成 Claude content_review 自动审核阶段（每任务显式 `acceptance.review` 开启，见下文「Claude 自动内容审核」与 [设计记录](docs/2026-10-12-claude-content-review-design.md)），经 Claude 独立终验通过后合入 main。任务验收第一至第三阶段为 `08f0542`、`b495f73`、`807ed0c`。MCP 仍为 16 个工具，含 `verify_task`、`get_work_item`、`claim_controller`、`switch_executor`、`list_nodes`。`transfer_artifact`、人工裁决和外部验收写入只在本机已认证 RPC。本阶段沙箱外完整回归 287 项通过（208.165 秒，1 项 Windows ACL 检查在 macOS 上跳过），其中自动审核专项 28 项。
 
-真实 Cursor CLI 执行 + Claude CLI 审核闭环已验收：直接通过、审核 fail → 自动返工 → 通过、连续 fail 在 `max_auto_rework=1` 停止三条链路均符合预期，全程没有总控 continue_task 或 record_verification 介入；真实 headless Chrome 打开的工作台最终状态与接口一致。证据汇总在本机私有目录 `~/.agent-hub/auto-review-20261012/real-chain-summary.json`（直接通过链路来自 run-173812，返工与上限链路来自 run-174333）。此前的真实失败保留为历史证据、未被覆盖：run-172722 三条链路因审核登记 TypeError 失败；run-173812 中返工链路因 ECONNRESET 中断后在 run-174333 重跑。这些结果只说明本轮链路通过及非法输出按设计 fail closed，不代表模型总能输出合法结果。Windows 本机核心回归与六入口真实问候已通过，见 [Windows 验收记录](docs/2026-10-12-windows-executor-validation.md)；该记录的 259 项对应整合自动审核阶段之前的基线。新增自动审核闭环在 Windows 上的真实任务、真实双机 SSH、Muse 验收回写、非 headless 的 GUI 浏览器工作台仍未验收。用法见下文第二、三阶段；验收总设计见 [验收设计](docs/2026-10-12-verification-phase1-design.md)。
+真实 Cursor CLI 执行 + Claude CLI 审核闭环已验收：直接通过、审核 fail → 自动返工 → 通过、连续 fail 在 `max_auto_rework=1` 停止三条链路均符合预期，全程没有总控 continue_task 或 record_verification 介入；真实 headless Chrome 打开的工作台最终状态与接口一致。证据汇总在本机私有目录 `~/.agent-hub/auto-review-20261012/real-chain-summary.json`（直接通过链路来自 run-173812，返工与上限链路来自 run-174333）。此前的真实失败保留为历史证据、未被覆盖：run-172722 三条链路因审核登记 TypeError 失败；run-173812 中返工链路因 ECONNRESET 中断后在 run-174333 重跑。这些结果只说明本轮链路通过及非法输出按设计 fail closed，不代表模型总能输出合法结果。Windows 本机核心回归与六入口真实问候已通过，见 [Windows 验收记录](docs/2026-10-12-windows-executor-validation.md)；该记录的 259 项对应整合自动审核阶段之前的基线。新增自动审核闭环在 Windows 上的真实任务、Muse 验收回写、非 headless 的 GUI 浏览器工作台仍未验收。跨网络调用 Mac Hub 的后续实机见下文「额外说明」，该实机不覆盖本段自动审核闭环。用法见下文第二、三阶段；验收总设计见 [验收设计](docs/2026-10-12-verification-phase1-design.md)。
 
 截至 2026-10-11 的记录：Windows 第一版与 Mac 本机接入已实现，当时为 11 个 MCP 工具。新增 Cursor CLI / Grok Bot 双向接入，真实总控派发、执行器回复和续接通过，见 [接入记录](docs/2026-10-11-cursor-grokbot-validation.md)。该日完整自动回归 129 项：128 通过、1 项 Windows ACL 检查跳过（49.332 秒）。严格休眠超时恢复等仍未验证。当日状态见 [开发进度](docs/开发进度.md) 和 [第一版验收](docs/第一版验收.md)；该文件保留历史测试数，不代表现在的工具数量。该日 Windows 记录来自 10-09/10-10，后续 Windows 回归与执行器接入见 10-12 验收记录。
 
-Muse 原会话远端取消、SSH 跨机器 Hub 调度已实现。Muse 取消/期限/正常退出在同一专用会话实测通过；SSH 调度完成两个隔离 Hub 的逻辑验证，真实双机 SSH 尚未验收。配置与使用见 [新增功能记录](docs/2026-10-11-muse-cancel-remote-hub.md)。
+Muse 原会话远端取消、SSH 跨机器 Hub 调度已实现。Muse 取消/期限/正常退出在同一专用会话实测通过；2026-10-11 的 SSH 调度完成两个隔离 Hub 的逻辑验证。跨网络实机已于 2026-10-13 用 Tailscale 加标准 SSH 验证，见下文「额外说明」与 [新增功能记录](docs/2026-10-11-muse-cancel-remote-hub.md)。
 
 用一个 MCP 接口提交 Codex、Claude Code、Muse、Cursor CLI 和 Grok Bot 任务。任务由独立后台服务执行，SQLite 保存记录，代码修改放在独立 Git worktree，返回结果与差异供审阅。
 
@@ -49,6 +51,42 @@ Windows 新执行器接入与真实问候验收见 [2026-10-12 Windows 记录](d
 ```
 
 MCP 使用 stdio：command 为虚拟环境 python.exe 的绝对路径，args 为 `["-m", "agent_hub", "mcp"]`。可以通过 `AGENT_HUB_DATA_DIR` 指定另一份私有数据目录。默认目录按当前 OS 用户保护；不监听外部网卡。Windows 自动启动通过 WMI 避免 MCP 前端关闭时杀掉后台；若 WMI 被系统策略禁用，可以在终端先运行 daemon 命令。
+
+## 额外说明
+
+两台机器不在同一网络时，可以用 Tailscale 让它们互相 SSH 可达，不需要公网 IP，也不需要端口转发。Hub 仍通过本机 `ssh` 调用对端私有 Hub。Tailscale 只打通网络层。安装、登录和 tailnet 由用户自己完成；本次没有在代码里加入受管 Tailscale 隧道。
+
+已验证的布置：Windows 与 Mac 分处不同网络；专用 SSH 私钥在 Windows 用户 `.ssh`，对应公钥已写入 Mac `authorized_keys`；Windows 经 Tailscale 上的标准 SSH 调用 Mac Hub，Codex、Claude、Muse、Grok、Cursor 成功。main `5ca9724` 已合并 SSH 通用修复：请求与响应按 UTF-8 字节传输 JSON，远端 Python 使用 `-X utf8`；RPC 错误与任务自身失败分开处理；提交或续接在响应未确认时不自动重发，并保留已得到的目标任务 ID。
+
+配置：
+
+1. 在 Windows 和 Mac 上安装 Tailscale，登录同一账号，或加入同一个 tailnet。
+2. 在 Tailscale 客户端的机器列表或 `tailscale status` 中确认对端在线。
+3. 在发起连接一侧的 SSH 配置中，把主机别名指到对端的 Tailscale IP 或 MagicDNS 主机名。Windows 配置文件在用户目录 `.ssh/config`。端口、密钥和 ProxyJump 写在这份配置里；当前 `SshClient` 只传主机别名（或 `user@host`）、POSIX 远端路径，以及 `BatchMode=yes`、`StrictHostKeyChecking=yes`、`ConnectTimeout=5`。
+4. Hub 继续使用现有远端参数。命令行是 `--ssh-host`、`--remote-python`、`--remote-data-dir`；`config.json` 里 remote 执行器仍是 `ssh_host`、`python`、`data_dir`。`--ssh-host` / `ssh_host` 填写上一步的主机别名。远端 Python 与数据目录填写目标机上的 POSIX 绝对路径。
+
+Windows 调用 Mac 的示例（别名和路径换成自己的）：
+
+```
+Host mac-hub
+    HostName <Tailscale IP 或 MagicDNS 主机名>
+    User <Mac 用户名>
+    IdentityFile <Windows 上专用私钥路径>
+```
+
+首次连接前，先在终端手动执行一次 `ssh mac-hub`（或你配置的主机别名），核对并接受目标机主机指纹，把密钥写入本机 `known_hosts`。Hub 使用 `BatchMode=yes` 与 `StrictHostKeyChecking=yes`，未知或变化的主机密钥会被拒绝，不会交互提示。
+
+```powershell
+.\.venv\Scripts\python.exe -m agent_hub status --ssh-host mac-hub --remote-python /path/to/project/.venv/bin/python --remote-data-dir /Users/your-name/.agent-hub
+```
+
+```json
+{"agents":{"remote-worker":{"kind":"remote","platform":"darwin","ssh_host":"mac-hub","python":"/path/to/project/.venv/bin/python","data_dir":"/Users/your-name/.agent-hub","agent":"claude","cwd":"/Users/your-name/project","mode":"read_only"}}}
+```
+
+目标机需能接受该密钥的 SSH 登录，并已安装本项目与执行器。未知或变化的主机密钥会被拒绝。节点声明只记录身份，`remote_connection_verified` 仍为 false。
+
+边界：Tailscale 的安装与登录由用户自己完成。国内网络下 Tailscale 可能偶发不稳定，连通由用户的 tailnet 负责。SSH 密钥、`authorized_keys` 和 Hub 配置留在各自机器的私有目录，不进入 Git。已验证的方向是 Windows 调用 Mac；Windows 作为 SSH 目标机没有新的实测结论，目标机命令仍要求 POSIX shell 与绝对路径。
 
 ## 总控接入
 
@@ -106,7 +144,7 @@ request_id 应为稳定且唯一的请求键。相同键和内容只执行一次
   Muse 发送使用 fire_and_forget，只取得派发确认；回复由 Hub 的历史轮询统一回收，不在发送工具内重复等待回复。
   Hub 专用 Muse 子进程启用 `MUSE_MCP_REUSE_GATEWAY=1`，配套 muse-mcp 支持在锁保护下复用连接，减少重复 HTTPS 认证；连接异常会丢弃缓存，不重放业务操作。普通 Muse 工具默认仍使用独立连接。配套兼容性补丁和基线安装步骤见 [vendor/muse-mcp/README.md](vendor/muse-mcp/README.md)，部署时需应用补丁并配置自己的认证与 Python 路径。
 - 后台重启：running/cancelling 标 interrupted，不按旧 PID 杀进程，也不自动重跑。无法确认旧执行已停止的工作区隔离，拒绝直接续接；同工作区此前已排队的任务也转 interrupted，其他工作区 queued 继续。需人工核对，在新工作区提交。正常终态使用已保存的 session_id 续接。Mac 上强制杀死后台不保证旧执行器停止。
-- Mac 已完成本机核心闭环及补充实机验收，详见 [Mac 验收记录](docs/2026-10-11-macos-full-acceptance.md) 与 [补充异常验收](docs/2026-10-11-macos-resilience-validation.md)。严格的睡眠期间到期后恢复处理仍未验证。DeepSeek Harness、Claude 订阅模式未验收。Muse 原会话远端取消和 SSH 跨机器调度已实现；真实双机 SSH 尚未验收，见开头说明。Mac 不使用 Windows lock 文件：创建环境后 `pip install -e .`，按本机路径配置。
+- Mac 已完成本机核心闭环及补充实机验收，详见 [Mac 验收记录](docs/2026-10-11-macos-full-acceptance.md) 与 [补充异常验收](docs/2026-10-11-macos-resilience-validation.md)。严格的睡眠期间到期后恢复处理仍未验证。DeepSeek Harness、Claude 订阅模式未验收。Muse 原会话远端取消和 SSH 跨机器调度已实现；2026-10-11 当时真实双机 SSH 尚未验收，2026-10-13 的跨网络实机见文首与「额外说明」。Mac 不使用 Windows lock 文件：创建环境后 `pip install -e .`，按本机路径配置。
 
 ## 诊断与验证
 
@@ -120,7 +158,7 @@ request_id 应为稳定且唯一的请求键。相同键和内容只执行一次
 
 开发设计、实施计划、开发进度和验收记录位于 docs。认证和运行数据不进入 Git；完整日志仅在用户私有数据目录保存。
 
-Mac 2026-10-11 的记录分为 [核心验收](docs/2026-10-11-macos-full-acceptance.md) 与 [异常及稳定性验收](docs/2026-10-11-macos-resilience-validation.md)。仍未验证严格的睡眠期间到期后恢复处理、Muse 底层浏览器动作独立审计、数小时持续稳定性、真实登录自然过期后的恢复。Muse 远端取消和 SSH 调度随后已实现，真实双机 SSH 仍未验收。DeepSeek Harness、Claude 订阅模式按该轮范围排除。
+Mac 2026-10-11 的记录分为 [核心验收](docs/2026-10-11-macos-full-acceptance.md) 与 [异常及稳定性验收](docs/2026-10-11-macos-resilience-validation.md)。仍未验证严格的睡眠期间到期后恢复处理、Muse 底层浏览器动作独立审计、数小时持续稳定性、真实登录自然过期后的恢复。Muse 远端取消和 SSH 调度随后已实现。该日记录中的真实双机 SSH 当时尚未验收；2026-10-13 已另有 Tailscale 跨网络实机，见「额外说明」。DeepSeek Harness、Claude 订阅模式按该轮范围排除。
 
 `scripts/macos_*.py` 是本轮隔离验收及证据复核脚本，使用固定私有目录和请求键，不能把重放旧结果当作新验收。涉及真实账号的脚本会使用账号额度；休眠脚本会让整台 Mac 休眠，须每次明确授权并准备手动唤醒。它们不由普通自动回归执行。
 
@@ -261,7 +299,7 @@ Claude 必须只输出一个纯 JSON 对象，例如（ID 为示意值，实际�
 CLI 过程事件只从 stdout 映射；stderr 仅脱敏写日志。CLI 会话只接受 stdout 的首个初始化记录，后续 init 或最终 result 不覆盖 session_id；缺少有效首个 init 时不提供原生续接。permission_denials 日志只保留工具名称和调用 ID。外部检查对非当前尝试（包括执行失败的旧尝试）只追加 superseded 历史，仍校验条件与证据归属。
 
 
-第三阶段：`list_nodes` 可从本机 RPC、MCP、SSH 读取节点声明。remote 配置必须显式声明 platform（darwin/windows/linux），可声明 node_id/host_id；非 local 节点不得使用本机 host_id，本机平台按系统登记，Linux 为 linux；配置本身不证明连通，remote_connection_verified 保持 false。submit_task 可带 node_id；省略保持原路由，指定时节点必须声明 agent 与 mode，否则 NODE_UNAVAILABLE。SSH 节点使用原 Remote 适配器的 delegate 模式，本机 cwd 不上传。
+第三阶段：`list_nodes` 可从本机 RPC、MCP、SSH 读取节点声明。跨网络时的 Tailscale 与 SSH 主机别名见上文「额外说明」。remote 配置必须显式声明 platform（darwin/windows/linux），可声明 node_id/host_id；非 local 节点不得使用本机 host_id，本机平台按系统登记，Linux 为 linux；配置本身不证明连通，remote_connection_verified 保持 false。submit_task 可带 node_id；省略保持原路由，指定时节点必须声明 agent 与 mode，否则 NODE_UNAVAILABLE。SSH 节点使用原 Remote 适配器的 delegate 模式，本机 cwd 不上传。
 
 跨主机 get_artifact 带 `target_host_id`（也可带 `target_node_id` 由登记节点推导主机），不同 host_id 返回 transfer_required，不含发送端路径。仅本机 Bearer RPC 可调用 `transfer_artifact`，参数：`{"request_id":"send-1","artifact_id":"artifact://REGISTERED_ID","target_node_id":"TARGET_NODE"}`。接收端核对哈希后写 receipt，同请求不复制第二份，重启/超时保留 retryable，不改变执行或验收状态。SSH 传输返回 NODE_UNVERIFIED；其他机器的 local 接收端目前仅支持测试内注入的双目录模拟，没有生产跨机器传输。外部检查示例的 controller_id/epoch 须替换为 claim_controller 返回的租约；无租约可省略。
 
