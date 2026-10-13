@@ -57,7 +57,7 @@ def powershell_process_script(argv):
     # UseShellExecute=false with RedirectStandardInput=false inherits stdin.
     # Both output streams drain concurrently to avoid a full-pipe deadlock.
     return (
-        "try { $ErrorActionPreference = 'Stop'; "
+        "try { $ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; "
         "$s = New-Object System.Diagnostics.ProcessStartInfo; "
         "$s.FileName = " + powershell_literal(argv[0]) + "; "
         "$s.Arguments = " + powershell_literal(subprocess.list2cmdline(argv[1:])) + "; "
@@ -67,7 +67,7 @@ def powershell_process_script(argv):
         "if (!$p.Start()) { throw 'Process did not start' }; "
         "$out = $p.StandardOutput.BaseStream.CopyToAsync([Console]::OpenStandardOutput()); "
         "$err = $p.StandardError.BaseStream.CopyToAsync([Console]::OpenStandardError()); "
-        "$p.WaitForExit(); $out.GetAwaiter().GetResult(); $err.GetAwaiter().GetResult(); "
+        "$p.WaitForExit(); [void]$out.GetAwaiter().GetResult(); [void]$err.GetAwaiter().GetResult(); "
         "$code = $p.ExitCode; $p.Dispose(); exit $code "
         "} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }")
 
