@@ -14,7 +14,7 @@ Claude 用户设置指向 CCR `http://127.0.0.1:3456`。初始检查连接被拒
 - Cursor IDE：`cursor`，`kind=ide`，配置实际 Windows `Cursor.exe` 路径。由 Codex 内置 Windows worker 驱动独立聊天，并通过本机 RPC 领取和回写任务。
 - Cursor CLI：`cursor_cli`，使用 D 盘 CLI 安装目录的原生 Node 可执行文件，`args` 指向同目录 `index.js`。`credentials_file` 引用 BDK 官方登录工具保存的私有凭据；不在 Hub 配置中复制密钥。
 - Grok Bot：`grokbot`，BDK 0.2.23 登录后创建专用 `Agent Hub Windows Worker`，固定其会话 ID；不复用用户原有聊天。
-- 通用 SSH 远端执行器需要明确目标机器、登录与路径，本轮没有虚构远端节点。
+- 通用 SSH 远端执行器需要明确目标机器、登录与路径，本轮没有虚构远端节点。2026-10-13 的 Tailscale 跨网络实机（Windows 调用 Mac Hub）见 README「额外说明」，不属于本轮问候验收，Hub 也没有因此内置 Tailscale 管理。
 
 ## Windows 修正与权限范围
 
