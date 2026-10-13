@@ -18,13 +18,13 @@ from agent_hub.ssh_client import SshClient
 class SshTests(unittest.TestCase):
     def test_quotes_paths_and_sends_prompt_only_on_stdin(self):
         client = SshClient('known-host', '/space dir/python', '/remote data')
-        with patch('subprocess.run', return_value=subprocess.CompletedProcess([],0,'{"ok":true}','')) as run:
+        with patch('subprocess.run', return_value=subprocess.CompletedProcess([],0,b'{"ok":true}',b'')) as run:
             self.assertEqual(client.call('submit_task', {'prompt':'$(unsafe)`cmd`'}), {'ok':True})
         argv = run.call_args.args[0]
         self.assertEqual(shlex.split(argv[-1])[0], '/space dir/python')
         self.assertIn('StrictHostKeyChecking=yes', argv)
         self.assertNotIn('unsafe', str(argv))
-        self.assertIn('unsafe', run.call_args.kwargs['input'])
+        self.assertIn(b'unsafe', run.call_args.kwargs['input'])
 
     def test_rejects_options_and_invalid_remote_paths(self):
         for host, python in [('-oProxyCommand=bad','/python'),('host;cmd','/python'),('host','python')]:
@@ -38,10 +38,85 @@ class SshTests(unittest.TestCase):
         self.assertEqual(run.call_count,1)
 
     def test_malformed_remote_error_is_not_used_as_exception_code(self):
-        with patch('subprocess.run',return_value=subprocess.CompletedProcess([],1,'{"error":{"code":[],"message":{}}}','')):
+        with patch('subprocess.run',return_value=subprocess.CompletedProcess([],1,b'{"error":{"code":[],"message":{}}}',b'')):
             with self.assertRaises(HubError) as error:
                 SshClient('host','/python','/data').call('get_task',{})
         self.assertEqual(error.exception.code,'INVALID_RESPONSE')
+
+    def test_utf8_roundtrip_under_gbk_host_default(self):
+        real_run = subprocess.run
+        script = ('import sys,json; '
+                  'p=json.loads(sys.stdin.buffer.read().decode("utf-8")); '
+                  'sys.stdout.buffer.write(json.dumps(p,ensure_ascii=False).encode("utf-8"))')
+        def local_transport(argv, **kwargs):
+            # Emulate the Windows locale while running a real UTF-8 RPC peer.
+            if kwargs.get('text'):
+                kwargs.setdefault('encoding', 'gbk')
+            return real_run([sys.executable, '-c', script], **kwargs)
+        payload = {'prompt': '你好 🧪', 'cwd': '/Users/your-name/项目'}
+        with patch('subprocess.run', side_effect=local_transport):
+            self.assertEqual(SshClient('host','/python','/data').call('submit_task',payload),payload)
+
+    def test_failed_task_result_is_not_rpc_error(self):
+        for state in ('failed', 'timed_out', 'cancelled', 'interrupted', 'delivery_unknown'):
+            with self.subTest(state=state):
+                result = {'ready': True, 'state': state, 'error': '本地执行进程树已停止',
+                          'error_code': 'CANCELLED', 'errors': [{'code': 'TASK_TIMED_OUT'}]}
+                with patch('subprocess.run', return_value=subprocess.CompletedProcess(
+                        [],0,json.dumps(result).encode('utf-8'),b'')):
+                    self.assertEqual(SshClient('host','/python','/data').call('get_result',{}),result)
+
+    def test_rpc_error_still_raises_original_code_and_message(self):
+        response = {'error': {'code': 'UNKNOWN_TASK', 'message': '任务不存在'}}
+        with patch('subprocess.run', return_value=subprocess.CompletedProcess(
+                [],1,json.dumps(response).encode('utf-8'),b'')):
+            with self.assertRaises(HubError) as error:
+                SshClient('host','/python','/data').call('get_task',{})
+        self.assertEqual(error.exception.code,'UNKNOWN_TASK')
+        self.assertEqual(str(error.exception),'任务不存在')
+
+    def test_nonzero_exit_cannot_be_returned_as_task_result(self):
+        response = {'ready': True, 'state': 'failed', 'error': 'task failed'}
+        with patch('subprocess.run', return_value=subprocess.CompletedProcess(
+                [],1,json.dumps(response).encode('utf-8'),b'')):
+            with self.assertRaises(HubError) as error:
+                SshClient('host','/python','/data').call('get_result',{})
+        self.assertEqual(error.exception.code,'INVALID_RESPONSE')
+
+    def test_invalid_utf8_response_preserves_no_retry_semantics(self):
+        for tool, code in (('submit_task', 'DELIVERY_UNKNOWN'),
+                           ('continue_task', 'DELIVERY_UNKNOWN'),
+                           ('get_result', 'REMOTE_UNAVAILABLE')):
+            with self.subTest(tool=tool), patch('subprocess.run', return_value=
+                    subprocess.CompletedProcess([],0,b'\xff',b'')) as run:
+                with self.assertRaises(HubError) as error:
+                    SshClient('host','/python','/data').call(tool,{})
+                self.assertEqual(error.exception.code,code)
+                self.assertEqual(run.call_count,1)
+
+    def test_nonzero_exit_without_rpc_error_is_unavailable(self):
+        with patch('subprocess.run', return_value=
+                subprocess.CompletedProcess([],1,b'{"ready":true,"state":"succeeded"}',b'')):
+            with self.assertRaises(HubError) as error:
+                SshClient('host','/python','/data').call('get_result',{})
+        self.assertEqual(error.exception.code,'REMOTE_UNAVAILABLE')
+
+    def test_uncertain_nonzero_delivery_never_claims_not_sent(self):
+        for tool in ('submit_task', 'continue_task'):
+            for body in (b'{"id":"accepted-task"}', b'{"error":"not an RPC envelope"}'):
+                with self.subTest(tool=tool, body=body), patch('subprocess.run', return_value=
+                        subprocess.CompletedProcess([],1,body,b'')) as run:
+                    with self.assertRaises(HubError) as error:
+                        SshClient('host','/python','/data').call(tool,{})
+                    self.assertEqual(error.exception.code,'DELIVERY_UNKNOWN')
+                    self.assertEqual(run.call_count,1)
+
+    def test_remote_rpc_python_is_forced_to_utf8(self):
+        with patch('subprocess.run', return_value=
+                subprocess.CompletedProcess([],0,b'{}',b'')) as run:
+            SshClient('host','/python','/data').call('list_agents')
+        command = shlex.split(run.call_args.args[0][-1])
+        self.assertEqual(command[:5],['/python','-X','utf8','-m','agent_hub'])
 
 
 class RemoteTests(unittest.TestCase):
@@ -89,6 +164,15 @@ class RemoteTests(unittest.TestCase):
             with self.assertRaises(HubError) as error:
                 self.adapter.run(self.task,threading.Event(),lambda *e:self.events.append(e))
         self.assertEqual(error.exception.code,'REMOTE_STATE_UNKNOWN')
+        self.assertEqual([c.args[0] for c in call.call_args_list],['submit_task','get_result'])
+
+    def test_invalid_rpc_response_keeps_remote_task_binding(self):
+        with patch.object(self.adapter.client,'call',side_effect=[
+                {'id':'original'},HubError('INVALID_RESPONSE','bad response')]) as call:
+            with self.assertRaises(HubError) as error:
+                self.adapter.run(self.task,threading.Event(),lambda *e:self.events.append(e))
+        self.assertEqual(error.exception.code,'REMOTE_STATE_UNKNOWN')
+        self.assertEqual(error.exception.details['remote_task']['task_id'],'original')
         self.assertEqual([c.args[0] for c in call.call_args_list],['submit_task','get_result'])
 
     def test_malformed_result_keeps_original_remote_task_id(self):

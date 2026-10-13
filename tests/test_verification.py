@@ -1272,7 +1272,7 @@ class VerificationTests(unittest.TestCase):
         self.assertNotIn('record_verification', TOOLS)
         self.assertNotIn('verify_task', TOOLS)
         client = SshClient('host', '/python', '/data')
-        with patch('agent_hub.ssh_client.subprocess.run', return_value=subprocess.CompletedProcess([], 0, '{"work_status":"completed"}', '')) as run:
+        with patch('agent_hub.ssh_client.subprocess.run', return_value=subprocess.CompletedProcess([], 0, b'{"work_status":"completed"}', b'')) as run:
             self.assertEqual(client.call('get_work_item', {'task_id': 'task'})['work_status'], 'completed')
             self.assertIn('get_work_item', run.call_args.args[0][-1])
 

@@ -95,7 +95,7 @@ class Remote:
                 event('remote_cancel', details)
                 raise HubError(error.code, str(error), dict(error.details, **details)) from None
             # 读断线不重新派发；目标任务 ID 已留存供恢复查询。
-            if error.code == 'REMOTE_UNAVAILABLE':
+            if error.code in {'REMOTE_UNAVAILABLE', 'INVALID_RESPONSE'}:
                 raise HubError('REMOTE_STATE_UNKNOWN', '已派发，目标机不可达；保留任务 ID，未重发',
                                {'remote_task': binding, 'remote_cancelled': False}) from None
             raise
