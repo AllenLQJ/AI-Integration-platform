@@ -6,7 +6,7 @@ import subprocess
 import threading
 from pathlib import Path
 from ..models import HubError
-from ..processes import environment, run_process
+from ..processes import SpawnError, environment, run_process
 
 
 def _mtime(path):
@@ -136,9 +136,11 @@ class CLI:
         try:
             rc, out, err, logs = run_process(argv, task['workspace'], environment(self.env),
                                            cancel, task['deadline'], task['log_dir'], observed, allow_hub_events=False)
-        except OSError as error:
-            # Spawn failure (file vanished mid-upgrade, not executable, bad format...).
-            raise self.unavailable(resolved, type(error).__name__ + ': ' + str(error)) from error
+        except SpawnError as error:
+            # Only process creation is mapped (file vanished mid-upgrade, not executable,
+            # bad format; OSError or Windows pywintypes.error). Log-dir / workspace / log IO
+            # failures propagate with their own codes.
+            raise self.unavailable(resolved, str(error)) from error.cause
         if rc:
             raise HubError('CLI_FAILED', '执行器退出码 ' + str(rc) + ': ' + err[-1000:],
                            {'exit_code': rc, 'artifacts': {'logs': logs}})

@@ -98,11 +98,63 @@ class ResolveExecutableTests(unittest.TestCase):
     def test_spawn_failure_maps_to_unavailable(self):
         with tempfile.TemporaryDirectory() as d:
             exe = Path(d) / 'codex.exe'; exe.write_text('')
-            with patch('agent_hub.adapters.base.run_process', side_effect=OSError('boom')):
+            target = 'agent_hub.windows_process.WindowsProcess' if os.name == 'nt' else 'agent_hub.processes.subprocess.Popen'
+            with patch(target, side_effect=OSError('boom')):
                 with self.assertRaises(HubError) as ctx:
                     Codex(str(exe)).run(_task(d), None, lambda *a: None)
             self.assertEqual(ctx.exception.code, 'AGENT_UNAVAILABLE')
             self.assertIn(str(exe), str(ctx.exception))
+
+    def test_real_spawn_failure_maps_to_unavailable(self):
+        # Empty file is not a valid executable: on Windows CreateProcess raises
+        # pywintypes.error (not an OSError subclass); on POSIX Popen raises OSError.
+        with tempfile.TemporaryDirectory() as d:
+            exe = Path(d) / 'codex.exe'; exe.write_bytes(b'')
+            with self.assertRaises(HubError) as ctx:
+                Codex(str(exe)).run(_task(d), None, lambda *a: None)
+            self.assertEqual(ctx.exception.code, 'AGENT_UNAVAILABLE')
+            self.assertIn(str(exe), str(ctx.exception))
+            self.assertEqual(ctx.exception.details['resolved_executable'], str(exe))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows only')
+    def test_pywintypes_error_from_createprocess_maps_to_unavailable(self):
+        import pywintypes
+        with tempfile.TemporaryDirectory() as d:
+            exe = Path(d) / 'codex.exe'; exe.write_text('')
+            err = pywintypes.error(193, 'CreateProcess', '%1 is not a valid Win32 application.')
+            self.assertNotIsInstance(err, OSError)
+            with patch('win32process.CreateProcess', side_effect=err):
+                with self.assertRaises(HubError) as ctx:
+                    Codex(str(exe)).run(_task(d), None, lambda *a: None)
+            self.assertEqual(ctx.exception.code, 'AGENT_UNAVAILABLE')
+            self.assertIn('error', str(ctx.exception))
+
+    def test_log_dir_failure_is_not_unavailable(self):
+        with tempfile.TemporaryDirectory() as d:
+            exe = Path(d) / 'codex.exe'; exe.write_text('')
+            with patch('agent_hub.processes.Path.mkdir', side_effect=PermissionError('denied')):
+                with self.assertRaises(PermissionError):
+                    Codex(str(exe)).run(_task(d), None, lambda *a: None)
+
+    def test_missing_workspace_is_not_unavailable(self):
+        with tempfile.TemporaryDirectory() as d:
+            exe = Path(d) / 'codex.exe'; exe.write_text('')
+            task = _task(d); task['workspace'] = os.path.join(d, 'missing')
+            with self.assertRaises(HubError) as ctx:
+                Codex(str(exe)).run(task, None, lambda *a: None)
+            self.assertEqual(ctx.exception.code, 'INVALID_WORKSPACE')
+
+    def test_run_resolves_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            exe = Path(d) / 'codex.exe'; exe.write_text('')
+            with patch('agent_hub.adapters.base.resolve_executable', return_value=str(exe)) as resolve, \
+                 patch('agent_hub.adapters.base.run_process', return_value=(0, '', '', {})), \
+                 patch.object(Codex, 'parse', return_value={'ok': True}, create=True):
+                try:
+                    Codex(str(exe)).run(_task(d), None, lambda *a: None)
+                except HubError:
+                    pass
+            self.assertEqual(resolve.call_count, 1)
 
     def test_bare_name_resolves_with_which(self):
         with patch('agent_hub.adapters.base.shutil.which', return_value='/opt/bin/codex') as which:
