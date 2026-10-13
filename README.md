@@ -74,12 +74,14 @@ Host mac-hub
     IdentityFile <Windows 上专用私钥路径>
 ```
 
+首次连接前，先在终端手动执行一次 `ssh mac-hub`（或你配置的主机别名），核对并接受目标机主机指纹，把密钥写入本机 `known_hosts`。Hub 使用 `BatchMode=yes` 与 `StrictHostKeyChecking=yes`，未知或变化的主机密钥会被拒绝，不会交互提示。
+
 ```powershell
 .\.venv\Scripts\python.exe -m agent_hub status --ssh-host mac-hub --remote-python /path/to/project/.venv/bin/python --remote-data-dir /Users/your-name/.agent-hub
 ```
 
 ```json
-{"agents":{"remote-worker":{"kind":"remote","ssh_host":"mac-hub","python":"/path/to/project/.venv/bin/python","data_dir":"/Users/your-name/.agent-hub","agent":"claude","cwd":"/Users/your-name/project","mode":"read_only"}}}
+{"agents":{"remote-worker":{"kind":"remote","platform":"darwin","ssh_host":"mac-hub","python":"/path/to/project/.venv/bin/python","data_dir":"/Users/your-name/.agent-hub","agent":"claude","cwd":"/Users/your-name/project","mode":"read_only"}}}
 ```
 
 目标机需能接受该密钥的 SSH 登录，并已安装本项目与执行器。未知或变化的主机密钥会被拒绝。节点声明只记录身份，`remote_connection_verified` 仍为 false。
