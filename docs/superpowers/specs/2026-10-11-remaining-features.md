@@ -20,4 +20,6 @@
 - 模型提交/续接不因网络错误自动重发；读断线或取消未确认须保留绑定，禁止不确定任务直接续发。
 - 同一 Mac 的隔离 Hub 验证可证明转发与工作区管理，不能代替真实两机 SSH、目标机权限及平台验收。
 
+2026-10-13 补充：Tailscale 跨网络的标准 SSH 已由 Windows 调用 Mac Hub 实机验证（Codex、Claude、Muse、Grok、Cursor 成功）。用法写在 README「额外说明」。本规格仍不包含 Hub 内置 Tailscale 管理；产品继续使用 SSH，Hub 不监听公网。
+
 既有 DeepSeek Harness、Claude 订阅模式仍排除。严格物理休眠期间到期、长时间稳定性、自然登录过期及浏览器底层审计属于尚未完成的验收，不作为未实现功能改名消除。
