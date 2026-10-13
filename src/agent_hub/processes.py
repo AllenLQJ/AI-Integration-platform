@@ -78,16 +78,46 @@ def terminate_tree(process):
     process.wait(15)
 
 
+class SpawnError(Exception):
+    """Creating the child process itself failed (missing/invalid executable).
+
+    Wraps OSError and, on Windows, pywintypes.error raised by CreateProcess
+    (which does not inherit from OSError)."""
+
+    def __init__(self, cause):
+        self.cause = cause
+        super().__init__(type(cause).__name__ + ': ' + str(cause))
+
+
+def _spawn_error_types():
+    types = [OSError]
+    try:
+        import pywintypes
+        types.append(pywintypes.error)
+    except ImportError:
+        pass
+    return tuple(types)
+
+
+def spawn_process(argv, cwd, env):
+    try:
+        if os.name == 'nt':
+            from .windows_process import WindowsProcess
+            return WindowsProcess(argv, cwd, env)
+        return subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    except _spawn_error_types() as error:
+        raise SpawnError(error) from error
+
+
 def run_process(argv, cwd, env, cancel, deadline, log_dir, event, allow_hub_events=True):
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     out_path, err_path = log_dir / 'stdout.log', log_dir / 'stderr.log'
-    if os.name == 'nt':
-        from .windows_process import WindowsProcess
-        process = WindowsProcess(argv, cwd, env)
-    else:
-        process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    if not Path(cwd).is_dir():
+        raise HubError('INVALID_WORKSPACE', 'workspace directory does not exist: ' + str(cwd),
+                       {'workspace': str(cwd)})
+    process = spawn_process(argv, cwd, env)
     def pump(stream, path, structured):
         from .store import Store
         tool_names = {}
