@@ -62,8 +62,8 @@ MCP 使用 stdio：command 为虚拟环境 python.exe 的绝对路径，args 为
 
 1. 在 Windows 和 Mac 上安装 Tailscale，登录同一账号，或加入同一个 tailnet。
 2. 在 Tailscale 客户端的机器列表或 `tailscale status` 中确认对端在线。
-3. 在发起连接一侧的 SSH 配置中，把主机别名指到对端的 Tailscale IP 或 MagicDNS 主机名。Windows 配置文件在用户目录 `.ssh/config`。端口、密钥和 ProxyJump 写在这份配置里；当前 `SshClient` 只传主机别名（或 `user@host`）、POSIX 远端路径，以及 `BatchMode=yes`、`StrictHostKeyChecking=yes`、`ConnectTimeout=5`。
-4. Hub 继续使用现有远端参数。命令行是 `--ssh-host`、`--remote-python`、`--remote-data-dir`；`config.json` 里 remote 执行器仍是 `ssh_host`、`python`、`data_dir`。`--ssh-host` / `ssh_host` 填写上一步的主机别名。远端 Python 与数据目录填写目标机上的 POSIX 绝对路径。
+3. 在发起连接一侧的 SSH 配置中，把主机别名指到对端的 Tailscale IP 或 MagicDNS 主机名。Windows 配置文件在用户目录 `.ssh/config`。端口、密钥和 ProxyJump 写在这份配置里；`SshClient` 传主机别名（或 `user@host`）、按显式 platform/shell 构造的目标命令，以及 `BatchMode=yes`、`StrictHostKeyChecking=yes`、`ConnectTimeout=5`。
+4. Hub 继续使用现有远端参数。命令行是 `--ssh-host`、`--remote-python`、`--remote-data-dir`；`config.json` 里 remote 执行器仍是 `ssh_host`、`python`、`data_dir`。`--ssh-host` / `ssh_host` 填写上一步的主机别名。远端 Python、数据目录与 remote 执行器 cwd 填写目标平台上的绝对路径。省略新增连接参数保持旧 POSIX 行为。
 
 Windows 调用 Mac 的示例（别名和路径换成自己的）：
 
@@ -86,7 +86,36 @@ Host mac-hub
 
 目标机需能接受该密钥的 SSH 登录，并已安装本项目与执行器。未知或变化的主机密钥会被拒绝。节点声明只记录身份，`remote_connection_verified` 仍为 false。
 
-边界：Tailscale 的安装与登录由用户自己完成。国内网络下 Tailscale 可能偶发不稳定，连通由用户的 tailnet 负责。SSH 密钥、`authorized_keys` 和 Hub 配置留在各自机器的私有目录，不进入 Git。已验证的方向是 Windows 调用 Mac；Windows 作为 SSH 目标机没有新的实测结论，目标机命令仍要求 POSIX shell 与绝对路径。
+边界：Tailscale 的安装与登录由用户自己完成。国内网络下 Tailscale 可能偶发不稳定，连通由用户的 tailnet 负责。SSH 密钥、`authorized_keys` 和 Hub 配置留在各自机器的私有目录，不进入 Git。已验证的方向是 Windows 调用 Mac；原生 Windows 目标机支持见下一节；本次没有新增真实 Windows SSH 实测结论。
+
+
+### 原生 Windows SSH 目标机
+
+目标 Hub 已安装于原生 Windows Python 环境时，指定 `--remote-platform windows`，并按目标 Windows OpenSSH 的已配置默认 shell 指定 `--remote-shell cmd` 或 `powershell`（Windows 省略 shell 时为 cmd）。不探测 shell、不自动降级、不修改 OpenSSH DefaultShell。`cmd` 指 cmd.exe；`powershell` 指 Windows PowerShell 或 PowerShell 默认 shell，目标 PATH 必须能找到 `powershell.exe`（Windows PowerShell 5.1）。自定义启动器、WSL、Git Bash 等不在 Windows shell 支持范围内。
+
+```sh
+python -m agent_hub status --ssh-host windows-hub --remote-platform windows --remote-shell cmd --remote-python 'C:/Hub/.venv/Scripts/python.exe' --remote-data-dir 'C:/Users/your-name/.agent-hub'
+```
+
+以上单引号是 POSIX 发起端终端写法；Windows cmd 发起端用双引号。同样的远端连接参数适用于 `rpc`、`show`、`mcp`；任务参数用 `--arguments -` 送入 stdin，prompt 不放在远端命令里。remote 执行器示例：
+
+```json
+{"agents":{"windows-worker":{"kind":"remote","platform":"windows","shell":"cmd","ssh_host":"windows-hub","python":"C:/Hub/.venv/Scripts/python.exe","data_dir":"C:/Users/your-name/.agent-hub","agent":"claude","cwd":"D:/中文 项目","mode":"read_only"}}}
+```
+
+支持盘符绝对路径（`C:/...`、`C:\...`）与常规 UNC（`//server/share/...`、JSON 中 `\\\\server\\share\\...`）。不展开环境变量或 `~`；拒绝盘符相对路径 `C:foo`、无盘符根路径、控制字符、设备命名空间、ADS 和 Windows 非法文件名字符。UNC 是否可访问取决于目标 SSH 用户的权限，Hub 不配置网络凭据。中文、空格、单引号、`&`、`$`、反引号、`%`、`!`、`^` 按路径字面值传递。
+
+两种默认 shell 都运行固定的 `powershell.exe -NoProfile -NonInteractive -EncodedCommand`，脚本使用 UTF-16LE/Base64。路径与 Windows CRT 参数串使用 PowerShell 单引号字面量引用；按 [CodeGeneration.EscapeSingleQuotedStringContent](https://learn.microsoft.com/en-us/dotnet/api/system.management.automation.language.codegeneration.escapesinglequotedstringcontent) 语义，将 ASCII 单引号及 U+2018/U+2019/U+201A/U+201B 全部加倍，防止智能引号结束字面量。
+
+Python 改由 `ProcessStartInfo` 启动，而不是 PowerShell 原生命令调用：`UseShellExecute=false`、`RedirectStandardInput=false` 让 Python 继承 SSH stdin（[.NET Framework Process 实现](https://github.com/microsoft/referencesource/blob/main/System/services/monitoring/system/diagnosticts/Process.cs)将 stdin 设置为原 `STD_INPUT_HANDLE`）。脚本不读 stdin、不引用 `$input`，不建立文本管道；stdout/stderr 各通过 BaseStream.CopyToAsync 并发转发到原标准句柄，不解码、不合并。PowerShell 默认 shell 的外层启动器也使用相同方式，避免 native stderr warning 变成错误记录、污染成功 RPC 的 JSON。Python 使用 `-X utf8`，实际路径与末尾反斜杠由 Windows CRT 引号规则传递，退出码由子进程 `ExitCode` 显式传出。所有初始化均在 try/catch 内；启动或转发异常写 stderr 并退出 1。保留 host key 严格检查、RPC 与任务失败区分、不确定派发不重发、8000 字符命令长度限制。
+
+关于 stdin：已核查开源 PowerShell v7.4 的 [ConsoleHost](https://github.com/PowerShell/PowerShell/blob/v7.4.0/src/Microsoft.PowerShell.ConsoleHost/host/msh/ConsoleHost.cs)、[Executor](https://github.com/PowerShell/PowerShell/blob/v7.4.0/src/Microsoft.PowerShell.ConsoleHost/host/msh/Executor.cs) 和 [NativeCommandProcessor](https://github.com/PowerShell/PowerShell/blob/v7.4.0/src/System.Management.Automation/engine/NativeCommandProcessor.cs)。redirected input 可令 ConsoleHost 异步执行，但 ReadInputObjects 在命令 AST 使用 `$input` 时才开启；Executor 否则关闭对象输入管道，不反序列化 stdin。原生命令另依 ExpectingInput 决定重定向。当前脚本通过 .NET 直接启动子进程，避开该原生命令路径。这是源码核查依据，不能替代闭源 Windows PowerShell 5.1 的目标实测。[5.1 官方文档](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_powershell_exe?view=powershell-5.1) 的 InputFormat 只支持 Text/XML，未使用无效的 `-InputFormat None`。
+
+sshd 外层仍按目标配置启动 `cmd /c` 或 `powershell -c`，本项目不关闭其 AutoRun/profile，也不改 SSH 配置。外层 AutoRun、PowerShell profile 不得向 stdout 输出内容、读取 stdin 或改动标准句柄，否则会破坏 JSON 协议；内层 `-NoProfile` 无法撤销外层初始化的影响。
+
+配置文件的 remote 节点必须显式声明具体 `platform` 为 `darwin`、`linux` 或 `windows`，连接与节点声明共用该值，不能写 `posix` 或省略。`shell=posix` 适用于 darwin/linux。旧 POSIX CLI、SshClient 和直接 Remote 构造仍保留默认 `platform=posix`，无需增加参数。
+
+Windows 专用实进程测试使用与 sshd 匹配的外层 `cmd.exe /c`、`powershell.exe -c`，不额外禁用外层 profile 或编码外层命令；覆盖大 UTF-8 stdin、智能引号正常路径与注入路径、官方逃逸 API 对照、独立 stderr warning、退出码 0/37 及 JSON 完整性。在 macOS/Linux 自动跳过。本次开发机器没有 PowerShell，真实 Windows 与 Windows OpenSSH 端到端实测未做，需在目标环境运行 `python -m unittest discover -s tests -p test_remote.py -v` 并验证已有 SSH 连接后验收。
 
 ## 总控接入
 

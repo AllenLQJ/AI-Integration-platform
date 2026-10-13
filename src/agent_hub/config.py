@@ -90,8 +90,10 @@ def adapters(root):
     result = {}
     for name, item in config.get('agents', {}).items():
         if item.get('kind') == 'remote' and item.get('enabled', True):
+            _, platform, _ = remote_node_declaration(name, item, item['ssh_host'])
             result[name] = Remote(item['ssh_host'], item['python'], item['data_dir'],
-                                  item['agent'], item['cwd'], item['mode'])
+                                  item['agent'], item['cwd'], item['mode'],
+                                  platform=platform, shell=item.get('shell'))
     for name, cls in [('codex', Codex), ('claude', Claude), ('muse', Muse),
                       ('cursor', Cursor), ('cursor_cli', Cursor), ('grokbot', GrokBot)]:
         item = config.get('agents', {}).get(name)

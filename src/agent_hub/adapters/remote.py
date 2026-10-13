@@ -4,7 +4,7 @@ import time
 import shutil
 from pathlib import Path
 from ..models import HubError, TERMINAL
-from ..ssh_client import SshClient
+from ..ssh_client import SshClient, validate_remote_path
 
 
 class Remote:
@@ -13,9 +13,10 @@ class Remote:
     cancel_scope = 'remote_hub_task'
     cancellation_timeout = 12
 
-    def __init__(self, host, python, data_dir, agent, cwd, mode):
-        self.client = SshClient(host, python, data_dir)
-        if (not isinstance(agent, str) or not agent or not isinstance(cwd, str) or not cwd.startswith('/')
+    def __init__(self, host, python, data_dir, agent, cwd, mode, *, platform='posix', shell=None):
+        self.client = SshClient(host, python, data_dir, platform=platform, shell=shell)
+        validate_remote_path(cwd, self.client.platform)
+        if (not isinstance(agent, str) or not agent or not isinstance(cwd, str)
                 or mode not in {'text_only', 'read_only', 'edit_worktree', 'delegate'}):
             raise HubError('INVALID_CONFIG', '远端 agent/cwd/mode 配置不正确')
         self.agent, self.cwd, self.mode = agent, cwd, mode
@@ -33,6 +34,7 @@ class Remote:
                 'remote_connection_verified': False,
                 'capabilities': self.capabilities, 'host': self.client.host,
                 'remote_agent': self.agent, 'remote_mode': self.mode,
+                'remote_platform': self.client.platform, 'remote_shell': self.client.shell,
                 'remote_cancel': True, 'cancel_scope': self.cancel_scope,
                 'permissions': {'delegate': self.permission_policy('delegate')}}
 

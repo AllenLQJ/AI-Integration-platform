@@ -1,3 +1,7 @@
+import base64
+import io
+import os
+import re
 import json
 import shlex
 import subprocess
@@ -43,16 +47,18 @@ class SshTests(unittest.TestCase):
                 SshClient('host','/python','/data').call('get_task',{})
         self.assertEqual(error.exception.code,'INVALID_RESPONSE')
 
-    def test_utf8_roundtrip_under_gbk_host_default(self):
+    def test_utf8_bytes_roundtrip_with_peer_using_gbk_stdio(self):
         real_run = subprocess.run
         script = ('import sys,json; '
+                  'assert sys.stdin.encoding.lower() == "gbk", sys.stdin.encoding; '
+                  'assert sys.stdout.encoding.lower() == "gbk", sys.stdout.encoding; '
                   'p=json.loads(sys.stdin.buffer.read().decode("utf-8")); '
                   'sys.stdout.buffer.write(json.dumps(p,ensure_ascii=False).encode("utf-8"))')
         def local_transport(argv, **kwargs):
-            # Emulate the Windows locale while running a real UTF-8 RPC peer.
-            if kwargs.get('text'):
-                kwargs.setdefault('encoding', 'gbk')
-            return real_run([sys.executable, '-c', script], **kwargs)
+            # A real subprocess has GBK text streams. The RPC deliberately uses
+            # buffer bytes, so locale must not affect non-GBK characters either.
+            env = dict(os.environ, PYTHONIOENCODING='gbk', PYTHONUTF8='0')
+            return real_run([sys.executable, '-X', 'utf8=0', '-c', script], env=env, **kwargs)
         payload = {'prompt': '你好 🧪', 'cwd': '/Users/your-name/项目'}
         with patch('subprocess.run', side_effect=local_transport):
             self.assertEqual(SshClient('host','/python','/data').call('submit_task',payload),payload)
@@ -246,3 +252,258 @@ class RemoteTests(unittest.TestCase):
             finally:controller.close()
         finally:
             server.shutdown();server.server_close();service.close();thread.join(2)
+
+
+class WindowsSshTests(unittest.TestCase):
+    def test_native_absolute_paths_and_boundaries(self):
+        from agent_hub.ssh_client import validate_remote_path
+        valid = [r'C:\Python\python.exe', 'D:/中文 空格/目录',
+                 r"C:\单'引号 & $();` %!^\python.exe", r'\\server\share',
+                 r'\\server\share\中文 空格', '//server/share/path']
+        invalid = ['python.exe', r'C:relative', r'\rooted', '/posix',
+                   r'\\server', '\\\\server\\', r'\\?\C:\data', r'\\.\pipe\x',
+                   r'\\..\share', 'C:/bad:stream', 'C:/a"b', 'C:/a|b',
+                   'C:/a*b', 'C:/a?b', 'C:/a\x00b', 'C:/a\nb', 'C:/a\rb',
+                   'C:/a\tb', 'C:/a\x7fb', 'C:/a\x85b']
+        for path in valid:
+            with self.subTest(path=path):
+                self.assertEqual(validate_remote_path(path, 'windows'), path)
+                Remote('host', path, path, 'worker', path, 'read_only', platform='windows')
+        for path in invalid:
+            with self.subTest(path=path), self.assertRaises(HubError):
+                validate_remote_path(path, 'windows')
+        for slot in ('python', 'data_dir', 'cwd'):
+            values = dict(python='C:/python.exe', data_dir='C:/data', cwd='C:/work')
+            values[slot] = 'C:relative'
+            with self.subTest(slot=slot), self.assertRaises(HubError):
+                Remote('host', values['python'], values['data_dir'], 'worker',
+                       values['cwd'], 'read_only', platform='windows')
+
+    def test_encoded_script_quotes_paths_and_never_contains_payload(self):
+        import base64
+        python = "C:/中文 单'引号 & $();` %!^/python.exe"
+        root = "//server/share/目录 单'引号 & $();` %!^"
+        payload = {'prompt': '唯一秘密 中文 🧪\r\n$(unsafe)`cmd`', 'cwd': 'C:/工作'}
+        for shell in ('cmd', 'powershell'):
+            with self.subTest(shell=shell), patch('subprocess.run', return_value=
+                    subprocess.CompletedProcess([], 0, b'{}', b'')) as run:
+                SshClient('host', python, root, platform='windows', shell=shell).call('submit_task', payload)
+                argv = run.call_args.args[0]
+                command = argv[-1]
+                encoded = re.search(r'-EncodedCommand ([A-Za-z0-9+/=]+)', command).group(1)
+                script = base64.b64decode(encoded).decode('utf-16le')
+                self.assertIn("$s.FileName = '" + python.replace("'", "''") + "';", script)
+                self.assertIn(root.replace("'", "''"), script)
+                self.assertIn('--arguments -', script)
+                self.assertIn('$code = $p.ExitCode', script)
+                self.assertIn('exit $code', script)
+                self.assertIn('$s.RedirectStandardInput = $false', script)
+                self.assertIn('StandardOutput.BaseStream.CopyToAsync', script)
+                self.assertIn('StandardError.BaseStream.CopyToAsync', script)
+                self.assertNotIn('InputFormat', command)
+                self.assertNotIn('|', script)
+                self.assertNotIn('唯一秘密', script + command)
+                self.assertEqual(run.call_args.kwargs['input'], json.dumps(payload, ensure_ascii=False).encode('utf-8'))
+                self.assertIn('StrictHostKeyChecking=yes', argv)
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(command.startswith('try {'), shell == 'powershell')
+
+    def test_all_powershell_quote_characters_in_paths_and_attacks(self):
+        from agent_hub.ssh_client import powershell_literal
+        for quote in "'‘’‚‛":
+            normal = 'C:/正常' + quote + '目录/python.exe'
+            attack = 'C:/x' + quote + '; Write-Output INJECTED; #' + quote + '/python.exe'
+            for path in (normal, attack):
+                with self.subTest(quote=hex(ord(quote)), path=path):
+                    expected = "'" + path.replace(quote, quote * 2) + "'"
+                    self.assertEqual(powershell_literal(path), expected)
+                    for shell in ('cmd', 'powershell'):
+                        with patch('subprocess.run', return_value=subprocess.CompletedProcess([], 0, b'{}', b'')) as run:
+                            SshClient('host', path, path, platform='windows', shell=shell).call('list_agents')
+                        command = run.call_args.args[0][-1]
+                        encoded = re.search(r'-EncodedCommand ([A-Za-z0-9+/=]+)', command).group(1)
+                        script = base64.b64decode(encoded).decode('utf-16le')
+                        self.assertIn('$s.FileName = ' + expected + '; $s.Arguments = ', script)
+                        self.assertIn(path.replace(quote, quote * 2), script)
+        self.assertEqual(powershell_literal("'‘’‚‛"), "'''‘‘’’‚‚‛‛'")
+
+    def test_mcp_invalid_target_config_exits_cleanly_on_stderr(self):
+        from agent_hub.__main__ import main
+        for python, shell in [('relative-python', 'cmd'), ('C:/python.exe', 'posix')]:
+            argv = ['agent_hub', 'mcp', '--ssh-host', 'host', '--remote-python', python,
+                    '--remote-data-dir', 'C:/data', '--remote-platform', 'windows', '--remote-shell', shell]
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with self.subTest(python=python, shell=shell), patch.object(sys, 'argv', argv), \
+                    patch('sys.stdout', stdout), patch('sys.stderr', stderr), \
+                    patch('agent_hub.mcp_server.run') as run, self.assertRaises(SystemExit) as error:
+                main()
+            self.assertEqual(error.exception.code, 1)
+            run.assert_not_called()
+            self.assertEqual(stdout.getvalue(), '')
+            self.assertEqual(json.loads(stderr.getvalue())['error']['code'], 'INVALID_CONFIG')
+            self.assertNotIn('Traceback', stderr.getvalue())
+
+    def test_remote_config_requires_concrete_node_platform(self):
+        from agent_hub.config import adapters, remote_node_declaration
+        for platform in (None, 'posix', 'linux', 'darwin', 'windows'):
+            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as directory:
+                path = 'C:/target' if platform == 'windows' else '/target'
+                item = dict(kind='remote', ssh_host='host', python=path,
+                            data_dir=path, cwd=path, agent='worker', mode='read_only')
+                if platform is not None: item['platform'] = platform
+                (Path(directory) / 'config.json').write_text(json.dumps({'agents': {'target': item}}))
+                if platform in (None, 'posix'):
+                    with self.assertRaises(HubError) as error: adapters(directory)
+                    self.assertEqual(error.exception.code, 'INVALID_CONFIG')
+                    with self.assertRaises(HubError): remote_node_declaration('target', item, 'host')
+                else:
+                    adapter = adapters(directory)['target']
+                    self.assertEqual(adapter.client.platform, remote_node_declaration('target', item, 'host')[1])
+
+    def test_platform_shell_rejects_unsupported_pairs(self):
+        for platform, shell in [('windows', 'bash'), ('linux', 'cmd'), ('posix', 'powershell'),
+                                ('auto', None), (None, None), ('windows', ''), ([], None), ('windows', {})]:
+            with self.subTest(platform=platform, shell=shell), self.assertRaises(HubError):
+                SshClient('host', '/python', '/data', platform=platform, shell=shell)
+        self.assertEqual(SshClient('host', 'C:/python.exe', 'C:/data', platform='windows').shell, 'cmd')
+        for platform in ('posix', 'linux', 'darwin'):
+            self.assertEqual(SshClient('host', '/python', '/data', platform=platform).shell, 'posix')
+
+    def test_config_passes_target_settings_and_cwd(self):
+        from agent_hub.config import adapters
+        with tempfile.TemporaryDirectory() as directory:
+            item = dict(kind='remote', ssh_host='host', python='C:/python.exe',
+                        data_dir='C:/data', cwd='C:/中文 work', agent='worker',
+                        mode='read_only', platform='windows', shell='powershell')
+            (Path(directory) / 'config.json').write_text(json.dumps({'agents': {'win': item}}))
+            adapter = adapters(directory)['win']
+            self.assertEqual((adapter.client.platform, adapter.client.shell, adapter.cwd),
+                             ('windows', 'powershell', item['cwd']))
+            with patch.object(adapter.client, 'call', side_effect=[{'id': 'remote'},
+                    {'ready': True, 'state': 'succeeded', 'answer': 'ok'}]) as call:
+                adapter.run(dict(id='local', prompt='secret', deadline=time.time()+10,
+                                 log_dir=directory), threading.Event(), lambda *args: None)
+            self.assertEqual(call.call_args_list[0].args[1]['cwd'], item['cwd'])
+
+    def test_all_cli_entrypoints_pass_platform_and_shell(self):
+        from agent_hub.__main__ import main
+        for command in ('status', 'rpc', 'show', 'mcp'):
+            argv = ['agent_hub', command]
+            if command == 'rpc': argv += ['list_agents']
+            if command == 'show': argv += ['task-id']
+            argv += ['--ssh-host', 'host', '--remote-python', 'C:/python.exe',
+                     '--remote-data-dir', 'C:/data', '--remote-platform', 'windows',
+                     '--remote-shell', 'powershell']
+            with self.subTest(command=command), patch.object(sys, 'argv', argv), \
+                    patch('agent_hub.ssh_client.SshClient') as client, \
+                    patch('agent_hub.mcp_server.run') as mcp, \
+                    patch('agent_hub.verification.render', return_value='rendered'), \
+                    patch('sys.stdout'):
+                client.return_value.call.return_value = {}
+                main()
+                client.assert_called_once_with('host', 'C:/python.exe', 'C:/data',
+                                               platform='windows', shell='powershell')
+                if command == 'mcp': mcp.assert_called_once_with(client.return_value)
+
+    def test_cli_settings_require_ssh_host(self):
+        from agent_hub.__main__ import main
+        for option, value in [('--remote-platform', 'windows'), ('--remote-shell', 'cmd')]:
+            with patch.object(sys, 'argv', ['agent_hub', 'status', option, value]), \
+                    patch('sys.stderr'), self.assertRaises(SystemExit) as error:
+                main()
+            self.assertEqual(error.exception.code, 2)
+
+    def test_backslash_directory_root_uses_crt_escaping(self):
+        for root in ('C:\\中文 空格\\', '\\\\server\\share\\中文 空格\\'):
+            with self.subTest(root=root), patch('subprocess.run', return_value=
+                    subprocess.CompletedProcess([], 0, b'{}', b'')) as run:
+                SshClient('host', 'C:/python.exe', root, platform='windows').call('list_agents')
+                script = base64.b64decode(run.call_args.args[0][-1].split()[-1]).decode('utf-16le')
+                # CRT quoting doubles the final backslash before the closing quote.
+                self.assertIn('--data-dir "' + root + '\\"', script)
+
+    def test_windows_command_length_fails_before_transport(self):
+        client = SshClient('host', 'C:/python.exe', 'C:/' + 'a' * 4000, platform='windows')
+        with patch('subprocess.run') as run, self.assertRaises(HubError) as error:
+            client.call('submit_task', {'prompt': 'secret'})
+        self.assertEqual(error.exception.code, 'INVALID_CONFIG')
+        run.assert_not_called()
+
+    def test_posix_paths_reject_controls_in_all_fields(self):
+        for path in ('/data\tbad', '/data\x85bad'):
+            with self.subTest(path=path), self.assertRaises(HubError):
+                Remote('host', '/python', '/data', 'worker', path, 'read_only')
+
+    def test_old_cli_uses_posix_defaults(self):
+        from agent_hub.__main__ import main
+        argv = ['agent_hub', 'status', '--ssh-host', 'host',
+                '--remote-python', '/python', '--remote-data-dir', '/data']
+        with patch.object(sys, 'argv', argv), patch('agent_hub.ssh_client.SshClient') as client, patch('sys.stdout'):
+            client.return_value.call.return_value = {}
+            main()
+        client.assert_called_once_with('host', '/python', '/data', platform='posix', shell=None)
+
+    def test_windows_errors_and_no_retry(self):
+        client = SshClient('host', 'C:/python.exe', 'C:/data', platform='windows')
+        for tool, result, code in [
+            ('submit_task', subprocess.TimeoutExpired('ssh', 1), 'DELIVERY_UNKNOWN'),
+            ('continue_task', subprocess.TimeoutExpired('ssh', 1), 'DELIVERY_UNKNOWN'),
+            ('get_result', subprocess.CompletedProcess([], 1, b'{"error":{"code":"UNKNOWN_TASK","message":"gone"}}', b''), 'UNKNOWN_TASK'),
+            ('get_result', subprocess.CompletedProcess([], 1, b'{}', b''), 'REMOTE_UNAVAILABLE')]:
+            kwargs = {'side_effect': result} if isinstance(result, Exception) else {'return_value': result}
+            with self.subTest(tool=tool), patch('subprocess.run', **kwargs) as run, self.assertRaises(HubError) as error:
+                client.call(tool)
+            self.assertEqual(error.exception.code, code)
+            self.assertEqual(run.call_count, 1)
+        result = {'ready': True, 'state': 'failed', 'error': 'task failed'}
+        with patch('subprocess.run', return_value=subprocess.CompletedProcess([], 0, json.dumps(result).encode(), b'')):
+            self.assertEqual(client.call('get_result'), result)
+
+    @unittest.skipUnless(sys.platform == 'win32', '需要真实 Windows cmd.exe / Windows PowerShell；未做 Windows 实测')
+    def test_real_default_shells_inherit_raw_stdin_and_preserve_exit(self):
+        import base64
+        import shutil
+        import venv
+        from agent_hub.ssh_client import powershell_command
+        if not shutil.which('powershell.exe'):
+            self.skipTest('本机无 Windows PowerShell，未做 Windows 实测')
+        payload = json.dumps({'prompt': ('中文 🧪 单\'引号 & %!^ $()`\r\n' * 5000)}, ensure_ascii=False).encode('utf-8')
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory) / "中文 单'‘’‚‛引号 & $();` %!^ ’; Write-Output INJECTED; #"
+            fixture.mkdir()
+            venv.EnvBuilder(with_pip=False).create(fixture / 'venv')
+            python = str(fixture / 'venv' / 'Scripts' / 'python.exe')
+            script = fixture / 'peer.py'
+            script.write_text('import sys,json,base64\n'
+                              'raw=sys.stdin.buffer.read()\n'
+                              'print(json.dumps({"raw":base64.b64encode(raw).decode(),"args":sys.argv[1:]},ensure_ascii=False))\n'
+                              'sys.stderr.buffer.write("中文 warning\\n".encode("utf-8"))\n'
+                              'sys.exit(int(sys.argv[2]))\n', encoding='utf-8')
+            for shell in ('cmd', 'powershell'):
+                for code in (0, 37):
+                    command = powershell_command([python, '-X', 'utf8', str(script), str(fixture), str(code)], shell)
+                    # Match sshd's default shell startup, including AutoRun/profile.
+                    launcher = (['cmd.exe', '/c', command] if shell == 'cmd' else
+                                ['powershell.exe', '-c', command])
+                    with self.subTest(shell=shell, exit_code=code):
+                        result = subprocess.run(launcher, input=payload, capture_output=True, timeout=15)
+                        self.assertEqual(result.returncode, code, result.stderr)
+                        response = json.loads(result.stdout.decode('utf-8'))
+                        self.assertEqual(base64.b64decode(response['raw']), payload)
+                        self.assertEqual(response['args'], [str(fixture), str(code)])
+                        self.assertEqual(result.stderr, '中文 warning\n'.encode('utf-8'))
+            # Compare escaping with Windows PowerShell's public API and parser.
+            from agent_hub.ssh_client import powershell_literal
+            for value in (str(fixture), "C:/正常'‘’‚‛目录", "C:/x’; Write-Output INJECTED; #"):
+                command = ("$v = " + powershell_literal(value) + "; "
+                           "$escaped = [System.Management.Automation.Language.CodeGeneration]::"
+                           "EscapeSingleQuotedStringContent($v); "
+                           "$bytes = [Text.Encoding]::UTF8.GetBytes($v); "
+                           "[Console]::WriteLine([Convert]::ToBase64String($bytes)); "
+                           "[Console]::WriteLine([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($escaped)))")
+                result = subprocess.run(['powershell.exe', '-c', command], input=b'',
+                                        capture_output=True, timeout=15, check=True)
+                lines = result.stdout.splitlines()
+                self.assertEqual(len(lines), 2, result.stdout)
+                self.assertEqual(base64.b64decode(lines[0]).decode('utf-8'), value)
+                self.assertEqual(base64.b64decode(lines[1]).decode('utf-8'), powershell_literal(value)[1:-1])
