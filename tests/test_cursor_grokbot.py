@@ -18,7 +18,9 @@ from agent_hub.__main__ import main
 
 
 class CursorTests(unittest.TestCase):
-    def test_native_node_launcher_and_existing_credentials(self):
+    # Bare names are resolved via PATH; keep this test independent of the host's node.exe.
+    @patch('agent_hub.adapters.base.shutil.which', return_value=None)
+    def test_native_node_launcher_and_existing_credentials(self, _which):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             credentials = root / 'credentials.json'
