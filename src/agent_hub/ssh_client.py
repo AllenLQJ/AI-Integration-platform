@@ -26,25 +26,31 @@ class SshClient:
         payload = json.dumps(arguments or {}, ensure_ascii=False)
         if len(payload.encode()) > 1024 * 1024:
             raise HubError('INVALID_ARGUMENT', 'SSH RPC 参数过大')
-        remote = shlex.join([self.python, '-m', 'agent_hub', 'rpc', tool,
+        delivery = tool in {'submit_task', 'continue_task'}
+        remote = shlex.join([self.python, '-X', 'utf8', '-m', 'agent_hub', 'rpc', tool,
                              '--arguments', '-', '--data-dir', self.root])
         argv = [self.executable, '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
                 '-o', 'ConnectTimeout=5', '--', self.host, remote]
         try:
-            completed = subprocess.run(argv, input=payload, text=True, capture_output=True,
+            # SSH transports UTF-8 JSON independently of the Windows host locale.
+            # Decode here, rather than in subprocess reader threads, so invalid
+            # response bytes follow the same no-retry transport error path.
+            completed = subprocess.run(argv, input=payload.encode('utf-8'), capture_output=True,
                                        timeout=max(.1, timeout))
-            response = json.loads(completed.stdout)
+            response = json.loads(completed.stdout.decode('utf-8'))
         except (OSError, subprocess.TimeoutExpired, ValueError):
-            code = 'DELIVERY_UNKNOWN' if tool in {'submit_task', 'continue_task', 'resume_task'} else 'REMOTE_UNAVAILABLE'
+            code = 'DELIVERY_UNKNOWN' if delivery else 'REMOTE_UNAVAILABLE'
             raise HubError(code, 'SSH 响应未确认；未自动重发，请核对目标机任务') from None
         if not isinstance(response, dict):
-            raise HubError('INVALID_RESPONSE', '目标机 Hub 返回格式不正确')
-        if 'error' in response:
+            raise HubError('DELIVERY_UNKNOWN' if delivery else 'INVALID_RESPONSE', '目标机 Hub 返回格式不正确')
+        # The CLI exits nonzero for RPC errors. A successful get_result RPC may
+        # contain a task-level error string (failed/timed_out/cancelled).
+        if completed.returncode and 'error' in response:
             error = response['error']
             if (not isinstance(error, dict) or not isinstance(error.get('code'), str)
                     or not isinstance(error.get('message'), str)):
-                raise HubError('INVALID_RESPONSE', '目标机 Hub 错误格式不正确')
+                raise HubError('DELIVERY_UNKNOWN' if delivery else 'INVALID_RESPONSE', '目标机 Hub 错误格式不正确')
             raise HubError(error.get('code', 'REMOTE_FAILED'), error.get('message', '目标机调用失败'))
         if completed.returncode:
-            raise HubError('REMOTE_UNAVAILABLE', 'SSH 或目标机 Hub 未成功返回')
+            raise HubError('DELIVERY_UNKNOWN' if delivery else 'REMOTE_UNAVAILABLE', 'SSH 或目标机 Hub 未成功返回')
         return response
