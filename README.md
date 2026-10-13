@@ -23,7 +23,7 @@ uv pip install --python .venv/bin/python exceptiongroup
 .venv/bin/python -m agent_hub mcp
 ```
 
-在 `~/.agent-hub/config.json` 填写自己的 Codex、Claude 和 Muse 连接器可执行文件绝对路径。`executable` 也可写成会随升级变化的形式：支持环境变量与 `~`（如 `%LOCALAPPDATA%`）、通配符（匹配多个时取修改时间最新的文件，如 Windows Codex 桌面版 `%LOCALAPPDATA%/OpenAI/Codex/bin/*/codex.exe`，可避免更新后哈希目录变化找不到），以及仅写命令名（按 PATH 查找）；每次检测和启动任务时重新解析，原绝对路径写法不变。Muse 使用独立 Python 环境运行 `-m muse_mcp`，先按 [连接器补丁说明](vendor/muse-mcp/README.md) 安装，再验证认证。MCP 注册的 command 使用本机 `.venv/bin/python` 绝对路径，args 为 `["-m", "agent_hub", "mcp"]`。CLI 登录、Cookie 和模型密钥保留在各执行器的私有用户配置中。详细本机配置历史见 [Mac 配置记录](docs/2026-10-11-macos-setup-validation.md)。
+在 `~/.agent-hub/config.json` 填写自己的 Codex、Claude 和 Muse 连接器可执行文件绝对路径。CLI 类执行器（codex / claude / cursor_cli）的 `executable` 也可写成会随升级变化的形式：支持环境变量与 `~`（如 `%LOCALAPPDATA%`）、通配符（匹配多个时取修改时间最新的文件，如 Windows Codex 桌面版 `%LOCALAPPDATA%/OpenAI/Codex/bin/*/codex.exe`，可避免更新后哈希目录变化找不到），以及仅写命令名（按 PATH 查找）；每次检测和启动任务时重新解析，原绝对路径写法不变；`status` 会同时显示 `resolved_executable`。Muse、Remote 与 Cursor IDE 不走该解析逻辑，仍需填写绝对路径（或其自身约定的写法）。Muse 使用独立 Python 环境运行 `-m muse_mcp`，先按 [连接器补丁说明](vendor/muse-mcp/README.md) 安装，再验证认证。MCP 注册的 command 使用本机 `.venv/bin/python` 绝对路径，args 为 `["-m", "agent_hub", "mcp"]`。CLI 登录、Cookie 和模型密钥保留在各执行器的私有用户配置中。详细本机配置历史见 [Mac 配置记录](docs/2026-10-11-macos-setup-validation.md)。
 
 ## Windows 安装
 

@@ -72,7 +72,9 @@ class Cursor(CLI):
             from .grokbot import GrokBot
             # Reuse the officially stored key without copying it into Hub config.
             env['CURSOR_API_KEY'] = GrokBot('cursor-cli-auth', self.credentials_file, env=self.env).key()
-        isolated = Cursor(self.executable, env, self.args, sandbox=self.sandbox)
+        # Resolve once here; the isolated copy receives the concrete path so its
+        # command line and version probe use exactly the same executable.
+        isolated = Cursor(self.resolve_executable(), env, self.args, sandbox=self.sandbox)
         return CLI.run(isolated, task, cancel, event)
 
     def parse(self, output):
