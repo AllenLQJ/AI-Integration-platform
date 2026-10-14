@@ -13,11 +13,12 @@
 
 Claude/Codex 总控与执行器使用不同配置。执行器不加载 Hub MCP，避免递归派发。
 IDE 的 MCP 工具仍可使用，但被委托回合应仅执行任务，不再委托自己。
+项目示例与 `config.example.json` 中 Cursor IDE（`cursor` / `kind=ide`）默认 `enabled: false`；需要时再手动打开。`cursor_cli` 不受影响。
 
 本机配置示例：
 
 ```json
-{"agents":{"cursor":{"kind":"ide"},"cursor_cli":{"executable":"/Users/your-name/.local/bin/agent"}}}
+{"agents":{"cursor":{"enabled":false,"kind":"ide"},"cursor_cli":{"executable":"/Users/your-name/.local/bin/agent"}}}
 ```
 
 cursor 旧配置只有 executable 时仍沿用 CLI，避免静默改变其他设备。当前 Mac 明确切换 kind=ide；没有把 CLI 包装成 IDE。
