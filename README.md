@@ -119,7 +119,7 @@ Windows 专用实进程测试使用与 sshd 匹配的外层 `cmd.exe /c`、`powe
 
 ## 总控接入
 
-Mac 三方入口的最新路由与验证见 [Claude/Codex/Cursor 双向接入](docs/2026-10-11-local-three-agents.md)：本机 `cursor` 默认原生 IDE 界面桥，`cursor_cli` 显式选择 CLI。Claude、Codex 的真实总控与被调用双向复验通过。开通 Pro 后，Cursor IDE 总控调度 Claude、Hub 委托 IDE 纯文本任务和同会话续接均实测通过，Cursor CLI 读取随机文件复验通过。IDE 桥需要具备电脑控制能力的外部 worker 在线，尚无常驻无人值守驱动；IDE 编辑、取消及重开后会话定位尚未验收。
+Mac 三方入口的最新路由与验证见 [Claude/Codex/Cursor 双向接入](docs/2026-10-11-local-three-agents.md)：本机 `cursor` 默认原生 IDE 界面桥，`cursor_cli` 显式选择 CLI；项目示例里 Cursor IDE 默认 `enabled: false`（见 `config.example.json`），`cursor_cli` 单独配置。Claude、Codex 的真实总控与被调用双向复验通过。开通 Pro 后，Cursor IDE 总控调度 Claude、Hub 委托 IDE 纯文本任务和同会话续接均实测通过，Cursor CLI 读取随机文件复验通过。IDE 桥需要具备电脑控制能力的外部 worker 在线，尚无常驻无人值守驱动；IDE 编辑、取消及重开后会话定位尚未验收。
 
 在 Codex 的 MCP 设置中登记 `agent_hub`，command 使用本机项目虚拟环境 Python 的绝对路径，args 为 `["-m", "agent_hub", "mcp"]`。重新加载 MCP 或打开新聊天后应看到 11 个工具。移动源码或环境后需同步修改 MCP 注册路径；Windows 测试环境的 D 盘迁移见 `docs/2026-10-10-d-drive-migration.md`，Mac 使用自己的项目路径。
 
