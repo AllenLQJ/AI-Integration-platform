@@ -162,6 +162,25 @@ class CommandTests(unittest.TestCase):
         adapter = adapters(self.root)['any-ai']
         self.assertEqual(adapter.run(self.task, threading.Event(), lambda *a: None)['answer'], self.task['prompt'])
 
+    def test_protocol_is_parsed_before_log_redaction(self):
+        response = {'answer': 'Use the Authorization: Bearer header.',
+                    'session_id': 'https://provider.example/sessions/opaque-id',
+                    'source_urls': ['https://source.example/document']}
+        self.worker.write_text('print(' + repr(json.dumps(response)) + ')', encoding='utf-8')
+        result = self.run_command()
+        for key, value in response.items():
+            self.assertEqual(result[key], value)
+        logged = Path(result['artifacts']['logs']['stdout']).read_text(encoding='utf-8')
+        self.assertNotIn('Bearer header.', logged)
+        self.assertNotIn('https://provider.example', logged)
+
+    def test_oversized_response_fails_without_unbounded_capture(self):
+        self.worker.write_text('print("x" * 129)', encoding='utf-8')
+        with patch('agent_hub.adapters.command.MAX_RESPONSE_CHARS', 128, create=True), self.assertRaises(HubError) as caught:
+            self.run_command(self.config(result_format='text'))
+        self.assertEqual(caught.exception.code, 'INVALID_RESULT')
+        self.assert_no_requests()
+
 
 if __name__ == '__main__':
     unittest.main()

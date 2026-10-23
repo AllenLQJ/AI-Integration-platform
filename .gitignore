@@ -12,3 +12,11 @@ build/
 dist/
 .pytest_cache/
 .DS_Store
+.agent-hub/
+/config.json
+/connection.json
+.env
+.env.local
+*.db
+*.db-wal
+*.db-shm

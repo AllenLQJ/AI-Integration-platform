@@ -110,7 +110,8 @@ def spawn_process(argv, cwd, env):
         raise SpawnError(error) from error
 
 
-def run_process(argv, cwd, env, cancel, deadline, log_dir, event, allow_hub_events=True, parse_cli_events=True):
+def run_process(argv, cwd, env, cancel, deadline, log_dir, event, allow_hub_events=True,
+                parse_cli_events=True, stdout_line=None):
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     out_path, err_path = log_dir / 'stdout.log', log_dir / 'stderr.log'
@@ -125,10 +126,18 @@ def run_process(argv, cwd, env, cancel, deadline, log_dir, event, allow_hub_even
         with path.open('w', encoding='utf-8') as log:
             for line in iter(stream.readline, b''):
                 text = line.decode('utf-8', errors='replace')
+                if structured and stdout_line is not None:
+                    stdout_line(text)
                 if not parse_cli_events:
-                    # Preserve duplicate keys for the bridge's strict parser and avoid
-                    # Windows CRCRLF translation. Never interpret arbitrary tool output.
-                    log.write(safe(redact(text.replace('\r\n', '\n')))); log.flush()
+                    # Protocol consumers receive original lines in memory, separately
+                    # from sanitized logs. Never parse arbitrary tool output as events.
+                    if len(text) > 8192:
+                        logged = '[omitted oversized output line]\n'
+                    else:
+                        logged = redact(text.replace('\r\n', '\n'))
+                        if '://' in logged:
+                            logged = safe(logged)
+                    log.write(logged); log.flush()
                     continue
                 try:
                     data = safe(Store.safe(json.loads(text)))

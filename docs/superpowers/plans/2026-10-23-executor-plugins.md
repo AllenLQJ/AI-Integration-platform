@@ -1,6 +1,6 @@
 # Portable executor plugins Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Connect new AI tools through separately installed plugins or command configuration without core edits.
 
@@ -32,11 +32,11 @@
 
 **Interfaces:** `ExecutorPlugin(api_version, create)`, `PluginContext(name, data_dir)`, `Executor`; `load_plugin(name, item, root)` returns a validated adapter with diagnose/run/permission_policy/capabilities/remote_cancel/cancel_scope. Plugin factories receive `(config=options, context=context)`.
 
-- [ ] Write failing tests for selected-only loading, missing/duplicate/version errors, modes, invalid results, separate state roots and legacy config.
-- [ ] Run `python -m unittest discover -s tests -p test_plugins.py`; expect failures for absent SDK.
-- [ ] Implement SDK, entry point loading and configuration routing. Reject continuation where capability is absent, after idempotent replay handling.
-- [ ] Run the contract tests and relevant service tests; expect all pass.
-- [ ] Commit the plugin contract and registration.
+- [x] Write failing tests for selected-only loading, missing/duplicate/version errors, modes, invalid results, separate state roots and legacy config.
+- [x] Run `python -m unittest discover -s tests -p test_plugins.py`; expect failures for absent SDK.
+- [x] Implement SDK, entry point loading and configuration routing. Reject continuation where capability is absent, after idempotent replay handling.
+- [x] Run the contract tests and relevant service tests; expect all pass.
+- [x] Commit the plugin contract and registration.
 
 ### Task 2: Portable command adapter and reviewer routing
 
@@ -44,11 +44,11 @@
 
 **Interfaces:** `Command(config, context)` implements the SDK executor contract. Config fields are executable, args, resume_args, result_format (text/json), modes (delegate/edit_worktree), env_from. The last nonblank stdout line for json must contain string answer and optional string session_id/source_urls; Hub internal state cannot be set by output.
 
-- [ ] Write and run failing tests for Unicode/space input, argument literals, cleanup, malformed/error output, timeout/cancel, env references and resume capability.
-- [ ] Implement command request/response handling using existing process-tree management; preserve conservative remote cancellation metadata.
-- [ ] Write and run a failing non-Claude review test and generalize reviewer selection while preserving legacy verifier identities and fail-closed behavior.
-- [ ] Run command, service and review tests; expect all pass.
-- [ ] Commit bridge and reviewer changes.
+- [x] Write and run failing tests for Unicode/space input, argument literals, cleanup, malformed/error output, timeout/cancel, env references and resume capability.
+- [x] Implement command request/response handling using existing process-tree management; preserve conservative remote cancellation metadata.
+- [x] Write and run a failing non-Claude review test and generalize reviewer selection while preserving legacy verifier identities and fail-closed behavior.
+- [x] Run command, service and review tests; expect all pass.
+- [x] Commit bridge and reviewer changes.
 
 ### Task 3: Distributable examples, docs and release validation
 
@@ -56,8 +56,8 @@
 
 **Interfaces:** example entry point `echo` exports `ExecutorPlugin`; `python -m agent_hub_echo REQUEST_FILE` implements command bridge v1; relocated install tests use public package APIs.
 
-- [ ] Write and run failing distribution/example tests before adding the example package.
-- [ ] Create deterministic external plugin/module and portable setup documentation; clarify actual AI adapters require provider-specific implementation/authentication.
-- [ ] Build Hub and example wheels, inspect archive contents, install into a separate directory and run a real isolated Hub lifecycle using discovered plugins and command bridge.
-- [ ] Run the full suite, source/diff privacy checks and packaging checks; record passed/skipped/unverified scope.
-- [ ] Commit examples/docs/validation, obtain independent whole-branch review, address material findings with regression tests, preserve branch/worktree for review.
+- [x] Write and run failing distribution/example tests before adding the example package.
+- [x] Create deterministic external plugin/module and portable setup documentation; clarify actual AI adapters require provider-specific implementation/authentication.
+- [x] Build Hub and example wheels, inspect archive contents, install into a separate directory and run a real isolated Hub lifecycle using discovered plugins and command bridge.
+- [x] Run the full suite, source/diff privacy checks and packaging checks; record passed/skipped/unverified scope.
+- [x] Commit examples/docs/validation, obtain independent whole-branch review, address material findings with regression tests, preserve branch/worktree for review.

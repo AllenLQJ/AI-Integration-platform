@@ -23,7 +23,7 @@ Implementation, historical live validation, and unverified behavior are document
 - [SSH and Tailscale](#ssh-and-tailscale) · [Connect an orchestrator](#connect-an-orchestrator)
 - [Submit tasks](#submit-tasks) · [Executor limitations](#executor-limitations)
 - [Diagnostics and validation](#diagnostics-and-validation) · [Task modes and permissions](#task-modes-and-permissions)
-- [HubGateway](#hubgateway-v1-service-version-021) · [Muse human intervention](#muse-human-intervention)
+- [HubGateway](#hubgateway-v1-service-version-030) · [Muse human intervention](#muse-human-intervention)
 - [Task verification](#independent-task-verification-phase-1) · [Workbench and controllers](#workbench-and-controllers-phase-2)
 - [Nodes and artifact transfer](#nodes-and-artifact-transfer-phase-3) · [Historical validation](#historical-validation)
 
@@ -216,7 +216,7 @@ Designs, plans, progress, and validation records live in [docs](docs/). Authenti
 
 Historical records and request idempotency are retained. Old Claude `read_only` tasks continue as `text_only`; old Muse `read_only` tasks cannot continue and require a newly scoped `delegate` task. Successful execution still requires checking files or external results. Reload the idle daemon and refresh client MCP tool definitions after updates.
 
-## HubGateway v1 (service version 0.2.1)
+## HubGateway v1 (service version 0.3.0)
 
 `get_capabilities()` and `get_artifact(artifact_id)` expose capabilities and registered artifacts. The initial Gateway stage had 11 MCP tools; the current service includes later verification features for a total of 16. Optional `submit_task.context` participates in the idempotency hash in full; omission or `null` retains compatibility with earlier requests. Original task `state` is retained alongside `gateway_state`, `execution_uncertain`, `errors`, and `media_artifacts`. See the [Gateway handoff](docs/HubGateway-v1-实现交接.md).
 
@@ -295,7 +295,7 @@ Configure bounded automatic rework in the data directory:
 {"verification":{"max_auto_rework":2}}
 ```
 
-The range is 0–5; zero disables it. A definite verification failure with no inconclusive checks may continue the original executor/session up to this shared limit. All attempts are retained and the same verification run is not dispatched twice. Restart recovers verification-completed/rework-not-dispatched windows using the same run/budget without verifying again. `needs_review`, unavailable verifiers, and manual/external review failures without `acceptance.review` do not trigger model rework. With review enabled, only Hub-validated Claude review failures do. A `copied` file can satisfy artifact requirements only with an explicit expected SHA-256 for the same path matching actual content.
+The range is 0–5; zero disables it. A definite verification failure with no inconclusive checks may continue the original executor/session up to this shared limit. All attempts are retained and the same verification run is not dispatched twice. Restart recovers verification-completed/rework-not-dispatched windows using the same run/budget without verifying again. `needs_review`, unavailable verifiers, and manual/external review failures without `acceptance.review` do not trigger model rework. With review enabled, only Hub-validated configured-reviewer failures do. A `copied` file can satisfy artifact requirements only with an explicit expected SHA-256 for the same path matching actual content.
 
 Review writes remain local-RPC-only. A `record_verification` content-review result needs a reason and registered artifact evidence. Without explicit automatic review, missing content judgments remain `inconclusive` / `needs_review`; no review model is called.
 
@@ -309,13 +309,13 @@ Add `review` to a task's acceptance object:
  "review":{"agent":"claude","timeout_seconds":600}}
 ```
 
-`agent` selects a configured executor supporting `text_only` (including a compatible plugin); timeout is an integer from 30 to 3,600 seconds, default 600, and at least one content-review criterion is required. An executor cannot review itself. Requests without `review`, historical tasks, and their hashes keep their existing behavior; there is no bulk background model dispatch. The Claude configuration below remains compatible; command bridges do not advertise `text_only`.
+`agent` selects a configured executor supporting `text_only` (including a compatible plugin); timeout is an integer from 30 to 3,600 seconds, default 600, and at least one content-review criterion is required. An executor cannot review itself. Requests without `review`, historical tasks, and their hashes keep their existing behavior; there is no bulk background model dispatch. The Claude example above remains compatible; command bridges do not advertise `text_only`.
 
-After deterministic checks pass, verification/work status becomes `reviewing`. An internal `auto-review:<review_run_id>` request creates an **independent root task** using Claude `text_only`, no tools, and an empty private cwd. It is not a child execution attempt and does not change `current_task_id`. Normal global/per-executor concurrency applies. The review ID appears in `verification.review.task_id`, review events, and the workbench and can be queried independently. Failed deterministic checks defer model review and use ordinary rework rules.
+After deterministic checks pass, verification/work status becomes `reviewing`. An internal `auto-review:<review_run_id>` request creates an **independent root task** using the configured reviewer in `text_only` mode, no tools, and an empty private cwd. It is not a child execution attempt and does not change `current_task_id`. Normal global/per-executor concurrency applies. The review ID appears in `verification.review.task_id`, review events, and the workbench and can be queried independently. Failed deterministic checks defer model review and use ordinary rework rules.
 
 Evidence is limited to registered workspace text artifacts from the current verification: at most 10 files, 32 KiB each, 64 KiB total, strict UTF-8, no symlink traversal or workspace escape, and SHA-256 rechecked at read time. Random boundaries mark content as untrusted. Registered media, remote workspaces, binary/oversized/changed evidence produce `needs_review` with a reason without calling the model.
 
-Claude must return one plain JSON object. IDs below are illustrative and must exactly match the actual review context:
+The configured reviewer must return one plain JSON object. IDs below are illustrative and must exactly match the actual review context:
 
 ```json
 {"schema":"agent-hub.content-review.v1","task_id":"d0d1eb9b8238495995fe4f2c17d01332","review_run_id":"4381dc4da64b419ab58145a6195140dc","verification_run_id":"0ee7778bdb2a4df0bb6418eb7197e956","checks":[{"criterion_id":"quality","outcome":"fail","reason":"Output must contain only GOOD followed by a single LF","evidence":["2eb0a44e321d5e1c81dc007971dd516d"]}]}

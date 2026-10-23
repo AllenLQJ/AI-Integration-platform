@@ -23,7 +23,7 @@
 - [SSH 与 Tailscale](#额外说明) · [总控接入](#总控接入)
 - [提交任务](#提交任务) · [执行器限制](#执行器限制)
 - [诊断与验证](#诊断与验证) · [任务模式与权限](#任务模式与权限)
-- [HubGateway](#hubgateway-v1服务版本-021) · [Muse 人工处理](#muse-等待人工处理)
+- [HubGateway](#hubgateway-v1服务版本-030) · [Muse 人工处理](#muse-等待人工处理)
 - [任务验收](#独立任务验收第一阶段) · [工作台与总控](#第二阶段工作台与总控)
 - [节点与产物传输](#第三阶段节点与产物传输) · [历史验证记录](#历史验证记录)
 
@@ -223,7 +223,7 @@ list_agents 的 permissions 按模式说明 enforced_by、enforced、allows_writ
 
 旧任务保留原始记录和 request_id 幂等性。历史 Claude read_only 续接按 text_only 执行；历史 Muse read_only 禁止续接，需按明确操作范围新建 delegate 任务。仅 get_result 成功不代表实际操作正确，仍需核对文件或外部结果。更新后需无在途任务时重载后台，并刷新客户端 MCP 工具说明。
 
-## HubGateway v1（服务版本 0.2.1）
+## HubGateway v1（服务版本 0.3.0）
 
 提供 `get_capabilities()`、`get_artifact(artifact_id)`。最初 HubGateway 阶段为 11 个 MCP 工具；当前包含后续验收功能，共 16 个工具。
 `submit_task` 新增可选 `context`，省略或 null 保持旧请求哈希兼容；对象内容全部参与幂等哈希。
@@ -307,7 +307,7 @@ MediaFlow 以 context + acceptance 提交，通过 get_work_item / get_result.ve
 {"verification":{"max_auto_rework":2}}
 ```
 
-范围 0–5，0 关闭自动返工。只有 Hub 确定性 fail 且没有 inconclusive 的 rework_required 才自动续接原执行器/会话，最多累计该次数；保留全部尝试，同验收 run 不重复派发；验收已落盘但返工未派发时，重启会按同一 run 与次数上限补派，不重新验收。needs_review、验证器不可用，以及未开启 `acceptance.review` 时的审核失败（人工或外部写入的 content_review fail）都不自动派发；开启后，只有 Hub 受信校验的 Claude 审核 fail 会自动返工，见下文「Claude 自动内容审核」。copied 文件只有同一路径的显式 expected SHA-256 匹配 Hub 实读值时，才可满足 artifact_required。
+范围 0–5，0 关闭自动返工。只有 Hub 确定性 fail 且没有 inconclusive 的 rework_required 才自动续接原执行器/会话，最多累计该次数；保留全部尝试，同验收 run 不重复派发；验收已落盘但返工未派发时，重启会按同一 run 与次数上限补派，不重新验收。needs_review、验证器不可用，以及未开启 `acceptance.review` 时的审核失败（人工或外部写入的 content_review fail）都不自动派发；开启后，只有 Hub 受信校验的所选执行器审核 fail 会自动返工，见下文「Claude 自动内容审核」。copied 文件只有同一路径的显式 expected SHA-256 匹配 Hub 实读值时，才可满足 artifact_required。
 
 审核写入仍只允许本机 RPC。record_verification 的 content_review 结果必须提供 `reason` 与已有 evidence 的 `artifact_id`。未开启 `acceptance.review` 的任务未收到审核结果时保持 inconclusive/needs_review，不会自动调用审核模型（开启方式见下节）。
 
@@ -321,13 +321,13 @@ MediaFlow 以 context + acceptance 提交，通过 get_work_item / get_result.ve
  "review":{"agent":"claude","timeout_seconds":600}}
 ```
 
-`agent` 可选择任何已配置且支持 `text_only` 的执行器（含符合契约的插件），`timeout_seconds` 为 30–3600 的整数（缺省 600），至少需要一条 content_review。同一个执行器不能自审核。未带 `review` 的任务、历史任务和请求哈希都不变，content_review 仍为 needs_review，Hub 不批量派发模型。下方 Claude 示例仍兼容；通用命令桥接不声明 `text_only` 能力。
+`agent` 可选择任何已配置且支持 `text_only` 的执行器（含符合契约的插件），`timeout_seconds` 为 30–3600 的整数（缺省 600），至少需要一条 content_review。同一个执行器不能自审核。未带 `review` 的任务、历史任务和请求哈希都不变，content_review 仍为 needs_review，Hub 不批量派发模型。上方 Claude 示例仍兼容；通用命令桥接不声明 `text_only` 能力。
 
-流程：确定性检查全部通过后，验收进入 `reviewing`（work_status 同名），Hub 以内部请求键 `auto-review:<review_run_id>` 创建一个**独立根任务**（Claude `text_only`，无工具，空私有 cwd，不是执行尝试的子任务，不改变 current_task_id），照常经过全局/按执行器并发调度。审核任务 ID 见 `verification.review.task_id`、`review` 事件和工作台；可对它单独 get_task / get_events / 打开工作台。若确定性检查本身失败，审核条件标为延后，不派发模型，按原规则返工。
+流程：确定性检查全部通过后，验收进入 `reviewing`（work_status 同名），Hub 以内部请求键 `auto-review:<review_run_id>` 创建一个**独立根任务**（所选审核端 `text_only`，无工具，空私有 cwd，不是执行尝试的子任务，不改变 current_task_id），照常经过全局/按执行器并发调度。审核任务 ID 见 `verification.review.task_id`、`review` 事件和工作台；可对它单独 get_task / get_events / 打开工作台。若确定性检查本身失败，审核条件标为延后，不派发模型，按原规则返工。
 
 证据只取本次验收检查已登记的工作区文本产物：最多 10 个文件、单文件 32 KiB、总计 64 KiB，严格 UTF-8，不跟随符号链接、不越出任务工作区，读取时复核登记 SHA-256；内容放入带随机边界的提示中，明确为不可信数据。登记了媒体产物、远端工作区、二进制/超限/已改变的文件，均直接 needs_review 并写明原因，不派发模型。
 
-Claude 必须只输出一个纯 JSON 对象，例如（ID 为示意值，实际必须与提示中的审核上下文逐字一致）：
+审核端必须只输出一个纯 JSON 对象，例如（ID 为示意值，实际必须与提示中的审核上下文逐字一致）：
 
 ```json
 {"schema":"agent-hub.content-review.v1","task_id":"d0d1eb9b8238495995fe4f2c17d01332","review_run_id":"4381dc4da64b419ab58145a6195140dc","verification_run_id":"0ee7778bdb2a4df0bb6418eb7197e956","checks":[{"criterion_id":"quality","outcome":"fail","reason":"内容不是 GOOD 加一个换行，请改为仅含 GOOD 并以单个 LF 结尾","evidence":["2eb0a44e321d5e1c81dc007971dd516d"]}]}
