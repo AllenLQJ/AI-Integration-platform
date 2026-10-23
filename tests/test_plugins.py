@@ -1,8 +1,10 @@
 import json
+import io
 import tempfile
 import threading
 import time
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -161,6 +163,28 @@ class PluginTests(unittest.TestCase):
             self.assertIsNone(service.store.by_request('two'))
         finally:
             service.close()
+
+    def test_plugins_command_lists_metadata_without_import_or_daemon(self):
+        from agent_hub.__main__ import main
+        output = io.StringIO()
+        with patch('sys.argv', ['agent-hub', 'plugins']), redirect_stdout(output), \
+                patch('agent_hub.client.Client') as client:
+            main()
+        self.assertEqual(json.loads(output.getvalue())['plugins'][0]['name'], 'echo')
+        self.entry.load.assert_not_called()
+        client.assert_not_called()
+
+    def test_check_config_is_local_and_reports_plugin_errors(self):
+        from agent_hub.__main__ import main
+        (self.root / 'config.json').write_text(json.dumps({'agents': {'writer': {'kind': 'plugin', 'plugin': 'missing'}}}))
+        output = io.StringIO()
+        with patch('sys.argv', ['agent-hub', 'check-config', '--data-dir', str(self.root)]), \
+                patch.dict('os.environ', {}, clear=False), redirect_stdout(output), \
+                patch('agent_hub.client.Client') as client, self.assertRaises(SystemExit) as caught:
+            main()
+        self.assertEqual(caught.exception.code, 1)
+        self.assertEqual(json.loads(output.getvalue())['error']['code'], 'PLUGIN_NOT_FOUND')
+        client.assert_not_called()
 
 
 if __name__ == '__main__':

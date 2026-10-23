@@ -166,3 +166,14 @@ def load_plugin(name, item, root):
     except Exception as error:
         # A plugin may put credentials in exception strings; only report its type.
         raise HubError('PLUGIN_LOAD_FAILED', f'Plugin {plugin} failed to load ({type(error).__name__})') from None
+
+
+def installed_plugins():
+    """Read metadata only: never import third-party modules during discovery."""
+    result = []
+    for entry in metadata.entry_points(group=ENTRY_POINT_GROUP):
+        distribution = getattr(entry, 'dist', None)
+        result.append(dict(name=entry.name,
+                           distribution=distribution.metadata.get('Name') if distribution else None,
+                           version=distribution.version if distribution else None))
+    return sorted(result, key=lambda item: (item['name'], item['distribution'] or ''))
