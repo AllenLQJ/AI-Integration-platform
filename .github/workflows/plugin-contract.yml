@@ -1,0 +1,37 @@
+name: Portable executor contract
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plugin-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+        python: ['3.10', '3.12']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install Hub and build/test requirements
+        run: python -m pip install . setuptools wheel exceptiongroup
+      - name: Executor plugin contract
+        run: python -m unittest discover -s tests -p test_plugins.py -v
+      - name: Command bridge lifecycle
+        run: python -m unittest discover -s tests -p test_command_adapter.py -v
+      - name: Relocated distributions and independent device state
+        run: python -m unittest discover -s tests -p test_plugin_distribution.py -v

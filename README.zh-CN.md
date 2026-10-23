@@ -4,13 +4,15 @@
 
 本地 Agent Hub：通过统一 MCP 接口协调 Codex、Claude Code、Muse、Cursor CLI 和 Grok Bot。独立后台执行任务，SQLite 保存状态、事件和结果；代码编辑可在独立 Git worktree 中进行，再返回差异供审阅。
 
-**Python 3.10+ · Windows / macOS · 服务版本 0.2.1 · 16 个 MCP 工具**
+**Python 3.10+ · Windows / macOS · 服务版本 0.3.0 · 16 个 MCP 工具**
+
+**通用接入：**[执行器插件与命令桥接](docs/executor-plugins.md) 支持不修改 Hub 核心接入新 AI 工具。插件安装在 Hub 环境中；账号、机器配置、任务和日志保存在各设备独立的数据目录。提供可独立安装的示例包及 Windows/macOS/Linux 契约测试 CI；配置了 CI 不等于已完成跨平台实测。
 
 ## 核心能力
 
 - 持久化任务、幂等提交、会话续接、事件游标与有界等待。
 - 按执行器提供任务模式和权限声明，编辑任务使用隔离 worktree。
-- 独立验收、产物证据、本机工作台、总控接管与显式开启的 Claude 自动内容审核。
+- 独立验收、产物证据、本机工作台、总控接管与显式开启的可配置执行器内容审核。
 - 通过标准 SSH 调用远端 Hub；可使用已有 Tailscale 网络连接，不开放公网 Hub 服务。
 
 实现、历史实机验收与尚未验证的范围分别说明。`ready=true` 表示执行结束；有验收条件时，应进一步检查 `verification` 和 `work_status`。
@@ -319,7 +321,7 @@ MediaFlow 以 context + acceptance 提交，通过 get_work_item / get_result.ve
  "review":{"agent":"claude","timeout_seconds":600}}
 ```
 
-`agent` 目前只接受 `claude`，`timeout_seconds` 为 30–3600 的整数（缺省 600），至少需要一条 content_review。执行器为 claude 时拒绝（不允许自审核）。未带 `review` 的任务、历史任务和请求哈希都不变，content_review 仍为 needs_review，Hub 不批量派发模型。
+`agent` 可选择任何已配置且支持 `text_only` 的执行器（含符合契约的插件），`timeout_seconds` 为 30–3600 的整数（缺省 600），至少需要一条 content_review。同一个执行器不能自审核。未带 `review` 的任务、历史任务和请求哈希都不变，content_review 仍为 needs_review，Hub 不批量派发模型。下方 Claude 示例仍兼容；通用命令桥接不声明 `text_only` 能力。
 
 流程：确定性检查全部通过后，验收进入 `reviewing`（work_status 同名），Hub 以内部请求键 `auto-review:<review_run_id>` 创建一个**独立根任务**（Claude `text_only`，无工具，空私有 cwd，不是执行尝试的子任务，不改变 current_task_id），照常经过全局/按执行器并发调度。审核任务 ID 见 `verification.review.task_id`、`review` 事件和工作台；可对它单独 get_task / get_events / 打开工作台。若确定性检查本身失败，审核条件标为延后，不派发模型，按原规则返工。
 

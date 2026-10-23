@@ -4,13 +4,15 @@
 
 A local Agent Hub for coordinating Codex, Claude Code, Muse, Cursor CLI, and Grok Bot through one MCP interface. An independent daemon runs tasks, while SQLite stores their state, events, and results. Coding tasks can use isolated Git worktrees and return diffs for review.
 
-**Python 3.10+ · Windows / macOS · Service version 0.2.1 · 16 MCP tools**
+**Python 3.10+ · Windows / macOS · Service version 0.3.0 · 16 MCP tools**
+
+**Portable extensions:** [Executor plugins and command bridges](docs/executor-plugins.md) connect new AI tools without editing Hub core. Install plugins into the Hub environment; keep credentials, machine configuration and task state in each device's private data directory. Includes an independently installable example and Windows/macOS/Linux contract CI; platform CI configuration is not a claim of completed multi-platform validation.
 
 ## Features
 
 - Persistent tasks, idempotent submission, session continuation, event cursors, and bounded waits.
 - Executor-specific modes and permission descriptions, with isolated worktrees for editing tasks.
-- Independent verification, artifact evidence, a local workbench, controller handoff, and opt-in Claude content review.
+- Independent verification, artifact evidence, a local workbench, controller handoff, and opt-in content review through a configured text-only executor.
 - Remote Hub access over standard SSH, optionally using an existing Tailscale network, without exposing the Hub on the public internet.
 
 Implementation, historical live validation, and unverified behavior are documented separately. `ready=true` means execution has finished. For tasks with acceptance criteria, also inspect `verification` and `work_status`.
@@ -307,7 +309,7 @@ Add `review` to a task's acceptance object:
  "review":{"agent":"claude","timeout_seconds":600}}
 ```
 
-`agent` currently accepts only `claude`; timeout is an integer from 30 to 3,600 seconds, default 600, and at least one content-review criterion is required. Claude execution cannot review itself. Requests without `review`, historical tasks, and their hashes keep their existing behavior; there is no bulk background model dispatch.
+`agent` selects a configured executor supporting `text_only` (including a compatible plugin); timeout is an integer from 30 to 3,600 seconds, default 600, and at least one content-review criterion is required. An executor cannot review itself. Requests without `review`, historical tasks, and their hashes keep their existing behavior; there is no bulk background model dispatch. The Claude configuration below remains compatible; command bridges do not advertise `text_only`.
 
 After deterministic checks pass, verification/work status becomes `reviewing`. An internal `auto-review:<review_run_id>` request creates an **independent root task** using Claude `text_only`, no tools, and an empty private cwd. It is not a child execution attempt and does not change `current_task_id`. Normal global/per-executor concurrency applies. The review ID appears in `verification.review.task_id`, review events, and the workbench and can be queried independently. Failed deterministic checks defer model review and use ordinary rework rules.
 

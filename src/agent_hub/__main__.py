@@ -12,7 +12,7 @@ TOOLS = ('list_nodes', 'transfer_artifact', 'list_agents', 'submit_task', 'get_t
 
 def main():
     parser = argparse.ArgumentParser(description='Local Agent Hub')
-    parser.add_argument('command', choices=['mcp', 'daemon', 'status', 'stop', 'rpc', 'show'])
+    parser.add_argument('command', choices=['mcp', 'daemon', 'status', 'stop', 'rpc', 'show', 'plugins', 'check-config'])
     parser.add_argument('tool', nargs='?')
     parser.add_argument('--arguments', default='{}', help='rpc 参数 JSON 对象；用 - 从 stdin 读取')
     parser.add_argument('--data-dir')
@@ -30,7 +30,7 @@ def main():
         parser.error('show 需要 task_id')
     if args.command not in {'rpc', 'show'} and args.tool:
         parser.error('只有 rpc 接受工具名称')
-    if args.ssh_host and (args.command in {'daemon', 'stop'} or not args.remote_python or not args.remote_data_dir):
+    if args.ssh_host and (args.command not in {'mcp', 'status', 'rpc', 'show'} or not args.remote_python or not args.remote_data_dir):
         parser.error('SSH 仅支持 mcp/status/rpc/show，需 remote-python 和 remote-data-dir')
     if not args.ssh_host and (args.remote_python or args.remote_data_dir or args.remote_platform or args.remote_shell):
         parser.error('远端路径需要 ssh-host')
@@ -42,7 +42,25 @@ def main():
         parser.error('--arguments 需要 JSON 对象')
     if args.data_dir: os.environ['AGENT_HUB_DATA_DIR'] = args.data_dir
     from .config import data_dir
-    if args.command == 'daemon':
+    if args.command in {'plugins', 'check-config'}:
+        from .models import HubError
+        from .plugins import installed_plugins
+        from .config import adapters, scheduler_options, verification_options, artifact_transfer_options
+        try:
+            if args.command == 'plugins':
+                result = {'plugins': installed_plugins()}
+            else:
+                root = data_dir()
+                scheduler_options(root); verification_options(root); artifact_transfer_options(root)
+                result = {'agents': {name: adapter.diagnose() for name, adapter in adapters(root).items()}}
+        except HubError as error:
+            print(json.dumps({'error': error.payload()}, ensure_ascii=False))
+            raise SystemExit(1) from None
+        except (ValueError, TypeError, KeyError, OSError) as error:
+            print(json.dumps({'error': {'code': 'INVALID_CONFIG', 'message': type(error).__name__}}, ensure_ascii=False))
+            raise SystemExit(1) from None
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif args.command == 'daemon':
         root = data_dir()
         from .config import private_dir
         private_dir(root)

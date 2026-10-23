@@ -44,7 +44,7 @@ class GatewayTests(unittest.TestCase):
     def test_capabilities_are_read_only_and_require_evidence(self):
         result = self.service.call('get_capabilities', {})
         self.assertEqual(result['agents']['fake']['capabilities'], [])
-        self.assertEqual(result['service_version'], '0.2.1')
+        self.assertEqual(result['service_version'], '0.3.0')
         self.assertEqual(self.fake.calls, 0)
         item = dict(kind='image.generate', model='actual-model', verification='unverified')
         self.service.gateway.config = {'agents': {'fake': {'media_capabilities': [item]}}}

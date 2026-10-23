@@ -1,0 +1,11 @@
+include README.md README.zh-CN.md config.example.json
+include docs/executor-plugins.md
+recursive-include examples/echo-plugin *.py *.toml *.md
+prune examples/echo-plugin/build
+prune examples/echo-plugin/dist
+prune .agent-hub
+prune .superpowers
+prune .venv
+prune .worktrees
+exclude config.json connection.json
+global-exclude *.pyc *.log *.db *.db-wal *.db-shm *.sqlite *.sqlite3 *.har cookies* credentials.json
