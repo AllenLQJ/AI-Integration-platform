@@ -1,10 +1,10 @@
 # D 盘运行环境迁移
 
-日期：2026-10-10，(timezone omitted)。
+日期：2026-10-10。
 
 ## 已完成
 
-- 在 D:\projects\AI-Integration-platform\.venv 使用既有 py310 新建环境，按 requirements-windows.lock 安装依赖，并以 editable 模式安装本项目。
+- 在 D:\path\to\AI-Integration-platform\.venv 使用既有 py310 新建环境，按 requirements-windows.lock 安装依赖，并以 editable 模式安装本项目。
 - Python 与 agent_hub 模块路径均位于 D 盘主目录；完整回归 62/62，通过，耗时 53.817 秒；pip check 无破损依赖。
 - 备份 Codex config.toml，仅替换 agent_hub 的 command 为 D 盘 Python，args 与 PYTHONUTF8 保留；codex mcp get 已确认新路径。Claude 的已保存测试 MCP 配置也同步并保留备份。Codex 标准配置文件仍留在用户配置目录。
 - 确认零活动任务后正常关闭旧后台并从 D 盘启动；旧 PID 40484，新 PID 37112。

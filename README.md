@@ -32,12 +32,12 @@ uv pip install --python .venv/bin/python exceptiongroup
 使用 Python 3.10 或更新版本，在源码目录执行：
 
 ```powershell
-& 'D:\My_Software\Anaconda3\envs\py310\python.exe' -m venv .venv
+& 'C:\path\to\python.exe' -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-windows.lock
 .\.venv\Scripts\python.exe -m pip install --no-deps -e .
 ```
 
-在 `%USERPROFILE%\.agent-hub\config.json` 配置实际路径，参见 `config.example.json`。代理按实际环境填写，7897 是网络代理，Claude 的 CCR 3456 保留在 Claude 自己的配置中。无需把 Cookie 或模型密钥写进 Hub 配置。
+在 `%USERPROFILE%\.agent-hub\config.json` 配置实际路径，参见 `config.example.json`。代理按实际环境填写，127.0.0.1:PORT 是网络代理，Claude 的 CCR 3456 保留在 Claude 自己的配置中。无需把 Cookie 或模型密钥写进 Hub 配置。
 
 Windows 新执行器接入与真实问候验收见 [2026-10-12 Windows 记录](docs/2026-10-12-windows-executor-validation.md)。Cursor IDE 可配置 `executable` 为实际桌面程序路径，仍需在线界面 worker。Cursor CLI 可通过原生 Node 的 `executable` 与入口脚本 `args` 启动，并用 `credentials_file` 引用 BDK 的既有私有凭据；`sandbox` 默认 enabled，本轮经用户明确批准仅 Windows CLI 使用 disabled 权限白名单模式，不提供 OS 沙箱。
 
@@ -86,7 +86,7 @@ Host mac-hub
 
 目标机需能接受该密钥的 SSH 登录，并已安装本项目与执行器。未知或变化的主机密钥会被拒绝。节点声明只记录身份，`remote_connection_verified` 仍为 false。
 
-边界：Tailscale 的安装与登录由用户自己完成。国内网络下 Tailscale 可能偶发不稳定，连通由用户的 tailnet 负责。SSH 密钥、`authorized_keys` 和 Hub 配置留在各自机器的私有目录，不进入 Git。已验证的方向是 Windows 调用 Mac；原生 Windows 目标机支持见下一节；本次没有新增真实 Windows SSH 实测结论。
+边界：Tailscale 的安装与登录由用户自己完成。受限或跨境网络环境下 Tailscale 可能偶发不稳定，连通由用户的 tailnet 负责。SSH 密钥、`authorized_keys` 和 Hub 配置留在各自机器的私有目录，不进入 Git。已验证的方向是 Windows 调用 Mac；原生 Windows 目标机支持见下一节；本次没有新增真实 Windows SSH 实测结论。
 
 
 ### 原生 Windows SSH 目标机

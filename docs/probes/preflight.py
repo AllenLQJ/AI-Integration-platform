@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / 'docs' / 'probes' / 'results'
 OUT.mkdir(exist_ok=True)
 ENV = {k:v for k,v in os.environ.items() if not any(s in k.upper() for s in ('API_KEY','TOKEN','SECRET','PASSWORD'))}
-ENV.update(HTTP_PROXY='http://127.0.0.1:7897', HTTPS_PROXY='http://127.0.0.1:7897', ALL_PROXY='http://127.0.0.1:7897')
+ENV.update(HTTP_PROXY='http://127.0.0.1:PORT', HTTPS_PROXY='http://127.0.0.1:PORT', ALL_PROXY='http://127.0.0.1:PORT')
 ENV.pop('CLAUDECODE',None)
 
 def run(argv, cwd, timeout=150):
@@ -33,7 +33,7 @@ def main(agent):
     token='HUB_'+uuid.uuid4().hex[:12]
     with tempfile.TemporaryDirectory(prefix='hub 探针 space ') as td:
         if agent=='codex':
-            exe=r'C:\Users\your-name\AppData\Local\OpenAI\Codex\bin\979a96ce184041d1\codex.exe'
+            exe=r'C:\Users\<username>\AppData\Local\OpenAI\Codex\bin\codex.exe'
             base=[exe,'exec','--ignore-user-config','--ignore-rules','--skip-git-repo-check','--json']
             first=run(base+['--sandbox','read-only',f'Remember marker {token}. Reply exactly {token}. Do not use tools.'],td)
             sid=next((e.get('thread_id') for e in first.get('events',[]) if e.get('type')=='thread.started'),None)
