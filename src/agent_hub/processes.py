@@ -110,7 +110,7 @@ def spawn_process(argv, cwd, env):
         raise SpawnError(error) from error
 
 
-def run_process(argv, cwd, env, cancel, deadline, log_dir, event, allow_hub_events=True):
+def run_process(argv, cwd, env, cancel, deadline, log_dir, event, allow_hub_events=True, parse_cli_events=True):
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     out_path, err_path = log_dir / 'stdout.log', log_dir / 'stderr.log'
@@ -125,13 +125,18 @@ def run_process(argv, cwd, env, cancel, deadline, log_dir, event, allow_hub_even
         with path.open('w', encoding='utf-8') as log:
             for line in iter(stream.readline, b''):
                 text = line.decode('utf-8', errors='replace')
+                if not parse_cli_events:
+                    # Preserve duplicate keys for the bridge's strict parser and avoid
+                    # Windows CRCRLF translation. Never interpret arbitrary tool output.
+                    log.write(safe(redact(text.replace('\r\n', '\n')))); log.flush()
+                    continue
                 try:
                     data = safe(Store.safe(json.loads(text)))
                     if structured and isinstance(data, dict) and data.get('hub_event'):
                         if allow_hub_events:
                             entry = data['hub_event']
                             event(entry['kind'], entry['data'])
-                    elif structured and isinstance(data, dict):
+                    elif structured and parse_cli_events and isinstance(data, dict):
                         initialization = data.get('type') == 'thread.started' or (data.get('type') == 'system' and data.get('subtype') == 'init')
                         first_init = initialization and not session_seen
                         if initialization:
@@ -146,7 +151,7 @@ def run_process(argv, cwd, env, cancel, deadline, log_dir, event, allow_hub_even
                                 elif ident in tool_names:
                                     payload['name'] = tool_names[ident]
                             event(kind, payload)
-                    text = json.dumps(log_record(data), ensure_ascii=False) + '\n'
+                    text = json.dumps(log_record(data) if parse_cli_events else data, ensure_ascii=False) + '\n'
                 except ValueError: text = safe(redact(text))
                 log.write(text); log.flush()
     readers = [threading.Thread(target=pump, args=(stream, path, stream is process.stdout), daemon=True)

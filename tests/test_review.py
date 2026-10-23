@@ -241,7 +241,7 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(len(self.item(ident)['attempts']), 1)
 
     def test_schema_validation_and_self_review(self):
-        bad = [{'criteria': CONTENT, 'review': {'agent': 'codex'}},
+        bad = [{'criteria': CONTENT, 'review': {'agent': ''}},
                {'criteria': CONTENT, 'review': {'agent': 'claude', 'timeout_seconds': 10}},
                {'criteria': CONTENT, 'review': {'agent': 'claude', 'timeout_seconds': True}},
                {'criteria': CONTENT, 'review': {'agent': 'claude', 'model': 'x'}},
@@ -260,6 +260,25 @@ class ReviewTests(unittest.TestCase):
                                                       mode='read_only', acceptance={'criteria': CONTENT}))
         self.assertEqual(self.settled(plain['id'])['work_status'], 'needs_review')
         self.assertNotIn('review', self.summary(plain['id']))
+        self.assertEqual(self.all_reviews(), [])
+
+    def test_external_reviewer_can_pass_and_trigger_bounded_rework(self):
+        self.service.adapters['custom-reviewer'] = self.service.adapters.pop('claude')
+        ident = self.submit(review={'agent': 'custom-reviewer', 'timeout_seconds': 60})
+        item = self.settled(ident, ('completed',))
+        self.assertEqual(len(item['attempts']), 2)
+        current = item['current_task_id']
+        self.assertTrue(all(t['agent'] == 'custom-reviewer' for t in self.all_reviews()))
+        check = next(c for c in self.summary(current)['checks'] if c['criterion_id'] == 'quality')
+        self.assertEqual(check['verifier']['name'], 'hub-content-review')
+        self.assertEqual(check['verifier']['agent'], 'custom-reviewer')
+
+    def test_external_reviewer_without_text_only_is_unavailable(self):
+        self.service.adapters['custom-reviewer'] = self.exec
+        self.exec.first = b'GOOD final'
+        ident = self.submit(review={'agent': 'custom-reviewer'})
+        self.assertEqual(self.settled(ident)['work_status'], 'needs_review')
+        self.assertEqual(self.summary(ident)['review']['state'], 'unavailable')
         self.assertEqual(self.all_reviews(), [])
 
     def test_reserved_internal_identifiers(self):

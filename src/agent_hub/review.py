@@ -13,6 +13,11 @@ RESULT_KEYS = {'schema', 'task_id', 'review_run_id', 'verification_run_id', 'che
 CHECK_KEYS = {'criterion_id', 'outcome', 'reason', 'evidence'}
 
 
+def verifier_name(agent):
+    # Preserve existing evidence identities for old Claude tasks.
+    return VERIFIER if agent == 'claude' else 'hub-content-review'
+
+
 class Unavailable(Exception):
     pass
 
@@ -349,7 +354,7 @@ class Reviewer:
         criteria = task['acceptance']['criteria']
         evidence = {e['artifact_id']: e for e in review.get('evidence', [])}
         now = time.time()
-        verifier = dict(name=VERIFIER, version='1', agent=review['agent'], review_task_id=reviewer_id)
+        verifier = dict(name=verifier_name(review['agent']), version='1', agent=review['agent'], review_task_id=reviewer_id)
         mark = dict(review_run_id=run, review_task_id=reviewer_id)
         if parsed is not None:
             incoming = [dict(c, evidence={'artifacts': [evidence[a] for a in c['evidence']]}, verifier=verifier,
