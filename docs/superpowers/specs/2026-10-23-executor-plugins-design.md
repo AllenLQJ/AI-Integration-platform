@@ -1,0 +1,21 @@
+# Portable executor plugins
+
+## Intent and constraints
+
+New AI tools must be connectable without editing Hub core. The user delegated implementation choices and explicitly requires distributable source and device-independent configuration. Keep Python >=3.10 and existing executors/configurations compatible. Do not copy host credentials, local configuration, task databases, logs, absolute developer paths or private evidence into source or distribution archives. Runtime state belongs under the selected private Hub data directory; each device owns its credentials, workspace paths and SSH configuration.
+
+## Chosen approach
+
+Use Python distribution entry points (`agent_hub.executors`) for trusted, independently installed adapter packages, plus a configurable command bridge for tools implemented in any language. A CLI-only abstraction would exclude API/MCP/custom integrations. A separate network plugin service would add deployment and authentication requirements unnecessarily. Python plugins may implement API, MCP, desktop or CLI integrations; Hub does not automatically discover accounts or infer undocumented tool protocols.
+
+Export a small versioned SDK: `ExecutorPlugin(api_version, create)`, `PluginContext(name, data_dir)`, and `Executor`. Factories receive keyword arguments `config` and `context`. Load only explicitly configured entry points; reject missing/ambiguous plugins, incompatible versions and malformed contracts before task submission. A plugin is trusted code with the Hub user's privileges, not a security sandbox. Plugin instances have separate state directories beneath the runtime data root. The SDK checks capabilities, permission descriptions and result shape at the boundary. Keep built-in implementations and legacy task behavior intact.
+
+Command bridge v1 uses an argument vector (no shell), an ephemeral UTF-8 JSON request file, and either plain stdout or a final JSON response. Templates allow `{request_file}`, `{prompt}`, `{workspace}`, `{session_id}` and `{mode}`; argument replacement never splits or evaluates values. Default executable is the running Hub Python so installed wrapper modules work on another device without hardcoded executable paths. Support `delegate` and opt-in `edit_worktree`, with honest unenforced permissions and no OS sandbox claim. `resume_args` explicitly enables continuation; no implicit continuation. Cancel/timeout kills the local process tree but cannot assert that an API request has stopped remotely. Do not retry uncertain operations. Delete request files on success and failure. Credentials are referenced by environment variable names, not embedded in distributable templates.
+
+Replace the Claude-only review allowlist with validated executor names; retain strict review result validation, text_only requirement and prevention of self-review. Keep the legacy Claude verifier name, and use a generic verifier for other reviewers. A command bridge cannot declare text_only and therefore cannot be used as a trusted text-only reviewer by configuration alone.
+
+## Delivery and verification
+
+Ship a standalone installable example plugin and a module usable by the command bridge. Demonstrate discovery, task execution, continuation, failure/cancellation and independent data roots without AI account access. Document replacing the deterministic example with a real API/MCP/CLI adapter; do not represent the example as an actual AI service. Test installed wheel + separately installed plugin from a relocated directory, not merely imports from the source checkout. Include platform-neutral configuration and a Windows/macOS/Linux CI matrix for the new contract suite. Real AI/provider compatibility and macOS/Linux execution are only claimed when actually run.
+
+Acceptance: a previously unknown executor name loads from a separately installed package and completes a Hub task without core edits; command-only wrappers work with Unicode and spaces; unsupported modes/continuation fail explicitly; legacy tests remain green; no machine-private state enters tracked changes or built archives. Existing runtime records contain machine-specific paths and are not automatically migratable between devices. Existing historical docs are not new live acceptance evidence.
