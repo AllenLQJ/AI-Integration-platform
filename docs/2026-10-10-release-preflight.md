@@ -2,11 +2,11 @@
 
 > 2026-10-10 Windows 发布前检查历史记录；本页测试数、路径和未验收项为当时状态。2026-10-11 Mac 增量及权限修订见 [开发进度](开发进度.md)、[核心验收](2026-10-11-macos-full-acceptance.md) 与 [补充验收](2026-10-11-macos-resilience-validation.md)。
 
-日期：2026-10-10，Asia/Shanghai。
+日期：2026-10-10。
 
 ## 本地集成
 
-feature/agent-hub-v1 已快进合并 main，包含 Windows 第一版、Muse 恢复和 wait_for_task。主目录为 D:\My_Files\AI-Integration-platform。主目录原文档已备份到命名 stash `pre-main-integration original docs 2026-10-10`，整合后的版本作为当前文档；不删除备份。
+feature/agent-hub-v1 已快进合并 main，包含 Windows 第一版、Muse 恢复和 wait_for_task。主目录为 D:\path\to\AI-Integration-platform。主目录原文档已备份到命名 stash `pre-main-integration original docs 2026-10-10`，整合后的版本作为当前文档；不删除备份。
 
 后续已迁移至 D 盘虚拟环境并切换共享后台，详见 `2026-10-10-d-drive-migration.md`；C 盘旧 worktree 已归档，用户决定保留残留环境文件。日常 Muse 仓库及其未提交 cli.py 修改保留。
 

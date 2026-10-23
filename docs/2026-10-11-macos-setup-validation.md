@@ -6,7 +6,7 @@
 
 ## 配置
 
-- 项目：`/Users/allen/项目/AI-Integration-platform`。
+- 项目：`/Users/your-name/项目/AI-Integration-platform`。
 - 环境：项目 `.venv`，Python 3.12.14，`mcp==1.30.0`。
 - 本机使用 `uv venv --python 3.12 .venv`、`uv pip install --python .venv/bin/python -e .`。
 - Python 3.12 完整测试仍显式导入 exceptiongroup，另用 `uv pip install --python .venv/bin/python exceptiongroup` 补齐测试依赖。
@@ -30,7 +30,7 @@
 ## 使用
 
 ```zsh
-cd /Users/allen/项目/AI-Integration-platform
+cd /Users/your-name/项目/AI-Integration-platform
 .venv/bin/python -m agent_hub status
 ENABLE_TOOL_SEARCH=false claude
 ```

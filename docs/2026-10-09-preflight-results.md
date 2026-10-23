@@ -29,7 +29,7 @@ Codex CLI、Claude Code CLI、Muse 的真实调用已通过；Codex 和 Claude �
 
 ## Claude 故障调查与恢复
 
-截图错误为 ECONNREFUSED。检查发现 Claude 指向的 3456 无监听，但普通网络代理 7897 可连接。3456 是模型路由 API，7897 是外网代理，两者不能互换。
+截图错误为 ECONNREFUSED。检查发现 Claude 指向的 3456 无监听，但普通网络代理 127.0.0.1:PORT 可连接。3456 是模型路由 API，PORT 是外网代理，两者不能互换。
 
 CCR 管理服务在 3458 运行，管理状态与实际网关状态不一致。请求启动网关时报告 `Core gateway did not accept runtime config within 5000ms.`。本次通过 CCR 官方 stop/start 重启管理服务，启动过程指定已有 Node 路径、回环地址绕过代理；首次网关配置接受仍超时，随后显式 startGateway 成功。
 

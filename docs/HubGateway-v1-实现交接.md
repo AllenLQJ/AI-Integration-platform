@@ -28,7 +28,7 @@
 
 实测 VM HTTPS 原图无法直接连接；使用 Muse 已认证的 Noise 网关读取 presentation.original 对应的 `/media/raw/workspace/imagine_media/…` 路径。专用只读 helper 在 Muse 配置的 Python 环境中连接，核对所属 VM、路径、大小，写入 Hub 私有目录；Hub 执行 PNG/JPEG 实际解码和 SHA-256 登记。URL 仅在 worker 内存使用，不进入结果、事件、传输日志或交接。helper 输入只含 VM 标识和媒体路径，不含 URL 或认证数据。
 
-文件授权根目录：`/Users/allen/.agent-hub/media-artifacts`。客户端配置 same_host=true、trusted_artifact_roots=[该目录]。每文件上限 64 MiB，禁止符号链接及越界；缺失返回 ARTIFACT_NOT_FOUND，内容变化返回 ARTIFACT_EXPIRED。客户端仍须独立验证大小、哈希、签名/解码并原子归档。
+文件授权根目录：`/Users/your-name/.agent-hub/media-artifacts`。客户端配置 same_host=true、trusted_artifact_roots=[该目录]。每文件上限 64 MiB，禁止符号链接及越界；缺失返回 ARTIFACT_NOT_FOUND，内容变化返回 ARTIFACT_EXPIRED。客户端仍须独立验证大小、哈希、签名/解码并原子归档。
 
 视频、输入附件、参考图/编辑、JPEG 默认路由实测均未完成，不登记 verified；视频请求在派发前拒绝。图片通过后，视频另做独立适配与 MP4 验收。不会自动修改 MediaFlow 业务源代码、自动发布或发送交接消息。
 
