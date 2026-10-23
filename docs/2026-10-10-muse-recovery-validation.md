@@ -4,7 +4,7 @@
 
 > 分阶段历史验收记录：前文失败、未提交和旧共享进程描述均为当时状态。后续真实成功回收、共享切换及本地 Git 保存结果见本文后半部分；最新等待工具和后台重载见 `2026-10-10-wait-for-task-validation.md`。本轮新增可复现配套补丁见 `../vendor/muse-mcp/README.md`。
 
-工作树：`C:\Users\95439\.codex\worktrees\agent-hub-v1\AI-Integration-platform`，分支 `feature/agent-hub-v1`，修改前基线 `c7ba64a`。本次修改保留在工作区，未提交或推送。
+工作树：`%USERPROFILE%\.codex\worktrees\agent-hub-v1\AI-Integration-platform`，分支 `feature/agent-hub-v1`，修改前基线 `c7ba64a`。本次修改保留在工作区，未提交或推送。
 
 ## 修改
 
@@ -34,7 +34,7 @@ git diff --check
 
 - 任务 ID：`a45475ef0a6d49e383defeaf77753fd9`。
 - request_id：`muse-recovery-fixed-live-20261010-01a1235c-v1`。
-- 目录：`D:\My_Files\AI-Integration-platform`；模式：read_only。
+- 目录：`D:\path\to\AI-Integration-platform`；模式：read_only。
 - 会话：`2e1bf27a-038f-433a-bf8f-4e9b018be761`。
 - 事件明确记录 baseline_history 两次 GATEWAY_ERROR 重试，随后恢复并进入发送。
 - 发送确认超时，Hub 最终 ready=true、state=delivery_unknown，error_code=DELIVERY_UNKNOWN，错误文本保留 TIMEOUT；没有重发。
@@ -79,8 +79,8 @@ git diff --check
 
 ```powershell
 $env:PYTHONUTF8='1'
-$env:PYTHONPATH='C:\Users\95439\.codex\worktrees\agent-hub-v1\AI-Integration-platform\src'
-& 'D:\My_Files\AI-Integration-platform\muse-mcp\.venv\Scripts\python.exe' -B scripts/muse_transport_probe.py
+$env:PYTHONPATH='%USERPROFILE%\.codex\worktrees\agent-hub-v1\AI-Integration-platform\src'
+& 'D:\path\to\AI-Integration-platform\muse-mcp\.venv\Scripts\python.exe' -B scripts/muse_transport_probe.py
 # 可选只读对照：--direct 或 --socks；不会改写代理配置。
 ```
 
@@ -94,7 +94,7 @@ $env:PYTHONPATH='C:\Users\95439\.codex\worktrees\agent-hub-v1\AI-Integration-pla
 
 继续定位发现，每次 MCP 工具调用重新执行会话发现、认证和 WebSocket 握手，放大间歇连接失败。实际修改如下：
 
-- 配套 Muse 仓库 `D:\My_Files\AI-Integration-platform\muse-mcp\muse.py`：仅 HTTPS 认证/会话发现的 curl 35 临时 TLS 错误最多尝试三次，退避 0.5、1 秒；证书验证错误与其他错误不重试。保留 TLS 校验，不重试 Gateway 业务操作。
+- 配套 Muse 仓库 `D:\path\to\AI-Integration-platform\muse-mcp\muse.py`：仅 HTTPS 认证/会话发现的 curl 35 临时 TLS 错误最多尝试三次，退避 0.5、1 秒；证书验证错误与其他错误不重试。保留 TLS 校验，不重试 Gateway 业务操作。
 - 通过真实会话发现取得当前 VM ID，写入用户私有 Muse 配置的 vm_id 字段，避免每次重新发现；未写入认证材料。VM 分配改变时需刷新该字段。
 - 配套 MuseClient 增加显式可选连接复用，默认关闭；Hub 只对每个任务自己的 Muse stdio 子进程启用。RLock 保证单消费者，cookie/VM 改变会更换连接；异常关闭并清空缓存，不重放原操作。进程退出关闭连接。
 - 保留日常 Muse 仓库原有 cli.py 未提交修改；新增修改在独立 Muse 仓库中，迁移 Hub 时需要同时同步配套实现。
@@ -114,7 +114,7 @@ $env:PYTHONPATH='C:\Users\95439\.codex\worktrees\agent-hub-v1\AI-Integration-pla
 - 本次 reply_to_message_id 为空；非空关联字段的控制流回归通过，本次不宣称取得新的非空字段真实成功样本。
 - 真实事件依次为 queued、running、process、session、accepted、succeeded，没有历史读取重试事件。任务用时约 23.55 秒。
 - 当前代码实际 MCP stdio 验收脚本退出码 0，输出 `LIVE_ACCEPTANCE_PASSED`。
-- 原始摘要：`C:\Users\95439\.agent-hub\acceptance\muse-success-8ddf9ecd9839404eb9d3796c3975455c\acceptance-summary.json`
+- 原始摘要：`%USERPROFILE%\.agent-hub\acceptance\muse-success-8ddf9ecd9839404eb9d3796c3975455c\acceptance-summary.json`
 
 通过前失败任务保留原终态：cc041142…创建会话失败；631f795e…已派发后本地超时；1e231036…发送不确定；1874c6c6…创建会话失败。未重发这些任务，后续使用各自独立验收标记；未手动改写任务状态。
 
@@ -131,7 +131,7 @@ $env:PYTHONPATH='C:\Users\95439\.codex\worktrees\agent-hub-v1\AI-Integration-pla
 - 最终 `ready=true, state=succeeded`；正文为 `SHARED_HUB_RESTART_20261010_24756_B` 和 `[HUB:f5e98adf229a486f9e9483c07650fbca]`。
 - session_id=`986a2e5a-3d43-424a-8458-3131dd796906`；completion_evidence 会话一致、baseline=0、reply_seq=6316、stable_polls=2、reply_to_message_id 为空。
 - 真实事件 seq 121–126 依次为 queued、running、process、session、accepted、succeeded；用时约 23.29 秒。
-- 日常私有日志位于 `C:\Users\95439\.agent-hub\logs\f5e98adf229a486f9e9483c07650fbca\`，任务结果与事件持久保存在共享 tasks.db。
+- 日常私有日志位于 `%USERPROFILE%\.agent-hub\logs\f5e98adf229a486f9e9483c07650fbca\`，任务结果与事件持久保存在共享 tasks.db。
 
 共享服务继续运行，历史任务未清除。当前结论：共享进程已切换且日常真实回收通过；前文“共享旧进程未重启”属于切换前的历史记录。外部 Muse/代理仍出现过间歇连接失败，本次通过不表示这些外部错误已消失。此次只做进程切换、真实验收与记录更新，无代码行为变更，没有重复运行全量自动测试、提交或推送。
 

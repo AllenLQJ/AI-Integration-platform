@@ -8,7 +8,7 @@ ROOT=Path(__file__).resolve().parents[2]
 OUT=Path(__file__).parent/'results'/'muse.json'
 async def main():
     env={k:v for k,v in os.environ.items() if k.upper() in {'PATH','SYSTEMROOT','USERPROFILE','HOME','APPDATA','LOCALAPPDATA','TEMP','TMP'}}
-    env.update(HTTP_PROXY='http://127.0.0.1:7897',HTTPS_PROXY='http://127.0.0.1:7897',ALL_PROXY='http://127.0.0.1:7897')
+    env.update(HTTP_PROXY='http://127.0.0.1:PORT',HTTPS_PROXY='http://127.0.0.1:PORT',ALL_PROXY='http://127.0.0.1:PORT')
     env['MUSE_MCP_ENABLE_RAW']='1'
     params=StdioServerParameters(command=str(ROOT/'muse-mcp/.venv/Scripts/python.exe'),args=['-m','muse_mcp'],env=env)
     result={}

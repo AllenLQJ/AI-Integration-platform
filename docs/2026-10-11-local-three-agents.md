@@ -86,7 +86,7 @@ IDE 桥本机实际任务 972c1720cda0460fac52e1d6d2ace0a8 由 Codex 界面 work
 | Hub → 同一 IDE 会话续接 | c624d6b2c76543c894b79c1387f5a32c | 提示未重给完整标记，原会话再次返回相同标记，桥回收 succeeded |
 | Cursor IDE → Hub → Claude | ab385afefe7a4e5685150009ebb87341 | 真实 submit/wait/get_result；IDE 显示同一任务 ID 与 IDE_CONTROLLER_3bfcd460bda3，Hub 结果匹配 |
 
-IDE 任务的 workspace=/Users/allen，与原生界面的 On Home 对应。当前 worker 是本聊天中的 Codex + cua_repl，不是 Hub 后台自身的常驻自动化。原生 IDE 会话标题定位符为 ui-title:Cursor pro native readiness，没有假称取得 Cursor 原生 session UUID；续接只证明这次打开的同一会话记忆保留。
+IDE 任务的 workspace=/Users/your-name，与原生界面的 On Home 对应。当前 worker 是本聊天中的 Codex + cua_repl，不是 Hub 后台自身的常驻自动化。原生 IDE 会话标题定位符为 ui-title:Cursor pro native readiness，没有假称取得 Cursor 原生 session UUID；续接只证明这次打开的同一会话记忆保留。
 
 首轮自拟中文记忆探针经等义英文发送，回传前核对实际完整提示与标记。后续续接和总控提示以原文英文发送。本轮未验收任意中文业务提示逐字传递，实际业务 worker 应逐字核对后再发送，不自行改写。界面工具曾发生截图/控件树不同步、失效元素和 ScreenCaptureKit 错误；重连并逐步核对实际输入与输出后完成本轮，不据此推断长期稳定性。
 

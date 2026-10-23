@@ -12,7 +12,7 @@
 - 安装后重新检查应用签名；成功启动原生 Cursor Agents 窗口并显示官方 Log In / Sign Up 页面。
 - 既有 Cursor CLI 与 IDE 分别安装，IDE 的 bin/cursor --version 返回 `3.24.12` 与 arm64。
 - 用户 `~/.cursor/mcp.json` 已有 agent_hub 注册，指向本机项目虚拟环境 Python，args 为 `-m agent_hub mcp`；CLI 先前已发现八工具并完成真实总控验收。
-- 用户完成 IDE 独立登录；原生设置窗口已显示账号 Allen Lan 与 Log Out，确认 IDE 已登录。
+- 用户完成 IDE 独立登录；原生设置窗口已显示已登录账号与 Log Out，确认 IDE 已登录。
 - IDE 的 Customize → MCPs 已显示 Connected 下的 agent_hub，`8 tools enabled`，确认桌面入口已连接并发现八个工具。
 
 ## 待确认

@@ -59,7 +59,7 @@ class SshTests(unittest.TestCase):
             # buffer bytes, so locale must not affect non-GBK characters either.
             env = dict(os.environ, PYTHONIOENCODING='gbk', PYTHONUTF8='0')
             return real_run([sys.executable, '-X', 'utf8=0', '-c', script], env=env, **kwargs)
-        payload = {'prompt': '你好 🧪', 'cwd': '/Users/allen/项目'}
+        payload = {'prompt': '你好 🧪', 'cwd': '/Users/your-name/项目'}
         with patch('subprocess.run', side_effect=local_transport):
             self.assertEqual(SshClient('host','/python','/data').call('submit_task',payload),payload)
 
