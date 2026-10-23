@@ -87,8 +87,20 @@ def private_dir(root):
 def adapters(root):
     path = Path(root) / 'config.json'
     config = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+    from .plugins import BUILTIN_NAMES, load_plugin
+    items = config.get('agents', {})
+    if not isinstance(items, dict):
+        raise HubError('INVALID_CONFIG', 'agents must be an object')
     result = {}
-    for name, item in config.get('agents', {}).items():
+    for name, item in items.items():
+        if not isinstance(item, dict) or type(item.get('enabled', True)) is not bool:
+            raise HubError('INVALID_CONFIG', 'Each agent requires an object and boolean enabled')
+        if not item.get('enabled', True):
+            continue
+        if item.get('kind') == 'plugin':
+            result[name] = load_plugin(name, item, root)
+        elif item.get('kind') not in {None, 'remote', 'ide'} or name not in BUILTIN_NAMES and item.get('kind') != 'remote':
+            raise HubError('INVALID_CONFIG', 'Unknown executor; configure kind=plugin, command or remote: ' + name)
         if item.get('kind') == 'remote' and item.get('enabled', True):
             _, platform, _ = remote_node_declaration(name, item, item['ssh_host'])
             result[name] = Remote(item['ssh_host'], item['python'], item['data_dir'],
@@ -97,7 +109,7 @@ def adapters(root):
     for name, cls in [('codex', Codex), ('claude', Claude), ('muse', Muse),
                       ('cursor', Cursor), ('cursor_cli', Cursor), ('grokbot', GrokBot)]:
         item = config.get('agents', {}).get(name)
-        if item and item.get('enabled', True) and item.get('kind') != 'remote':
+        if item and item.get('enabled', True) and item.get('kind') not in {'remote', 'plugin', 'command'}:
             if name == 'cursor' and item.get('kind') == 'ide':
                 result[name] = CursorIDE(root, item.get('executable'))
             elif name == 'grokbot':

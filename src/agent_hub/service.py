@@ -252,6 +252,9 @@ class Service:
                                timeout_seconds, parent_id=task_id, workspace=parent.get('workspace'),
                                baseline=parent.get('baseline'), resume_session=parent.get('session_id'),
                                **workspace_metadata)
+        adapter = self.adapters.get(parent['agent'])
+        if getattr(adapter, 'api_version', None) == 1 and 'continue' not in adapter.capabilities:
+            raise HubError('UNSUPPORTED_MODE', '执行器未声明会话续接能力')
         if parent.get('acceptance'):
             current = self.verification.work_item(task_id)['current_task_id']
             if current != task_id or any(t.get('parent_id') == task_id for t in self.store.list()):
