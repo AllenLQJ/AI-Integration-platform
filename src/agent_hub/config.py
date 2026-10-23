@@ -99,6 +99,11 @@ def adapters(root):
             continue
         if item.get('kind') == 'plugin':
             result[name] = load_plugin(name, item, root)
+        elif item.get('kind') == 'command':
+            from .adapters.command import Command
+            from .plugins import ValidatedExecutor, plugin_context
+            options = {k: v for k, v in item.items() if k not in {'kind', 'enabled'}}
+            result[name] = ValidatedExecutor(Command(options, plugin_context(name, root)), 'command')
         elif item.get('kind') not in {None, 'remote', 'ide'} or name not in BUILTIN_NAMES and item.get('kind') != 'remote':
             raise HubError('INVALID_CONFIG', 'Unknown executor; configure kind=plugin, command or remote: ' + name)
         if item.get('kind') == 'remote' and item.get('enabled', True):

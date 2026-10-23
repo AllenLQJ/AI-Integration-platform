@@ -320,6 +320,7 @@ class Service:
 
     @staticmethod
     def auto_rework_ready(task, summary):
+        from .review import verifier_name
         checks = summary.get('checks', [])
         failed = [c for c in checks if c['outcome'] == 'fail']
         criteria = {c['id']: c for c in (task.get('acceptance') or {}).get('criteria', [])}
@@ -330,7 +331,8 @@ class Service:
                 return name == 'hub-deterministic'
             # 仅接受受信审核服务按本次审核 run 严格校验后写入的 fail。
             mark = c.get('auto_review') or {}
-            return (name == 'hub-claude-review' and review.get('state') == 'failed'
+            return (name == verifier_name(review.get('agent')) and review.get('state') == 'failed'
+                    and (name == 'hub-claude-review' or c.get('verifier', {}).get('agent') == review.get('agent'))
                     and bool(review.get('review_run_id')) and mark.get('review_run_id') == review['review_run_id'])
         def deferred(c):
             return c.get('review_deferred') and c.get('verifier', {}).get('name') == 'hub-deterministic'

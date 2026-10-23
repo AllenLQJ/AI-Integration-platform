@@ -28,8 +28,9 @@ def submit_task(request_id: str, agent: str, prompt: str, cwd: str,
     Claude: text_only/read_only/edit_worktree；Codex、cursor_cli: read_only/edit_worktree。
     cursor 配置 kind=ide 时为 IDE 原生界面桥，delegate/edit_worktree，需要外部 UI worker 在线。
     Muse、Grok Bot 仅 delegate，Hub 不保证其只读，权限由远端/客户端决定。
+    插件与 command 执行器名称可由配置定义；提交前用 list_agents 检查 modes/permissions。
     permissions 返回限制执行方及允许写入等信息。
-    acceptance.review={agent:'claude', timeout_seconds?} 为该任务显式开启 content_review 的 Claude 自动审核。"""
+    acceptance.review={agent:执行器名称, timeout_seconds?} 显式开启 content_review 自动审核，审核端须支持 text_only 且不能自审核。"""
     return invoke('submit_task', locals())
 
 

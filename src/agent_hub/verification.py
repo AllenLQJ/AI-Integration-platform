@@ -29,9 +29,6 @@ def relative_path(value):
             and '..' not in value.replace('\\', '/').split('/'))
 
 
-REVIEW_AGENTS = {'claude'}
-
-
 def validate(acceptance):
     if acceptance is None:
         return
@@ -41,8 +38,9 @@ def validate(acceptance):
     if 'review' in acceptance:
         review = acceptance['review']
         if (not isinstance(review, dict) or 'agent' not in review or set(review) - {'agent', 'timeout_seconds'}
-                or not isinstance(review['agent'], str) or review['agent'] not in REVIEW_AGENTS):
-            raise HubError('INVALID_ARGUMENT', "acceptance.review 仅支持 {agent:'claude', timeout_seconds?}")
+                or not isinstance(review['agent'], str)
+                or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,199}', review['agent'])):
+            raise HubError('INVALID_ARGUMENT', 'acceptance.review requires {agent: executor_name, timeout_seconds?}')
         if 'timeout_seconds' in review and (type(review['timeout_seconds']) is not int
                                             or not 30 <= review['timeout_seconds'] <= 3600):
             raise HubError('INVALID_ARGUMENT', 'acceptance.review.timeout_seconds 需要 30–3600 的整数')
