@@ -128,7 +128,8 @@ class PluginTests(unittest.TestCase):
         adapter = self.load()
         for result in (None, {}, {'answer': 1}, {'answer': 'ok', 'session_id': []},
                        {'answer': 'ok', 'artifacts': []}, {'answer': 'ok', 'media_artifacts': {}},
-                       {'answer': 'ok', 'source_urls': [4]}):
+                       {'answer': 'ok', 'source_urls': [4]}, {'answer': 'ok', 'artifacts': {1: 'bad'}},
+                       {'answer': 'ok', 'extra': ({'token': 'must-not-bypass-redaction'},)}):
             instance.run = Mock(return_value=result)
             with self.subTest(result=result), self.assertRaises(HubError) as caught:
                 adapter.run({'prompt': 'x'}, threading.Event(), lambda *a: None)
@@ -138,6 +139,16 @@ class PluginTests(unittest.TestCase):
             adapter.run({'resume_session': 's1'}, threading.Event(), lambda *a: None)
         self.assertEqual(caught.exception.code, 'UNSUPPORTED_MODE')
         instance.run.assert_not_called()
+
+    def test_malformed_error_details_fail_at_plugin_boundary(self):
+        instance = Echo({}, PluginContext('a', self.root))
+        self.factory.side_effect = None
+        self.factory.return_value = instance
+        for error in (HubError('FAILED', 'failed', {'artifacts': {1: 'bad'}}), HubError([], 'bad code')):
+            instance.run = Mock(side_effect=error)
+            with self.subTest(error=error), self.assertRaises(HubError) as caught:
+                self.load().run({'prompt': 'x'}, threading.Event(), lambda *a: None)
+            self.assertEqual(caught.exception.code, 'PLUGIN_CONTRACT_ERROR')
 
     def test_unknown_enabled_agent_is_not_silently_dropped(self):
         (self.root / 'config.json').write_text(json.dumps({'agents': {'new-tool': {'kind': 'typo'}}}))
@@ -185,6 +196,26 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 1)
         self.assertEqual(json.loads(output.getvalue())['error']['code'], 'PLUGIN_NOT_FOUND')
         client.assert_not_called()
+
+    def test_non_json_plugin_result_becomes_terminal_and_releases_slot(self):
+        echo = Echo({}, PluginContext('assistant', self.root))
+        echo.run = Mock(return_value={'answer': 'ok', 'artifacts': {1: 'file.txt'}})
+        service = Service(self.root / 'data', {'assistant': ValidatedExecutor(echo, 'echo')})
+        try:
+            task = service.call('submit_task', dict(request_id='bad-result', agent='assistant',
+                                prompt='hello', cwd=str(self.root), mode='delegate'))
+            for _ in range(70):
+                result = service.call('get_result', {'task_id': task['id']})
+                if result['ready']:
+                    break
+                time.sleep(.03)
+            self.assertTrue(result['ready'], 'Malformed plugin results must not leave dead running tasks')
+            self.assertEqual(result['state'], 'failed')
+            self.assertEqual(result['error_code'], 'PLUGIN_CONTRACT_ERROR')
+            with service.lock:
+                self.assertNotIn(task['id'], service.active)
+        finally:
+            service.close()
 
 
 if __name__ == '__main__':

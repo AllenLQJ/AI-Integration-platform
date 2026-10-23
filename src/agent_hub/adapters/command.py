@@ -14,6 +14,7 @@ from ..processes import SpawnError, environment, run_process
 from ..review import strict_json
 
 SCHEMA = 'agent-hub.command.v1'
+MAX_RESPONSE_CHARS = 1024 * 1024
 _TOKEN = re.compile(r'\{([a-z_]+)\}')
 _TOKENS = {'request_file', 'prompt', 'workspace', 'session_id', 'mode'}
 _FIELDS = {'executable', 'args', 'resume_args', 'result_format', 'modes', 'env_from'}
@@ -97,9 +98,26 @@ class Command(Executor):
             args = self.resume_args if task.get('resume_session') else self.args
             # Single substitution pass: values are never interpreted as further templates.
             argv = [resolved] + [_TOKEN.sub(lambda match: values[match[1]], arg) for arg in args]
+            captured, size, oversized = [], 0, False
+            def capture(line):
+                nonlocal size, oversized
+                line = line.replace('\r\n', '\n')
+                if self.result_format == 'json':
+                    if not line.strip():
+                        return
+                    captured.clear()
+                    size = 0
+                    oversized = False
+                size += len(line)
+                if size > MAX_RESPONSE_CHARS:
+                    oversized = True
+                    captured.clear()
+                elif not oversized:
+                    captured.append(line)
             try:
                 code, stdout, stderr, logs = run_process(argv, task['workspace'], env, cancel,
-                    lambda: task['deadline'], log_dir, event, allow_hub_events=False, parse_cli_events=False)
+                    lambda: task['deadline'], log_dir, event, allow_hub_events=False,
+                    parse_cli_events=False, stdout_line=capture)
             except SpawnError as error:
                 raise HubError('AGENT_UNAVAILABLE', 'Command process could not start (' + type(error.cause).__name__ + ')') from None
             except HubError as error:
@@ -110,12 +128,14 @@ class Command(Executor):
             if code:
                 raise HubError('CLI_FAILED', 'Command exited unsuccessfully',
                                {'exit_code': code, 'artifacts': {'logs': logs}})
+            if oversized:
+                raise HubError('INVALID_RESULT', 'Command response exceeds 1 Mi characters', {'artifacts': {'logs': logs}})
+            original = ''.join(captured)
             if self.result_format == 'text':
-                result = {'answer': stdout.rstrip('\r\n')}
+                result = {'answer': original.rstrip('\r\n')}
             else:
                 try:
-                    lines = [line for line in stdout.splitlines() if line.strip()]
-                    result = strict_json(lines[-1]) if lines else None
+                    result = strict_json(original) if original.strip() else None
                     if not isinstance(result, dict) or set(result) - {'answer', 'session_id', 'source_urls'}:
                         raise ValueError('Unexpected response fields')
                     validate_result(result)

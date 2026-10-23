@@ -69,6 +69,24 @@ def _contract(message):
     raise HubError('PLUGIN_CONTRACT_ERROR', message)
 
 
+def _validate_json(value):
+    try:
+        json.dumps(value, allow_nan=False)
+    except (ValueError, TypeError, RecursionError):
+        _contract('Executor data must be finite, acyclic JSON')
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, dict):
+            if any(not isinstance(key, str) for key in item):
+                _contract('JSON object keys must be strings')
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+        elif item is not None and type(item) not in (str, bool, int, float):
+            _contract('Executor data must use JSON types (objects, arrays and scalar values)')
+
+
 def validate_result(result):
     if not isinstance(result, dict) or not isinstance(result.get('answer'), str):
         _contract('Executor result must be an object with string answer')
@@ -79,10 +97,7 @@ def validate_result(result):
             _contract(key + ' has invalid type')
     if any(not isinstance(url, str) for url in result.get('source_urls', [])):
         _contract('source_urls must contain strings')
-    try:
-        json.dumps(result, allow_nan=False)
-    except (ValueError, TypeError):
-        _contract('Executor result must be JSON serializable without NaN/Infinity')
+    _validate_json(result)
     return result
 
 
@@ -121,6 +136,7 @@ class ValidatedExecutor:
                 _contract(mode + ' requires an enforced no-write policy')
             if mode == 'text_only' and policy.get('allows_commands') is not False:
                 _contract('text_only requires commands disabled')
+            _validate_json(policy)
             self._permissions[mode] = dict(policy)
 
     def permission_policy(self, mode):
@@ -132,6 +148,7 @@ class ValidatedExecutor:
         result = self._executor.diagnose()
         if not isinstance(result, dict) or type(result.get('available')) is not bool:
             _contract('diagnose must return an object with boolean available')
+        _validate_json(result)
         return dict(result, plugin=self.plugin, plugin_api_version=API_VERSION,
                     capabilities=list(self.capabilities), remote_cancel=self.remote_cancel,
                     cancel_scope=self.cancel_scope,
@@ -140,7 +157,16 @@ class ValidatedExecutor:
     def run(self, task, cancel, event):
         if task.get('resume_session') and 'continue' not in self.capabilities:
             raise HubError('UNSUPPORTED_MODE', 'Executor does not support continuation')
-        return validate_result(self._executor.run(task, cancel, event))
+        try:
+            result = self._executor.run(task, cancel, event)
+        except HubError as error:
+            if not isinstance(error.code, str) or not error.code:
+                _contract('Executor error code must be a nonempty string')
+            if not isinstance(error.details, dict) or ('artifacts' in error.details and not isinstance(error.details['artifacts'], dict)):
+                _contract('Executor error details must be an object with object artifacts')
+            _validate_json(error.details)
+            raise
+        return validate_result(result)
 
 
 def load_plugin(name, item, root):
