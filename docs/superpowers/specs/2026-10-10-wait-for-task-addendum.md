@@ -3,7 +3,7 @@
 日期：2026-10-10
 状态：用户已于 2026-10-10 确认实施；开发 worktree 实现与验收完成；共享后台已按用户授权重启，新 MCP 会话已验证八个工具及真实 Codex 冒烟
 依据：`2026-10-09-agent-hub-design.md`（下称"主设计"）、`../plans/2026-10-09-agent-hub.md`
-代码基线：`C:\Users\your-name\.codex\worktrees\agent-hub-v1\AI-Integration-platform`，HEAD `3726926`
+代码基线：`%USERPROFILE%\.codex\worktrees\agent-hub-v1\AI-Integration-platform`，HEAD `3726926`
 
 本增补只解决一个问题：**总控如何等待任务结果，且这个机制在更换总控平台后仍然成立。** 不改动既有 7 个工具的语义，不改状态机。
 
@@ -143,6 +143,6 @@ TERMINAL = frozenset({'succeeded', 'failed', 'timed_out', 'cancelled',
 - 主设计：`docs/superpowers/specs/2026-10-09-agent-hub-design.md`
 - 实施计划：`docs/superpowers/plans/2026-10-09-agent-hub.md`
 - 开发前验证：`docs/2026-10-09-preflight-results.md`
-- Hub 源码与验收记录：`C:\Users\your-name\.codex\worktrees\agent-hub-v1\AI-Integration-platform`
-- 本次故障任务：`task_id 730556f90162467f9ccb8cc0fec73d38`，日志 `C:\Users\your-name\.agent-hub\logs\730556f90162467f9ccb8cc0fec73d38\`
+- Hub 源码与验收记录：`%USERPROFILE%\.codex\worktrees\agent-hub-v1\AI-Integration-platform`
+- 本次故障任务：`task_id 730556f90162467f9ccb8cc0fec73d38`，日志 `%USERPROFILE%\.agent-hub\logs\730556f90162467f9ccb8cc0fec73d38\`
 - 新增等待工具验收：`docs/2026-10-10-wait-for-task-validation.md`，完整回归 62/62；真实 Codex/Claude 总控调用已验证，执行器为模拟 fixture；DeepSeek Harness 未验收。

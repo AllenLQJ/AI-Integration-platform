@@ -2,8 +2,8 @@
 
 > 2026-10-10 发布准备复验：当前源码完整自动测试再次通过 62/62（53.817 秒），pip check 与差异格式检查通过。下文 67.212 秒为原功能验收结果，真实账号记录本轮未重跑。文档同步与主线集成已完成，用户已明确授权上传。
 
-日期：2026-10-10，(timezone omitted)。
-源码：`C:\Users\your-name\.codex\worktrees\agent-hub-v1\AI-Integration-platform`，分支 `feature/agent-hub-v1`，HEAD `3726926` 加当前未提交修改。原有修改保留；未合并主分支、未自动重启共享后台。
+日期：2026-10-10。
+源码：`%USERPROFILE%\.codex\worktrees\agent-hub-v1\AI-Integration-platform`，分支 `feature/agent-hub-v1`，HEAD `3726926` 加当前未提交修改。原有修改保留；未合并主分支、未自动重启共享后台。
 
 ## 实际行为
 
@@ -45,10 +45,10 @@ git diff --check
 
 最终私有证据：
 
-- `C:\Users\your-name\.agent-hub\wait-controller-acceptance-20261010-153437\codex\evidence.json`
-- `C:\Users\your-name\.agent-hub\wait-controller-acceptance-20261010-153437\claude\evidence.json`
+- `%USERPROFILE%\.agent-hub\wait-controller-acceptance-20261010-153437\codex\evidence.json`
+- `%USERPROFILE%\.agent-hub\wait-controller-acceptance-20261010-153437\claude\evidence.json`
 
-上次修改严格类型前的验收证据另存于 `wait-controller-acceptance-20261010-073035`，目录时间是执行主机 UTC；最终脚本已使用 (timezone omitted) 时间命名。上述最终证据对应本次修复后的代码，不依赖历史成功记录。
+上次修改严格类型前的验收证据另存于 `wait-controller-acceptance-20261010-073035`，目录时间是执行主机 UTC；最终脚本已使用本地时间命名。上述最终证据对应本次修复后的代码，不依赖历史成功记录。
 
 ## 重启与共享 Hub 冒烟测试
 

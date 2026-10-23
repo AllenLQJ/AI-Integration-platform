@@ -22,7 +22,7 @@
     "muse": {
       "executable": "D:/path/to/muse-mcp/.venv/Scripts/python.exe",
       "args": ["-m", "muse_mcp"],
-      "env": {"HTTPS_PROXY": "http://127.0.0.1:7897"}
+      "env": {"HTTPS_PROXY": "http://127.0.0.1:PORT"}
     }
   }
 }
