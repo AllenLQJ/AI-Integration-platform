@@ -94,6 +94,10 @@ class Service:
                     if tool == 'switch_executor':
                         return self.switch_executor(**args)
                     return self.cancel(**args)
+        if tool == 'list_agents':
+            with self.lock:
+                adapters = list(self.adapters.items())
+            return {name: adapter.diagnose() for name, adapter in adapters}
         with self.lock:
             if tool == 'get_work_item':
                 return self.verification.work_item(**arguments)
@@ -117,8 +121,6 @@ class Service:
                     args['target_host_id'] = node['host_id']
                     args['target_transport'] = node['transport']
                 return self.nodes.artifact(**args)
-            if tool == 'list_agents':
-                return {name: adapter.diagnose() for name, adapter in self.adapters.items()}
             if tool == 'submit_task':
                 allowed = {'request_id', 'agent', 'prompt', 'cwd', 'mode', 'timeout_seconds', 'context', 'acceptance', 'node_id'}
                 if set(arguments) - allowed:
@@ -222,8 +224,7 @@ class Service:
         if not Path(cwd).is_dir():
             raise HubError('INVALID_WORKSPACE', '目录不存在')
         resolved = str(Path(cwd).resolve())
-        if any(t.get('workspace_quarantined') and t.get('workspace', t['cwd']) == resolved
-               for t in self.store.list()):
+        if any(t.get('workspace', t['cwd']) == resolved for t in self.store.list_quarantined()):
             raise HubError('WORKSPACE_UNCERTAIN', '此工作区存在未核对的旧执行状态')
         task = self.store.create(request_id, spec)
         policy = adapter.permission_policy(mode) if hasattr(adapter, 'permission_policy') else self.permissions(task)
@@ -486,14 +487,14 @@ class Service:
                     from collections import Counter
                     used_agents = Counter(a['agent'] for a in self.active.values())
                     used_workspaces = {a['workspace'] for a in self.active.values()}
+                    quarantined = {os.path.normcase(str(Path(t.get('workspace') or t['cwd']).resolve()))
+                                   for t in self.store.list_quarantined()}
                     for task in self.store.list({'queued'}):
                         if len(self.active) >= self.concurrency:
                             break
                         actual_workspace = task.get('workspace') or (
                             str(self.workspaces.root / task['id']) if task['mode'] == 'edit_worktree' else task['cwd'])
                         workspace_key = os.path.normcase(str(Path(actual_workspace).resolve()))
-                        quarantined = {os.path.normcase(str(Path(t.get('workspace') or t['cwd']).resolve()))
-                                       for t in self.store.list() if t.get('workspace_quarantined')}
                         if workspace_key in quarantined:
                             self.store.update(task['id'], workspace=actual_workspace, workspace_quarantined=True)
                             self.store.finish(task['id'], 'interrupted', {

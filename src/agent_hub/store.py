@@ -23,6 +23,7 @@ class Store:
                     seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
                     kind TEXT NOT NULL, data TEXT NOT NULL, timestamp REAL NOT NULL);
                 CREATE INDEX IF NOT EXISTS events_task ON events(task_id, seq);
+                CREATE INDEX IF NOT EXISTS tasks_state ON tasks(state);
             ''')
 
     @contextmanager
@@ -72,8 +73,25 @@ class Store:
 
     def list(self, states=None):
         with self.connection() as db:
-            rows = db.execute('SELECT * FROM tasks ORDER BY created').fetchall()
-            return [self.decode(r) for r in rows if states is None or r['state'] in states]
+            if states is None:
+                rows = db.execute('SELECT * FROM tasks ORDER BY created').fetchall()
+            else:
+                wanted = tuple(states)
+                if not wanted:
+                    return []
+                placeholders = ','.join('?' * len(wanted))
+                rows = db.execute(
+                    f'SELECT * FROM tasks WHERE state IN ({placeholders}) ORDER BY created',
+                    wanted).fetchall()
+            return [self.decode(r) for r in rows]
+
+    def list_quarantined(self):
+        """Tasks with workspace_quarantined set in persisted JSON data."""
+        with self.connection() as db:
+            rows = db.execute(
+                "SELECT * FROM tasks WHERE json_extract(data, '$.workspace_quarantined') = 1 "
+                "ORDER BY created").fetchall()
+            return [self.decode(r) for r in rows]
 
     def update(self, task_id, **fields):
         with self.connection() as db:
