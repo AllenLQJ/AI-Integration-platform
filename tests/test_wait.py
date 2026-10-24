@@ -154,9 +154,10 @@ class WaitTests(unittest.TestCase):
         thread.start()
         (self.root / 'connection.json').write_text(json.dumps({
             'url': 'http://127.0.0.1:' + str(server.server_port), 'token': 'test-private-value'}))
+        from hub_fixtures import with_work_item
         client = Client(self.root)
-        task = client.call('submit_task', dict(request_id='wait-http', agent='fake', prompt='wait',
-            cwd=str(self.root), mode='read_only'))
+        task = client.call('submit_task', with_work_item(self.service, dict(request_id='wait-http', agent='fake', prompt='wait',
+            cwd=str(self.root), mode='read_only')))
         try:
             with ThreadPoolExecutor(1) as pool:
                 future = pool.submit(Client(self.root).call, 'wait_for_task', {'task_id': task['id']})
@@ -164,8 +165,8 @@ class WaitTests(unittest.TestCase):
                 self.assertFalse(future.done())
                 start = time.monotonic()
                 current = client.call('get_task', {'task_id': task['id']})
-                other = client.call('submit_task', dict(request_id='other-http', agent='fake',
-                    prompt='hello', cwd=str(self.root), mode='read_only'))
+                other = client.call('submit_task', with_work_item(self.service, dict(request_id='other-http', agent='fake',
+                    prompt='hello', cwd=str(self.root), mode='read_only')))
                 client.call('cancel_task', {'task_id': task['id']})
                 self.assertLess(time.monotonic() - start, 1)
                 self.assertEqual(current['state'], 'running')

@@ -43,8 +43,10 @@ for device in ('device-one', 'device-two'):
     try:
         assert set(service.call('list_agents', {})) == {'writer', 'second', 'bridge'}
         for name, prefix in (('writer', 'hello:'), ('second', 'second:'), ('bridge', '')):
-            task = service.call('submit_task', dict(request_id=name, agent=name, prompt='中文 payload', cwd=str(work), mode='delegate'))
-            assert service.call('submit_task', dict(request_id=name, agent=name, prompt='中文 payload', cwd=str(work), mode='delegate'))['id'] == task['id']
+            wid = service.call('create_work_item', dict(request_id='wi:'+name, title=name))['work_item_id']
+            args = dict(request_id=name, agent=name, prompt='中文 payload', cwd=str(work), mode='delegate', work_item_id=wid)
+            task = service.call('submit_task', args)
+            assert service.call('submit_task', args)['id'] == task['id']
             first = wait(service, task)
             assert first['answer'] == prefix + '中文 payload', first
             child = service.call('continue_task', dict(request_id=name+'-next', task_id=task['id'], prompt='next'))

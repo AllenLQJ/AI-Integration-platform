@@ -16,46 +16,65 @@ agent-hub dashboard
 
 ## 阅读任务链
 
-- 左侧每项是一条任务链。只有明确记录的 `parent_id`（续接或切换）与 `review_of.task_id`（审查）会合并。独立提交的任务保持独立，不根据相似标题、任务编号顺序或执行器名称猜测关联。
-- 关键词、执行器和执行状态共同匹配某一次执行；列表返回该执行所在的整条任务链。分页单位是任务链。
-- 图中每个节点代表一次执行。同一 Agent 参与多轮时会出现多个节点，连线标注真实关系。可横向滚动、缩放与复位，点击节点定位协作对话并查看该次执行的详情。
-- 协作对话按时间汇总链内输入、已记录的过程消息和最终结果，保留执行器、来源与原任务编号。不跨执行删除相同文本。
-- 执行事件属于当前选中的节点。切换节点会更换事件游标，不会把不同执行的事件混在一起。
-- 链标题来自根任务；状态来自最近的实施执行，进行中的执行数量另行显示。审查任务自身成功不代表实施任务验收通过，详情分别显示执行状态与验收状态。
-- 图和对话会自动刷新，新续接记录无需重新打开页面。
+- 左侧每项是一条协作工作链。优先按显式 `work_item_id` 成员聚合；同时兼容旧 `parent_id`（续接/切换）与 `review_of.task_id`（审查）连线。独立提交且未关联的任务保持独立，不根据相似标题、cwd 或 session 猜测。
+- 关键词、执行器和执行状态共同匹配某一次执行；列表返回该执行所在的整条工作链。分页单位是工作链。
+- 图中每个节点代表一次执行。审核/返修连线清晰；可横向滚动、缩放与复位，点击节点定位协作对话并查看该次执行的详情。
+- 中栏统一时间线按真实时间混排模型消息与已观测/已上报的读文件、命令、测试、变更等操作。`timeline: []` 为空数组时权威，不回退 messages。每条完整卡片可展开/折叠；顶部「全部展开/全部折叠（已载入）」只作用于当前链已载入记录。
+- 短消息（≤420 字符）默认展开；长消息与操作详情默认折叠。刷新、内容更新、开始→结束状态替换会保留折叠选择；操作卡片 ID 由 task+真实 operation_id 稳定，不因事件窗口裁掉 started 而改名。
+- 每条记录标明 provenance：执行器观测 / 总控上报 / 兼容摘要。仅有总控上报消息不会伪装成 CLI 工具观测；缺 ID 工具不会因存在其它 activity 而丢失。
+- 兼容旧 `messages` 字段；新服务同时返回 `timeline` 与 `capture_coverage`。
+- 执行事件属于当前选中的节点。
+- 工作项标题/统计/最近主执行状态来自非审核实施节点，不被审核失败覆盖。`interrupted` / `delivery_unknown` 显示为「连接中断／远端状态未知」，不是「执行失败/已停止」。只读看板不会代为 reconcile；管理端沿原 task 调用 `reconcile_task`。
+- 图和时间线会自动刷新，新续接记录无需重新打开页面。
+
+## 工作项与派发
+
+公开 MCP：先 `create_work_item`（默认标题「工作项」），再 `submit_task(work_item_id=…)`；审核/返修还须 `related_task_id`。缺失 `work_item_id` 返回 `WORK_ITEM_REQUIRED`，不会静默建根。历史任务用管理认证 `link_task` 补关联（只改分组元数据）。Python `Client.work_item(id)` 可绑定后自动携带。`work_item_id` 独立于 Verification.root_id / acceptance attempt。已打开的 MCP 客户端需刷新工具列表。
+
+可选 `create_work_item.acceptance`：`Client.software_dashboard_acceptance()`（tests/ui/review 三条 required `content_review`，由总控以已登记产物写 `record_external_verification`）或 `Client.conversation_acceptance()`（`policy=no_extra`）。开发/返修默认继承；审核任务不继承。`continue_task.acceptance` 仅覆盖新子任务。看板：`not_requested` 显示为「未设置额外验收」；`no_extra` 为「已完成／无需额外验收」；无规则为「未配置验收」。执行成功≠独立验收通过；缺证据不伪造历史 passed。旧事件缺 role 时标题为「Cursor · 任务消息」一类友好标题（非认证角色）。
+
+## 外部活动上报
+
+总控或执行桥可通过本机管理认证调用 MCP/CLI `record_activity`（只追加活动，不执行命令、不改任务状态/updated/验收）。若工作项已有 controller 租约，须提供匹配的 `controller_id`/`controller_epoch`。浏览器只读 cookie 不能调用。请求按独立收据表原子幂等；相同键不同内容冲突。活动 JSON ≤64KiB，输出摘录合计 ≤16KiB（先脱敏再按 UTF-8 合计限额），路径为工作区相对显示。
+
+上报入口本身不会自动截获 Codex 桌面或 Grok/Muse 未公开的内部工具参数；那些来源需要总控/hook/桥接实际调用上报，或上游已提供结构化事件。
 
 ## 数据与限制
 
-没有明确记录的 Agent 派发关系不做推测。第一版不提供手动归组、创建关联、派发、取消、总控接管或任意文件下载，不改变执行器协议或任务租约。
+没有明确记录的 Agent 派发关系不做推测。看板只读：不提供派发、取消、总控接管或任意文件下载。管理端 `link_task` / `reconcile_task` 不在浏览器 cookie 会话中开放。command v1 仍禁止把任意 stdout 解析为管理事件。
 
-每条链的图最多展示 200 次执行，对话最多展示最新 500 条消息、合计 100 万文本字符。单次执行仍沿用原有过程消息和文本长度限制。达到上限、缺失关联或出现循环记录时，页面提示数据不完整或关联异常；不会补造缺失节点或完整聊天历史。
+每条链的图最多展示 200 次执行；时间线（消息+操作，含嵌套操作字段）最多 500 条、合计 100 万显示字符。达到上限、缺失关联或出现循环记录时，页面提示数据不完整；不会补造缺失节点或完整聊天历史。「全部」仅指已载入记录。
 
-过程消息可能被执行器截断；自定义插件或命令执行器可能只返回结果。执行完成不等于独立验收通过。长链的较早消息可能未显示，原始任务和事件仍保存在 Hub。
+过程消息可能被执行器截断；自定义插件或命令执行器可能只返回结果。执行完成不等于独立验收通过。不保存完整读取文件内容、环境变量或凭据。
 
 ## 接口与边界
 
 展示接口位于 `/dashboard/api/v1/`：
 
 - `chains?limit=30&offset=0&q=&state=&agent=`：分页任务链列表。
-- `chains/{member_id}`：链概要、执行节点、类型化连线、合并消息和截断/异常提示；可用链内任一任务编号查询。
-- `tasks`、`agents`、`tasks/{id}`、`tasks/{id}/events`：保留原有单次执行接口。
+- `chains/{member_id}`：链概要、执行节点、类型化连线、`messages`（兼容）、`timeline`、`capture_coverage` 和截断/异常提示；可用链内任一任务编号查询。
+- `tasks`、`agents`、`tasks/{id}`、`tasks/{id}/events`：保留原有单次执行接口；单任务详情同样含 `timeline`。
 
-接口使用独立只读会话，不接受该会话调用管理 RPC。服务仅监听回环地址；跨设备安装指各设备独立运行，不表示公开远程管理接口。
+接口使用独立只读会话，不接受该会话调用管理 RPC。服务仅监听回环地址。
 
-前端 `api.mjs` 处理传输和会话，`state.mjs` 处理请求序列与事件游标，`graph.mjs` 处理关系图，页面与样式分别放在 `app.mjs`、`style.css`。后端 `dashboard_chains.py` 从已有任务关系生成展示投影，更换前端框架不需要修改执行器协议。
+前端 `api.mjs` 处理传输和会话，`state.mjs` 处理请求序列与事件游标，`graph.mjs` 处理关系图，`timeline.mjs` 处理折叠状态，页面与样式分别放在 `app.mjs`、`style.css`。后端 `dashboard_timeline.py` / `dashboard_chains.py` 生成投影。
 
-任务链划分需扫描任务关系元数据，适合当前本机工作台。它不会在列表请求中读取全部任务结果；后续如果历史量显著增长，可在保持 HTTP 契约的前提下增加关系索引或缓存。
-
-服务端展示投影显式选择字段；账号、设备配置、任务数据库和日志仍在各设备自己的数据目录。任务文本和原始事件属于用户数据，即使经过脱敏，也应只给有权查看本机任务的人访问。
+合成演示（非真实抓取）：`python scripts/synthetic_collaboration_timeline.py`。
 
 ## 开发检查
 
 ```sh
-python -m unittest discover -s tests
+python -m unittest discover -s tests -p test_activity.py -v
+python -m unittest discover -s tests -p test_stream_events.py -v
+python -m unittest discover -s tests -p test_dashboard_timeline.py -v
+python -m unittest discover -s tests -p 'test_dashboard*.py' -v
+python -m unittest discover -s tests -p test_cursor_grokbot.py -v
+python -m unittest discover -s tests -p test_muse_timeline.py -v
 node --test tests/frontend/*.mjs
+python -m unittest discover -s tests
 python -m pip wheel . --no-deps
 ```
 
-前端不依赖第三方 CDN、字体、构建工具或品牌固定名单。修改展示契约时同步检查 API 与页面测试；打包时确认静态文件包含在 wheel 内。
+前端不依赖第三方 CDN、字体、构建工具或品牌固定名单。修改展示契约时同步检查 API 与页面测试；打包时确认静态文件（含 `timeline.mjs`）包含在 wheel 内。
 
-首版验证记录见 [初版验收](2026-10-24-dashboard-validation.md)，任务链改版见 [任务链验收](2026-10-24-task-chain-validation.md)。
+首版验证记录见 [初版验收](2026-10-24-dashboard-validation.md)，任务链改版见 [任务链验收](2026-10-24-task-chain-validation.md)，统一时间线见 [协作时间线验收](2026-10-24-collaboration-timeline-validation.md)。

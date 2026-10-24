@@ -72,8 +72,10 @@ test('real app safely renders and recovers initialization while polling preserve
     function walk(element) { rendered.push(element); for (const child of element.children) walk(child); }
     walk(nodes.get('content'));
     assert.ok(rendered.some(x=>x.textContent === payload));
-    assert.ok(rendered.some(x=>x.textContent === '来源身份未记录'));
+    assert.ok(rendered.some(x=>x.textContent === 'custom-executor · 任务消息'));
+    assert.ok(!rendered.some(x=>x.textContent === '来源身份未记录'));
     assert.ok(rendered.some(x=>x.textContent === '可能已截断'));
+    assert.ok(rendered.some(x=>x.textContent === '历史记录未保存发言角色'));
     assert.ok(!rendered.some(x=>x.tagName === 'img'));
     assert.ok(timers.some(x=>x.delay === 2500));
     const messageNode = nodes.get('content').children[0];

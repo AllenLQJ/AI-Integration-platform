@@ -290,8 +290,7 @@ class GrokBot:
             cursor = new_cursor
         baseline = int(cursor)
         marker = '[HUB-END:' + task['id'] + ']'
-        prompt = task['prompt'] + '\n\n这是 Hub 委派的云端任务。本机工作区未同步，请勿假设可读取 Mac 路径。' + \
-            '\n完成全部工作后，在最终发给用户的回复最后单独写一行：' + marker
+        prompt = self.dispatched_prompt(task)
         self.checkpoint(task, cancel)
         try:
             self.reserve(task, sid)
@@ -306,6 +305,7 @@ class GrokBot:
         event('accepted', {'baseline': baseline})
         self.checkpoint(task, cancel)
         replies = {}
+        progress = {}
         idle_count = 0
         while True:
             data = self.call('GET', path + '/entries?afterUpdatedSeq=' + cursor, None, task, cancel, accepted=True)
@@ -314,10 +314,23 @@ class GrokBot:
                 raise HubError('REMOTE_STATE_UNKNOWN', 'Grok Bot 回复游标异常，保留待核对状态')
             for entry in entries:
                 text = entry.get('text')
+                # Only public assistant send-message after baseline; ignore thought and foreign roles.
                 if (int(entry['updatedSeq']) > baseline and entry.get('kind') == 'send-message'
-                        and entry.get('role') in (None, 'assistant') and isinstance(text, str)
-                        and text.rstrip().endswith(marker)):
-                    replies[int(entry['seq'])] = text
+                        and entry.get('role') in (None, 'assistant') and isinstance(text, str)):
+                    seq = int(entry['seq'])
+                    revision = int(entry['updatedSeq'])
+                    prior = progress.get(seq)
+                    if prior is None or revision > prior:
+                        progress[seq] = revision
+                        event('message', {
+                            'message': text[:1000],
+                            'role': 'assistant',
+                            'provider_message_id': str(seq),
+                            'provider_revision': revision,
+                            'truncated': len(text) > 1000,
+                        })
+                    if text.rstrip().endswith(marker):
+                        replies[seq] = text
             cursor = new_cursor
             idle_count = idle_count + 1 if not entries and turn['idle'] and not turn['inFlight'] and turn['queued'] == 0 else 0
             if replies and idle_count >= 4:
@@ -329,3 +342,216 @@ class GrokBot:
                         'warnings': ['Grok Bot 在云端执行；本机 cwd 未同步，取消不回滚已发生操作']}
             self.checkpoint(task, cancel)
             cancel.wait(.5)
+
+    def dispatched_prompt(self, task):
+        """Same prompt text used by execute_task / cancel_remote for ownership matching."""
+        marker = '[HUB-END:' + task['id'] + ']'
+        return (task['prompt'] + '\n\n这是 Hub 委派的云端任务。本机工作区未同步，请勿假设可读取 Mac 路径。'
+                + '\n完成全部工作后，在最终发给用户的回复最后单独写一行：' + marker)
+
+    def _reconcile_get(self, path, cursor, timeout):
+        """GET-only; convert transport/HTTP/JSON failures to HubError for network_unknown."""
+        try:
+            data = self.request('GET', path + '/entries?afterUpdatedSeq=' + cursor, None, timeout)
+            return self.page(data, accepted=True)
+        except HubError:
+            raise
+        except (httpx.HTTPStatusError, httpx.RequestError, OSError, ValueError, TypeError, KeyError) as error:
+            raise HubError('REMOTE_STATE_UNKNOWN', 'Grok Bot 核对 GET 失败: ' + type(error).__name__) from error
+
+    def _reconcile_resume(self, task, sid, baseline, marker):
+        """Load prior probe progress only when session/baseline/marker still match this task."""
+        progress = task.get('reconcile_progress')
+        if not isinstance(progress, dict):
+            return str(baseline), 0, {}, False
+        if (progress.get('session_id') != sid or progress.get('baseline') != baseline
+                or progress.get('marker') != marker):
+            return str(baseline), 0, {}, False
+        cursor = progress.get('cursor')
+        idle = progress.get('idle_count')
+        if not isinstance(cursor, str) or not re.fullmatch(r'-?\d+', cursor):
+            return str(baseline), 0, {}, False
+        if int(cursor) < baseline:
+            return str(baseline), 0, {}, False
+        if type(idle) is not int or not 0 <= idle <= 10000:
+            idle = 0
+        replies = {}
+        answer = progress.get('answer')
+        reply_seq = progress.get('reply_seq')
+        if (isinstance(answer, str) and answer.rstrip().endswith(marker)
+                and type(reply_seq) is int):
+            replies[reply_seq] = answer
+        elif not progress.get('own_marker_seen'):
+            idle = 0
+        return cursor, idle, replies, bool(progress.get('own_message_observed'))
+
+    def reconcile(self, task, *, timeout_seconds=24):
+        """GET-only recovery using persisted session/baseline/marker. Never POST.
+
+        Pure observation: does not delete local reservation locks (Service releases
+        after a validated complete transaction under a live lease). Progress
+        (cursor/idle/marker answer) resumes across calls when ownership matches.
+        """
+        sid = task.get('session_id')
+        baseline = task.get('baseline')
+        if not isinstance(sid, str) or not sid:
+            raise HubError('INVALID_ARGUMENT', '核对需要已持久化的 session_id')
+        if type(baseline) is not int:
+            raise HubError('INVALID_ARGUMENT', '核对需要已持久化的 baseline')
+        if task.get('delivery') != 'accepted':
+            raise HubError('INVALID_STATE', '仅 delivery=accepted 的任务可核对')
+        marker = '[HUB-END:' + task['id'] + ']'
+        prompt = self.dispatched_prompt(task)
+        path = '/v0/grokbot/sessions/' + sid
+        deadline = time.monotonic() + max(1.0, min(float(timeout_seconds), 30.0))
+        # Refuse if a foreign lock is present; never delete locks here.
+        if self.state_file.exists():
+            try:
+                owned = json.loads(self.state_file.read_text(encoding='utf-8'))
+            except (OSError, ValueError, TypeError):
+                owned = {}
+            if (owned.get('task_id') not in (None, task['id'])
+                    or owned.get('session_id') not in (None, sid)
+                    or owned.get('bot_name') not in (None, self.name)):
+                raise HubError('REMOTE_STATE_UNKNOWN', '专用 Bot 锁属于其他任务；禁止为重连删除或重发')
+        cursor, idle_count, replies, own_message = self._reconcile_resume(task, sid, baseline, marker)
+        foreign_user = False
+        error_marker = False
+        latest_turn = None
+
+        def progress_snapshot():
+            payload = {
+                'session_id': sid, 'baseline': baseline, 'marker': marker,
+                'cursor': cursor, 'idle_count': idle_count,
+                'own_marker_seen': bool(replies),
+                'own_message_observed': own_message,
+            }
+            if replies:
+                payload['reply_seq'] = max(replies)
+                payload['answer'] = replies[max(replies)]
+            return payload
+
+        while time.monotonic() < deadline:
+            remaining = max(0.1, deadline - time.monotonic())
+            try:
+                entries, new_cursor, turn = self._reconcile_get(path, cursor, min(10.0, remaining))
+            except HubError as error:
+                return {
+                    'status': 'network_unknown',
+                    'remote_observation': '远端状态未知',
+                    'error_code': error.code,
+                    'error': str(error),
+                    'session_id': sid,
+                    'baseline': baseline,
+                    'own_message_observed': own_message,
+                    'own_marker_seen': bool(replies),
+                    'progress': progress_snapshot(),
+                    'observed_at': time.time(),
+                }
+            if int(new_cursor) < int(cursor) or (entries and int(new_cursor) <= int(cursor)):
+                return {
+                    'status': 'network_unknown',
+                    'remote_observation': '远端状态未知',
+                    'error_code': 'REMOTE_STATE_UNKNOWN',
+                    'error': 'Grok Bot 回复游标异常',
+                    'session_id': sid,
+                    'baseline': baseline,
+                    'own_message_observed': own_message,
+                    'own_marker_seen': bool(replies),
+                    # Do not advance progress on cursor anomalies.
+                    'observed_at': time.time(),
+                }
+            for entry in entries:
+                seq_u = int(entry['updatedSeq'])
+                if seq_u <= baseline:
+                    continue
+                # Same ownership rules as cancel_remote: own user prompt once; any other user is foreign.
+                if entry.get('role') == 'user' and entry.get('kind') == 'message':
+                    text = entry.get('text')
+                    if (not own_message and isinstance(text, str) and text == prompt):
+                        own_message = True
+                    else:
+                        foreign_user = True
+                text = entry.get('text')
+                if (entry.get('kind') == 'send-message' and entry.get('role') in (None, 'assistant')
+                        and isinstance(text, str)):
+                    if text.rstrip().endswith(marker):
+                        replies[int(entry['seq'])] = text
+                    elif 'HUB-END:' in text and not text.rstrip().endswith(marker):
+                        error_marker = True
+            cursor = new_cursor
+            latest_turn = turn
+            # Attribution before busy/complete decisions.
+            if foreign_user or error_marker:
+                return {
+                    'status': 'ambiguous',
+                    'remote_observation': '远端出现其他消息或非本任务结束标记',
+                    'session_id': sid,
+                    'baseline': baseline,
+                    'foreign_user': foreign_user,
+                    'foreign_marker': error_marker,
+                    'own_message_observed': own_message,
+                    'own_marker_seen': bool(replies),
+                    'observed_at': time.time(),
+                }
+            busy = turn['inFlight'] or not turn['idle'] or turn['queued'] > 0
+            idle_count = idle_count + 1 if not entries and not busy else 0
+            if busy:
+                return {
+                    'status': 'remote_running',
+                    'remote_observation': '远端仍在运行',
+                    'session_id': sid,
+                    'baseline': baseline,
+                    'own_message_observed': own_message,
+                    'own_marker_seen': bool(replies),
+                    'progress': progress_snapshot(),
+                    'evidence': {
+                        'latest_updated_seq': cursor,
+                        'inFlight': turn['inFlight'],
+                        'idle': turn['idle'],
+                        'queued': turn['queued'],
+                        'own_message_observed': own_message,
+                        'own_marker_seen': bool(replies),
+                    },
+                    'observed_at': time.time(),
+                }
+            # Match execute_task: marker + stable idle for 4 polls; idle alone is never enough.
+            if replies and idle_count >= 4:
+                return {
+                    'status': 'completed',
+                    'remote_observation': '远端已完成',
+                    'answer': replies[max(replies)],
+                    'session_id': sid,
+                    'baseline': baseline,
+                    'completion_evidence': {
+                        'reply_seq': max(replies), 'latest_updated_seq': cursor,
+                        'marker': marker, 'idle_polls': idle_count,
+                        'own_message_observed': own_message,
+                        'turn_idle': latest_turn['idle'] if latest_turn else None,
+                        'turn_in_flight': latest_turn['inFlight'] if latest_turn else None,
+                    },
+                    'observed_at': time.time(),
+                    'warnings': ['经由 reconcile_task GET 核对回收；未 POST 新消息'],
+                }
+            time.sleep(min(0.35, max(0, deadline - time.monotonic())))
+        if replies:
+            return {
+                'status': 'network_unknown',
+                'remote_observation': '见到本任务结束标记但 idle 尚未稳定',
+                'session_id': sid,
+                'baseline': baseline,
+                'own_message_observed': own_message,
+                'own_marker_seen': True,
+                'progress': progress_snapshot(),
+                'observed_at': time.time(),
+            }
+        return {
+            'status': 'network_unknown',
+            'remote_observation': '核对超时；远端状态仍未知',
+            'session_id': sid,
+            'baseline': baseline,
+            'own_message_observed': own_message,
+            'own_marker_seen': bool(replies),
+            'progress': progress_snapshot(),
+            'observed_at': time.time(),
+        }

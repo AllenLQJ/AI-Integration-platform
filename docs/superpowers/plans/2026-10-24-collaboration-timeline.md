@@ -88,4 +88,12 @@
 
 ## Self-review
 
+### 后续集成检查
+
+- [x] 补稳定 work_item_id、显式审核/返修关系、历史关联及并发幂等测试。
+- [x] 补 GET-only Grok 原任务恢复、崩溃落盘顺序、进度持久化和条件状态文案。
+- [x] 补友好身份标题、普通对话策略、测试/页面/独立审核验收证据展示。
+- [x] 总控复现并修复静态模块白名单与测试夹具；新增本地依赖真实 HTTP 检查及网关回归。
+- [ ] 最终完整 Python、前端、浏览器、wheel 验证及 Grok 复审；通过后填写真实计数，保留平台跳过与未接入来源限制。
+
 Tasks 1-3 cover capture/auth/projection and budgets; Task 4 covers all fold and compatibility requirements; Task 5 covers portable docs, demo and full validation; Task 6 preserves requested independent reviewer. All five review focus classes map to explicit tests. Concrete internal names above are proposed interfaces; Cursor may make small coherent adjustments when source evidence requires, documenting them without changing the approved behavior.
