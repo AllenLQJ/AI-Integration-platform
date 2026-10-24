@@ -487,9 +487,14 @@ class Service:
                     from collections import Counter
                     used_agents = Counter(a['agent'] for a in self.active.values())
                     used_workspaces = {a['workspace'] for a in self.active.values()}
-                    quarantined = {os.path.normcase(str(Path(t.get('workspace') or t['cwd']).resolve()))
-                                   for t in self.store.list_quarantined()}
-                    for task in self.store.list({'queued'}):
+                    queued = self.store.list({'queued'})
+                    # Skip quarantine lookup when idle or concurrency is already full.
+                    quarantined = set()
+                    if queued and len(self.active) < self.concurrency:
+                        quarantined = {
+                            os.path.normcase(str(Path(t.get('workspace') or t['cwd']).resolve()))
+                            for t in self.store.list_quarantined()}
+                    for task in queued:
                         if len(self.active) >= self.concurrency:
                             break
                         actual_workspace = task.get('workspace') or (

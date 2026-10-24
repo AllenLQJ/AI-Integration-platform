@@ -1,11 +1,15 @@
-﻿import subprocess
+import subprocess
 from pathlib import Path
 from .models import HubError
 
 # Total UTF-8 budget for edit_worktree review payload (diff + untracked excerpts).
+# Boundary: artifact_omitted path list / metadata is NOT counted against this budget;
+# only diff text and untracked file body excerpts are. The result JSON as a whole is not capped.
 MAX_ARTIFACT_BYTES = 1024 * 1024
 _READ_CHUNK = 64 * 1024
 _SINGLE_FILE_LIMIT = 1024 * 1024
+_STDERR_LIMIT = 64 * 1024
+_DIFF_READ_TIMEOUT = 30
 
 
 def git(cwd, *args):
@@ -47,41 +51,142 @@ class Workspaces:
                 'excluded_untracked_files': excluded}
 
     def _bounded_diff(self, cwd, baseline, budget):
-        """Stream git diff; on overflow discard partial text and name changed paths."""
+        """Stream git diff under a byte budget; kill before any blocking stderr EOF on overflow.
+
+        Accumulates raw stdout bytes and decodes UTF-8 once (errors=replace) so codepoints
+        split across read chunks are not corrupted, and non-UTF-8 bytes stay readable.
+        A module-level read deadline watchdog kills a silent stalled child even while a
+        blocking stdout.read is in progress. On overflow / replace-expansion past budget /
+        timeout: empty diff + name-only omitted entries (diff_budget_exceeded).
+        """
+        import threading
+        import time as _time
+
         process = subprocess.Popen(
             ['git', '-C', str(cwd), 'diff', baseline, '--'],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        chunks, size, truncated = [], 0, False
+        chunks, size = [], 0
+        truncated = False
+        timed_out = False
+        stderr_buf = bytearray()
+        deadline = _time.monotonic() + _DIFF_READ_TIMEOUT
+        stop_watch = threading.Event()
+        kill_lock = threading.Lock()
+
+        def _kill_child():
+            with kill_lock:
+                if process.poll() is None:
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+
+        def _watchdog():
+            nonlocal timed_out, truncated
+            # Wait until deadline; if still running, kill so blocking reads unblock.
+            remaining = deadline - _time.monotonic()
+            if remaining > 0 and stop_watch.wait(remaining):
+                return
+            if stop_watch.is_set():
+                return
+            timed_out = True
+            truncated = True
+            _kill_child()
+
+        def _drain_stderr():
+            try:
+                while True:
+                    block = process.stderr.read(8192)
+                    if not block:
+                        break
+                    remain = _STDERR_LIMIT - len(stderr_buf)
+                    if remain > 0:
+                        stderr_buf.extend(block[:remain])
+            except Exception:
+                pass
+
+        watch = threading.Thread(target=_watchdog, name='hub-diff-watchdog', daemon=True)
+        stderr_thread = threading.Thread(target=_drain_stderr, name='hub-diff-stderr', daemon=True)
+        watch.start()
+        stderr_thread.start()
+        code = 0
         try:
             while True:
+                if timed_out or truncated:
+                    break
+                if _time.monotonic() > deadline:
+                    timed_out = True
+                    truncated = True
+                    _kill_child()
+                    break
                 block = process.stdout.read(_READ_CHUNK)
                 if not block:
                     break
-                text = block.decode('utf-8', errors='replace')
-                piece = _utf8_len(text)
-                if size + piece > budget:
+                if size + len(block) > budget:
                     truncated = True
+                    _kill_child()
                     break
-                chunks.append(text)
-                size += piece
-            stderr = (process.stderr.read() or b'').decode('utf-8', errors='replace')
-            if truncated:
-                process.kill()
-            code = process.wait(timeout=30)
+                chunks.append(block)
+                size += len(block)
+            if truncated or timed_out:
+                try:
+                    while process.stdout.read(_READ_CHUNK):
+                        if _time.monotonic() > deadline + 2:
+                            break
+                except Exception:
+                    pass
+                try:
+                    code = process.wait(timeout=5)
+                except Exception:
+                    code = process.poll() if process.poll() is not None else -1
+            else:
+                try:
+                    code = process.wait(timeout=max(0.1, deadline - _time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    truncated = True
+                    _kill_child()
+                    try:
+                        code = process.wait(timeout=5)
+                    except Exception:
+                        code = -1
         finally:
+            stop_watch.set()
             for stream in (process.stdout, process.stderr):
                 if stream is not None:
-                    stream.close()
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
             if process.poll() is None:
-                process.kill()
-                process.wait(timeout=5)
+                _kill_child()
+                try:
+                    process.wait(timeout=5)
+                except Exception:
+                    pass
+            stderr_thread.join(timeout=2)
+            watch.join(timeout=1)
+
+        stderr = bytes(stderr_buf).decode('utf-8', errors='replace')
+        if timed_out:
+            truncated = True
         if code and not truncated:
             raise HubError('INVALID_WORKSPACE', 'Git 操作失败：' + stderr[:500])
         if truncated:
             names = [line for line in git(cwd, 'diff', '--name-only', baseline, '--').splitlines() if line]
             omitted = [{'path': name, 'reason': 'diff_budget_exceeded'} for name in names]
             return '', 0, True, omitted
-        return ''.join(chunks), size, False, []
+        # Decode once after the full bounded byte buffer is collected.
+        raw = b''.join(chunks)
+        text = raw.decode('utf-8', errors='replace')
+        used = _utf8_len(text)
+        # Replacement chars are 3 UTF-8 bytes; if expansion exceeds the documented UTF-8
+        # budget, treat as truncated rather than returning an over-budget "complete" diff.
+        if used > budget:
+            names = [line for line in git(cwd, 'diff', '--name-only', baseline, '--').splitlines() if line]
+            omitted = [{'path': name, 'reason': 'diff_budget_exceeded'} for name in names]
+            return '', 0, True, omitted
+        return text, used, False, []
 
     def artifacts(self, task):
         if task['mode'] != 'edit_worktree':
@@ -125,10 +230,18 @@ class Workspaces:
                 omitted.append({'path': name, 'reason': 'budget_exceeded', 'size_bytes': size})
                 truncated = True
                 continue
+            # Bound the read: never file.read_bytes() the whole file after a stale stat.
+            body_limit = min(remaining - header_bytes, _SINGLE_FILE_LIMIT)
             try:
-                raw = file.read_bytes()
+                with file.open('rb') as handle:
+                    raw = handle.read(body_limit + 1)
             except OSError:
                 omitted.append({'path': name, 'reason': 'unreadable'})
+                truncated = True
+                continue
+            if len(raw) > body_limit:
+                omitted.append({'path': name, 'reason': 'budget_exceeded',
+                                'size_bytes': max(size, len(raw))})
                 truncated = True
                 continue
             if b'\x00' in raw:
@@ -136,12 +249,12 @@ class Workspaces:
                 truncated = True
                 continue
             try:
-                text = raw.decode('utf-8')
+                body = raw.decode('utf-8')
             except UnicodeDecodeError:
                 omitted.append({'path': name, 'reason': 'binary', 'size_bytes': size})
                 truncated = True
                 continue
-            piece = header + text
+            piece = header + body
             piece_bytes = _utf8_len(piece)
             if used + piece_bytes > budget:
                 omitted.append({'path': name, 'reason': 'budget_exceeded', 'size_bytes': size})
