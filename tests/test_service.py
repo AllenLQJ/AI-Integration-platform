@@ -34,9 +34,10 @@ class ServiceTests(unittest.TestCase):
         self.service.close()
         self.tmp.cleanup()
     def submit(self, **kw):
+        from hub_fixtures import with_work_item
         args = dict(request_id='a', agent='fake', prompt='hello', cwd=str(self.root), mode='read_only')
         args.update(kw)
-        return self.service.call('submit_task', args)
+        return self.service.call('submit_task', with_work_item(self.service, args))
     def wait(self, ident):
         for _ in range(100):
             task = self.service.call('get_task', {'task_id': ident})

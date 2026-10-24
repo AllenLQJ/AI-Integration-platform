@@ -35,11 +35,12 @@ class VerificationTests(unittest.TestCase):
     def tearDown(self):
         self.service.close(); self.tmp.cleanup()
     def submit(self, criteria=None, **kw):
+        from hub_fixtures import with_work_item
         args = dict(request_id='first', agent='fake', prompt='完成', cwd=str(self.workspace), mode='read_only')
         if criteria is not None:
             args['acceptance'] = {'criteria': criteria}
         args.update(kw)
-        return self.service.call('submit_task', args)['id']
+        return self.service.call('submit_task', with_work_item(self.service, args))['id']
     def wait(self, ident):
         for _ in range(200):
             result = self.service.call('get_result', {'task_id': ident})
@@ -150,7 +151,11 @@ class VerificationTests(unittest.TestCase):
     def test_tool_result_without_outcome_is_unknown(self):
         from agent_hub.processes import stream_events
         events = list(stream_events(dict(type='user', message={'content': [dict(type='tool_result', tool_use_id='id')]})))
-        self.assertEqual(events, [('tool', dict(tool_use_id='id', status='unknown'))])
+        self.assertIn(('tool', dict(tool_use_id='id', status='unknown')), events)
+        self.assertEqual([p['status'] for k, p in events if k == 'tool'], ['unknown'])
+        for kind, payload in events:
+            if kind == 'activity':
+                self.assertEqual(payload.get('status'), 'unknown')
 
     def test_external_verification_enforces_controller_epoch_before_receipt(self):
         ident = self.submit([{'id': 'f', 'kind': 'file_exists', 'path': 'output.txt'},
@@ -577,8 +582,16 @@ class VerificationTests(unittest.TestCase):
     def test_stream_events_only_observed_metadata(self):
         from agent_hub.processes import stream_events
         events = list(stream_events(dict(type='item.completed', item=dict(type='mcp_tool_call', tool='Read', status='completed', result='secret content'))))
-        self.assertEqual(events, [('tool', {'name': 'Read', 'status': 'success'})])
+        tools = [p for k, p in events if k == 'tool']
+        self.assertEqual(len(tools), 1)
+        self.assertEqual(tools[0]['name'], 'Read')
+        self.assertEqual(tools[0]['status'], 'success')
+        self.assertNotIn('result', tools[0])
         self.assertNotIn('secret content', str(events))
+        activities = [p for k, p in events if k == 'activity']
+        self.assertTrue(activities)
+        self.assertEqual(activities[0].get('kind'), 'file_read')
+        self.assertNotIn('secret content', str(activities))
 
     def test_registered_media_history_exceeds_file_budget(self):
         from PIL import Image
@@ -1300,7 +1313,9 @@ class NodeTransferTests(unittest.TestCase):
         self.sender.nodes.register('simulated-windows', 'windows', 'simulated-windows-host', {'fake': ['read_only']}, 'local')
         self.sender.nodes.receivers['simulated-windows'] = self.receiver.nodes
         self.sender.max_auto_rework = 0
-        self.task = self.sender.call('submit_task', dict(request_id='task', agent='fake', prompt='done', cwd=str(self.workspace), mode='read_only'))['id']
+        from hub_fixtures import with_work_item
+        self.task = self.sender.call('submit_task', with_work_item(self.sender, dict(
+            request_id='task', agent='fake', prompt='done', cwd=str(self.workspace), mode='read_only')))['id']
         for _ in range(200):
             if self.sender.store.get(self.task)['state'] == 'succeeded':
                 break
@@ -1327,12 +1342,15 @@ class NodeTransferTests(unittest.TestCase):
             self.assertFalse(remote['remote_connection_verified'])
             self.assertEqual(remote['transport'], 'ssh')
             self.assertEqual(remote['capabilities'], {'remote-fake': ['delegate']})
-            task = self.sender.call('submit_task', dict(request_id='selected-local', agent='fake',
-                   prompt='done', cwd=str(self.workspace), mode='read_only', node_id=self.sender.nodes.local_id))
+            from hub_fixtures import with_work_item
+            task = self.sender.call('submit_task', with_work_item(self.sender, dict(
+                request_id='selected-local', agent='fake', prompt='done', cwd=str(self.workspace),
+                mode='read_only', node_id=self.sender.nodes.local_id)))
             self.assertEqual(task['node_id'], self.sender.nodes.local_id)
 
     def test_remote_workspace_checks_are_inconclusive(self):
         from agent_hub.adapters.remote import Remote
+        from hub_fixtures import with_work_item
         import json
         self.sender.close()
         (self.root / 'sender' / 'config.json').write_text(json.dumps({'agents': {'remote-fake': {'platform': 'windows'}}}))
@@ -1348,8 +1366,9 @@ class NodeTransferTests(unittest.TestCase):
                         {'id': 'hash', 'kind': 'sha256', 'path': 'output.txt', 'expected': hashlib.sha256(b'hello').hexdigest()},
                         {'id': 'artifact', 'kind': 'artifact_required'}]
             with patch.object(self.sender.verification, 'snapshot_files', side_effect=AssertionError('No local snapshot')):
-                remote = self.sender.call('submit_task', dict(request_id='remote-acceptance', agent='remote-fake', mode='delegate',
-                    prompt='fixture', cwd=str(self.workspace), acceptance={'criteria': criteria}))['id']
+                remote = self.sender.call('submit_task', with_work_item(self.sender, dict(
+                    request_id='remote-acceptance', agent='remote-fake', mode='delegate',
+                    prompt='fixture', cwd=str(self.workspace), acceptance={'criteria': criteria})))['id']
                 for _ in range(200):
                     result = self.sender.call('get_result', {'task_id': remote})
                     if result['ready'] and result['verification']['state'] == 'needs_review':
@@ -1377,8 +1396,9 @@ class NodeTransferTests(unittest.TestCase):
                 self.assertEqual(self.sender.verification.check(task, c)[0], 'inconclusive')
 
     def test_node_replay_survives_removed_node(self):
-        args = dict(request_id='node-replay', agent='fake', mode='read_only', prompt='done',
-                    cwd=str(self.workspace), node_id=self.sender.nodes.local_id)
+        from hub_fixtures import with_work_item
+        args = with_work_item(self.sender, dict(request_id='node-replay', agent='fake', mode='read_only', prompt='done',
+                    cwd=str(self.workspace), node_id=self.sender.nodes.local_id))
         first = self.sender.call('submit_task', args)
         with self.sender.store.connection() as db:
             db.execute('DELETE FROM nodes WHERE node_id=?', (self.sender.nodes.local_id,))
@@ -1469,13 +1489,18 @@ class NodeTransferTests(unittest.TestCase):
         import asyncio
         from agent_hub.mcp_server import mcp
         names = {tool.name for tool in asyncio.run(mcp.list_tools())}
-        self.assertEqual(len(names), 16)
+        self.assertEqual(len(names), 20)
         self.assertIn('list_nodes', names)
+        self.assertIn('record_activity', names)
+        self.assertIn('create_work_item', names)
+        self.assertIn('link_task', names)
+        self.assertIn('reconcile_task', names)
         self.assertNotIn('transfer_artifact', names)
 
     def test_capability_rejection(self):
+        from hub_fixtures import with_work_item
         with self.assertRaises(HubError) as error:
-            self.sender.call('submit_task', dict(request_id='bad', agent='fake', prompt='done', cwd=str(self.workspace), mode='edit_worktree', node_id='simulated-windows'))
+            self.sender.call('submit_task', with_work_item(self.sender, dict(request_id='bad', agent='fake', prompt='done', cwd=str(self.workspace), mode='edit_worktree', node_id='simulated-windows')))
         self.assertEqual(error.exception.code, 'NODE_UNAVAILABLE')
     def test_duplicate_request_and_receipt(self):
         first = self.sender.call('transfer_artifact', self.args)

@@ -174,10 +174,17 @@ class Reviewer:
         directory.mkdir(parents=True, exist_ok=True)
         try:
             with self.service.lock:
+                wid, _, _ = self.service.work_items.inherit_from_parent(task)
+                internal = {}
+                if wid:
+                    internal['work_item_id'] = wid
                 created = self.service.submit('auto-review:' + run, agent, prompt, str(directory), 'text_only',
                                               review['timeout_seconds'], review_of=dict(
                                                   task_id=task['id'], review_run_id=run,
-                                                  verification_run_id=review['verification_run_id']))
+                                                  verification_run_id=review['verification_run_id']),
+                                              **internal)
+                if wid:
+                    self.service.work_items.attach(wid, created['id'], 'review', task['id'], 'auto-review:' + run)
         except HubError as error:
             return self.finish(task, review, None, 'unavailable', '无法派发审核任务：' + error.code)
         self.update(task['id'], run, task_id=created['id'], state='running', dispatched_at=time.time())

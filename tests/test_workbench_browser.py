@@ -238,9 +238,10 @@ class WorkbenchBrowserTests(unittest.TestCase):
         return session, grant
 
     def finished_task(self, request_id):
+        from hub_fixtures import with_work_item
         criteria = [{'id': 'f', 'kind': 'file_exists', 'path': 'output.txt'}]
-        ident = self.service.call('submit_task', dict(request_id=request_id, agent='gate', prompt=request_id, cwd=str(self.workspace),
-                                                       mode='read_only', acceptance={'criteria': criteria}))['id']
+        ident = self.service.call('submit_task', with_work_item(self.service, dict(request_id=request_id, agent='gate', prompt=request_id, cwd=str(self.workspace),
+                                                       mode='read_only', acceptance={'criteria': criteria})))['id']
         self.gate.release.release()
         self.wait_until(lambda: self.settled(ident), '任务验收未结束')
         return ident
@@ -300,9 +301,10 @@ class WorkbenchBrowserTests(unittest.TestCase):
         self.assert_layout(dom)
 
     def test_live_state_verification_new_attempt_and_connection_failures(self):
+        from hub_fixtures import with_work_item
         criteria = [{'id': 'f', 'kind': 'file_exists', 'path': 'output.txt'}]
-        ident = self.service.call('submit_task', dict(request_id='browser', agent='gate', prompt='first', cwd=str(self.workspace),
-                                                       mode='read_only', acceptance={'criteria': criteria}))['id']
+        ident = self.service.call('submit_task', with_work_item(self.service, dict(request_id='browser', agent='gate', prompt='first', cwd=str(self.workspace),
+                                                       mode='read_only', acceptance={'criteria': criteria})))['id']
         self.wait_until(lambda: self.service.store.get(ident)['state'] == 'running', '任务未进入 running')
         session, grant = self.open_page(ident)
 

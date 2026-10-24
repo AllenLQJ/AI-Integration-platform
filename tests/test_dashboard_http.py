@@ -3,6 +3,7 @@ import http.cookiejar
 import urllib.request
 import io
 import json
+import re
 import tempfile
 import threading
 import unittest
@@ -74,6 +75,16 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertEqual(self.request('/work/example', headers={'Cookie': cookie})[0], 401)
         self.assertEqual(self.request('/health', headers={'Authorization': 'Bearer native-test-secret'})[0], 200)
 
+    def test_every_local_module_import_is_served(self):
+        from agent_hub.dashboard_http import STATIC_ROOT
+        for source in STATIC_ROOT.glob('*.mjs'):
+            imports = re.findall(r'''from\s+['"]\./([^'"]+)['"]''', source.read_text(encoding='utf-8'))
+            for name in imports:
+                with self.subTest(source=source.name, dependency=name):
+                    status, headers, body = self.request('/dashboard/' + name)
+                    self.assertEqual(status, 200, body)
+                    self.assertEqual(headers['Content-Type'].split(';')[0], 'text/javascript')
+
     def test_two_daemons_keep_sessions_in_shared_browser_cookie_jar(self):
         service = Service(self.root / 'other-data', {'fake': Fake()}, per_agent_concurrency={'fake': 0})
         server = make_server(service, 'other-native-secret')
@@ -131,7 +142,9 @@ class DashboardHTTPTests(unittest.TestCase):
             self.assertEqual(self.request('/dashboard/api/v1/tasks', headers={'Cookie': cookie, **extra})[0], 403)
 
     def test_static_mime_security_headers_and_traversal(self):
-        for path, mime in [('/dashboard/', 'text/html'), ('/dashboard/app.mjs', 'text/javascript'), ('/dashboard/graph.mjs', 'text/javascript'),
+        for path, mime in [('/dashboard/', 'text/html'), ('/dashboard/app.mjs', 'text/javascript'),
+                           ('/dashboard/graph.mjs', 'text/javascript'), ('/dashboard/timeline.mjs', 'text/javascript'),
+                           ('/dashboard/status_labels.mjs', 'text/javascript'),
                            ('/dashboard/style.css', 'text/css')]:
             status, headers, body = self.request(path)
             self.assertEqual(status, 200, body)
@@ -152,8 +165,9 @@ class DashboardHTTPTests(unittest.TestCase):
             self.assertEqual(self.request('/dashboard/session', 'POST', body, {'Origin': self.origin, **extra})[0], 400)
 
     def test_data_routes_read_current_service_without_controller_mutation(self):
-        task = self.service.call('submit_task', dict(request_id='http-dashboard', agent='fake',
-            prompt='HTTP dashboard test', cwd=str(self.root), mode='read_only'))
+        from hub_fixtures import with_work_item
+        task = self.service.call('submit_task', with_work_item(self.service, dict(request_id='http-dashboard', agent='fake',
+            prompt='HTTP dashboard test', cwd=str(self.root), mode='read_only')))
         cookie = self.session()
         headers = {'Cookie': cookie, 'Origin': self.origin}
         status, _, body = self.request('/dashboard/api/v1/tasks?q=HTTP&agent=fake', headers=headers)
@@ -170,8 +184,9 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertEqual(after.get('controller_epoch'), task.get('controller_epoch'))
 
     def test_chain_routes_are_authenticated_additive_and_bounded(self):
-        task = self.service.call('submit_task', dict(request_id='chain-http', agent='fake',
-            prompt='chain HTTP goal', cwd=str(self.root), mode='read_only'))
+        from hub_fixtures import with_work_item
+        task = self.service.call('submit_task', with_work_item(self.service, dict(request_id='chain-http', agent='fake',
+            prompt='chain HTTP goal', cwd=str(self.root), mode='read_only')))
         child = self.service.store.create('chain-child', dict(agent='fake', prompt='continuation',
             mode='read_only', cwd=str(self.root), parent_id=task['id'], resume_session='existing-session'))
         self.assertEqual(self.request('/dashboard/api/v1/chains')[0], 401)

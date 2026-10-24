@@ -28,8 +28,9 @@ class PermissionTests(unittest.TestCase):
         self.service.close()
         self.tmp.cleanup()
     def submit(self, agent, mode, key='new'):
-        return self.service.call('submit_task', dict(request_id=key, agent=agent,
-            mode=mode, cwd=str(self.root), prompt='test'))
+        from hub_fixtures import with_work_item
+        return self.service.call('submit_task', with_work_item(self.service, dict(
+            request_id=key, agent=agent, mode=mode, cwd=str(self.root), prompt='test')))
     def finish(self, task):
         for _ in range(100):
             r = self.service.call('get_result', {'task_id': task['id']})

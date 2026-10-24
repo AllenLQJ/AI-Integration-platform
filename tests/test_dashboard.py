@@ -43,7 +43,8 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(len(self.dashboard.tasks(q='%', agent='custom.executor')['items']), 1)
         self.assertEqual(len(self.dashboard.tasks(state='running')['items']), 1)
         item = page['items'][0]
-        self.assertEqual(set(item), {'id', 'title', 'agent', 'state', 'verification_state', 'work_status',
+        self.assertEqual(set(item), {'id', 'title', 'agent', 'state', 'verification_state',
+                                     'verification_label', 'verification_policy', 'work_status',
                                      'created', 'updated', 'workspace_label', 'mode'})
         self.assertEqual(item['workspace_label'], 'project')
         self.assertNotIn('private-user', json.dumps(page))
@@ -81,11 +82,14 @@ class DashboardTests(unittest.TestCase):
         self.store.event(task['id'], 'message', {'message': 'Second'})
         self.store.finish(task['id'], 'succeeded', {'answer': 'First\nSecond', 'session_id': 'hidden'})
         detail = self.dashboard.detail(task['id'])
-        self.assertEqual(set(detail), {'task', 'messages', 'relations', 'criteria', 'artifacts'})
+        self.assertTrue({'task', 'messages', 'relations', 'criteria', 'artifacts'} <= set(detail))
+        self.assertIn('timeline', detail)
+        self.assertIn('capture_coverage', detail)
         self.assertEqual([m['text'] for m in detail['messages'][1:]], ['First\nSecond'])
         self.assertEqual(detail['messages'][0]['source'], 'task.prompt')
         self.assertEqual(detail['messages'][-1]['source'], 'task.result')
         self.assertEqual(detail['messages'][-1]['completeness'], 'complete')
+        self.assertTrue(any(e.get('source') == 'task.result' for e in detail['timeline']))
         self.assertNotIn('top-secret', json.dumps(detail))
         self.assertEqual({c.args[0] for c in self.service.call.call_args_list}, {'get_result'})
 
@@ -108,7 +112,12 @@ class DashboardTests(unittest.TestCase):
         self.store.event(task['id'], 'message', {'message': 'bad role', 'role': {'secret': 'bad'}})
         messages = self.dashboard.detail(task['id'])['messages']
         self.assertEqual([m['text'] for m in messages].count('original user prompt'), 1)
-        self.assertEqual([m['role'] for m in messages], ['user', 'unknown', 'assistant', 'unknown'])
+        # Missing/invalid role stays unset — UI uses agent fallback titles, never invents assistant.
+        self.assertEqual([m['role'] for m in messages], ['user', None, 'assistant', None])
+        timeline = self.dashboard.detail(task['id'])['timeline']
+        unattributed = next(e for e in timeline if e.get('text') == 'unattributed record')
+        self.assertTrue(unattributed.get('role_missing'))
+        self.assertEqual(unattributed['title'], 'custom.executor · 任务消息')
 
     def test_final_dedup_preserves_explicit_non_assistant_roles(self):
         for role in ('user', 'tool', 'system'):

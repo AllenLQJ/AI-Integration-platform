@@ -36,3 +36,7 @@
 启动前确认没有活动任务且日常 Hub 未运行，随后通过主项目的正常 Client 启动服务。浏览器使用独立只读会话成功加载 5 个已配置执行器、30 条首页历史任务，并实际读取了一条已完成任务的输入和最终回复，无详情错误。本次仅查看已有记录，没有发起新的模型任务；这是在先前隔离合成数据验收之外追加的真实存储读取验证。
 
 日常在项目目录运行 `python -m agent_hub dashboard`，Windows 项目虚拟环境入口为 `.\.venv\Scripts\python.exe -m agent_hub dashboard`。命令自动签发登录票据并打开浏览器，不能依赖旧的普通 URL 在新浏览器会话中自动登录。
+
+## 追加范围（协作工作项 + 远端核对）— Cursor 未跑测试
+
+用户解除冻结后追加：`work_item_id` 协议、`reconcile_task`、Grok 审核修复与不确定状态呈现、验收文案/acceptance 模板、link/reconcile 原子与归属修复。实现落在本工作树；**本会话无 Shell，未执行 unittest / 浏览器验证**。请总控先跑定向（含 `test_work_items` / `test_acceptance_dashboard`），再全量 `python -m unittest discover -s tests` 与 `node --test tests/frontend/*.mjs`，并做浏览器首屏（timeline 角色 fallback、验收标签、interrupted 文案）后再交 Grok 复审。MCP 工具数 **20**（文档已与 `test_activity`/`test_verification` 对齐）。

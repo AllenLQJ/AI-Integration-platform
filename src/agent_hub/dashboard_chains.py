@@ -13,6 +13,7 @@ from .models import HubError, TERMINAL
 MAX_NODES = 200
 MAX_MESSAGES = 500
 MAX_TEXT = 1000000
+MAX_TIMELINE = 500
 
 
 class DashboardChains:
@@ -34,7 +35,16 @@ class DashboardChains:
                  AND (? = '' OR state = ?)
                  AND (? = '' OR json_extract(data,'$.agent') = ?)) AS matches
                 FROM tasks""", (q, pattern, pattern, state, state, agent, agent)).fetchall()
+            # work_item tables are created by WorkItems; older pure-Store fixtures may lack them.
+            try:
+                member_rows = db.execute(
+                    'SELECT work_item_id, task_id, relation, related_task_id FROM work_item_members').fetchall()
+                item_rows = db.execute('SELECT id, title, created, updated FROM work_items').fetchall()
+            except Exception:
+                member_rows, item_rows = [], []
         tasks = {row['id']: dict(row) for row in rows}
+        work_items = {row['id']: dict(row) for row in item_rows}
+        task_work = {row['task_id']: dict(row) for row in member_rows if row['task_id'] in tasks}
         neighbors = defaultdict(set)
         edges = []
         dangling = set()
@@ -56,14 +66,44 @@ class DashboardChains:
                 neighbors[ident].add(source)
                 if field == 'parent_id':
                     parent_children[source].append(ident)
+        # Explicit work_item membership unifies develop/review/rework without guessing.
+        relation_kind = {
+            'review': 'review', 'rework': 'rework', 'continuation': 'continuation',
+            'switch': 'switch_executor', 'development': 'development', 'linked': 'linked',
+            'root': 'linked',
+        }
+        for task_id, member in task_work.items():
+            related = member.get('related_task_id')
+            kind = relation_kind.get(member.get('relation'), 'linked')
+            if related and related in tasks:
+                edges.append(dict(source=related, target=task_id, kind=kind))
+                neighbors[related].add(task_id)
+                neighbors[task_id].add(related)
+                if kind == 'review':
+                    reviews.add(task_id)
+            # Same work_item members always share a component even without related_task_id.
+            for other_id, other in task_work.items():
+                if other['work_item_id'] == member['work_item_id'] and other_id != task_id:
+                    neighbors[task_id].add(other_id)
+                    neighbors[other_id].add(task_id)
         # Continuing a reviewer remains review work and must not replace the
         # latest implementation's acceptance/execution state.
+        # Explicit work_item relation=rework is always implementation (even if
+        # parent_id points at a review attempt) and must never stay in reviews.
         queue = deque(reviews)
         while queue:
             for child in parent_children[queue.popleft()]:
+                member = task_work.get(child) or {}
+                if member.get('relation') == 'rework':
+                    continue
                 if child not in reviews:
                     reviews.add(child)
                     queue.append(child)
+        for task_id, member in task_work.items():
+            if member.get('relation') == 'review':
+                reviews.add(task_id)
+            elif member.get('relation') == 'rework':
+                reviews.discard(task_id)
         components, membership = [], {}
         for ident in tasks:
             if ident in membership:
@@ -81,6 +121,17 @@ class DashboardChains:
             components.append(dict(members=group, edges=[]))
         for edge in edges:
             components[membership[edge['source']]]['edges'].append(edge)
+        # Deduplicate edges within a component.
+        for component in components:
+            seen = set()
+            unique = []
+            for edge in component['edges']:
+                key = (edge['source'], edge['target'], edge['kind'])
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique.append(edge)
+            component['edges'] = unique
         order = lambda ident: (tasks[ident]['created'], ident)
         for component in components:
             members = component['members']
@@ -107,14 +158,29 @@ class DashboardChains:
             implementation = [ident for ident in members if ident not in reviews]
             component['latest'] = max(implementation or members, key=order)
             component['updated'] = max(tasks[ident]['updated'] for ident in members)
+            # Prefer stable work_item container when all/any members share one.
+            item_ids = {task_work[ident]['work_item_id'] for ident in members if ident in task_work}
+            if len(item_ids) == 1:
+                wid = next(iter(item_ids))
+                meta = work_items.get(wid) or {}
+                component['work_item_id'] = wid
+                component['work_item_title'] = meta.get('title') or '工作项'
+                component['updated'] = max(component['updated'], meta.get('updated') or 0)
+            else:
+                component['work_item_id'] = None
+                component['work_item_title'] = None
         return tasks, components, membership
 
     def _summary(self, tasks, component):
         root, latest = component['root'], component['latest']
         root_summary = self.dashboard._summary(self.store.get(root))
         latest_summary = root_summary if latest == root else self.dashboard._summary(self.store.get(latest))
-        return dict(latest_summary, id=root, title=root_summary['title'], created=root_summary['created'],
+        # Title / stats / latest main execution from implementation — not overridden by review state.
+        chain_id = component.get('work_item_id') or root
+        title = component.get('work_item_title') or root_summary['title']
+        return dict(latest_summary, id=chain_id, title=title, created=root_summary['created'],
                     updated=component['updated'], root_task_id=root, latest_task_id=latest,
+                    work_item_id=component.get('work_item_id'),
                     task_count=len(component['members']),
                     agents=sorted({_text(tasks[ident]['agent']) for ident in component['members']}),
                     active_count=sum(tasks[ident]['state'] not in TERMINAL for ident in component['members']))
@@ -137,26 +203,52 @@ class DashboardChains:
         timestamp = message.get('timestamp')
         return (timestamp is None, timestamp or 0, message['task_id'], message['id'])
 
+    @staticmethod
+    def _timeline_order(entry):
+        timestamp = entry.get('timestamp')
+        return (timestamp is None, timestamp or 0, entry['task_id'], entry['id'])
+
+    @staticmethod
+    def _timeline_chars(entry):
+        import json
+        return len(json.dumps({
+            'title': entry.get('title', ''),
+            'preview': entry.get('preview', ''),
+            'text': entry.get('text', ''),
+            'operation': entry.get('operation') or {},
+        }, ensure_ascii=False))
+
     def detail(self, member_id):
         _string(member_id, 'member_id', 200, required=True)
         tasks, components, membership = self._snapshot()
         if member_id not in membership:
-            raise HubError('TASK_NOT_FOUND', 'Task not found')
-        component = components[membership[member_id]]
+            # Allow resolving by work_item_id (chain list id when aggregated).
+            match = next((c for c in components if c.get('work_item_id') == member_id), None)
+            if not match:
+                raise HubError('TASK_NOT_FOUND', 'Task not found')
+            component = match
+            anchor = component['latest']
+        else:
+            component = components[membership[member_id]]
+            anchor = member_id
         chain = self._summary(tasks, component)
         warnings = list(component['warnings'])
         # Root and requested execution remain navigable, then favor recent work.
-        priority = [component['root'], member_id, component['latest']]
+        priority = [component['root'], anchor, component['latest']]
         priority.extend(sorted(component['members'], key=lambda ident: (tasks[ident]['updated'], ident), reverse=True))
         selected = list(dict.fromkeys(priority))[:MAX_NODES]
         selected_set = set(selected)
         if len(component['members']) > len(selected):
             warnings.append('nodes_truncated')
         nodes, messages, text_size = [], [], 0
+        timeline, timeline_size = [], 0
+        coverages = []
         omitted = False
+        timeline_omitted = False
         for ident in selected:
             detail = self.dashboard.detail(ident)
             nodes.append(detail['task'])
+            coverages.append(detail.get('capture_coverage') or {})
             for message in detail['messages']:
                 message = dict(message, task_id=ident, agent=detail['task']['agent'])
                 if message['completeness'] == 'truncated':
@@ -167,11 +259,24 @@ class DashboardChains:
                     _, removed = heapq.heappop(messages)
                     text_size -= len(removed['text'])
                     omitted = True
+            for entry in detail.get('timeline') or []:
+                entry = dict(entry, task_id=ident, agent=entry.get('agent') or detail['task']['agent'])
+                heapq.heappush(timeline, (self._timeline_order(entry), entry))
+                timeline_size += self._timeline_chars(entry)
+                while len(timeline) > MAX_TIMELINE or timeline_size > MAX_TEXT:
+                    _, removed = heapq.heappop(timeline)
+                    timeline_size -= self._timeline_chars(removed)
+                    timeline_omitted = True
         if omitted:
             warnings.append('messages_truncated')
+        if timeline_omitted:
+            warnings.append('timeline_truncated')
         nodes.sort(key=lambda node: (node['created'], node['id']))
         return dict(chain=chain, nodes=nodes,
                     edges=[edge for edge in component['edges']
                            if edge['source'] in selected_set and edge['target'] in selected_set],
                     messages=[message for _, message in sorted(messages)],
-                    truncated='nodes_truncated' in warnings or omitted, warnings=warnings)
+                    timeline=[entry for _, entry in sorted(timeline)],
+                    capture_coverage=coverages,
+                    truncated='nodes_truncated' in warnings or omitted or timeline_omitted,
+                    warnings=warnings)

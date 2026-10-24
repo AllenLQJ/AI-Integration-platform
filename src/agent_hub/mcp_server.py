@@ -20,17 +20,34 @@ def list_agents() -> dict:
     return invoke('list_agents', {})
 
 
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+def create_work_item(request_id: str, title: str = '工作项', acceptance: dict | None = None) -> dict:
+    """创建稳定协作工作项容器（work_item_id），独立于验收 attempt / Verification.root_id。
+
+    可选 acceptance：软件看板可用 software_dashboard（tests/ui/review 三条 required content_review），
+    普通对话可用 {'policy':'no_extra'}。开发/返修派发默认继承；审核任务不继承。
+    公开派发开发、审核、返修前须先创建并携带同一 work_item_id。刷新 MCP 工具列表后可见本工具。
+    """
+    args = {k: v for k, v in locals().items() if v is not None}
+    return invoke('create_work_item', args)
+
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def submit_task(request_id: str, agent: str, prompt: str, cwd: str,
-                mode: str, timeout_seconds: int = 1800, context: dict | None = None, acceptance: dict | None = None, node_id: str | None = None) -> dict:
+                mode: str, timeout_seconds: int = 1800, context: dict | None = None, acceptance: dict | None = None,
+                node_id: str | None = None, work_item_id: str | None = None,
+                relation: str | None = None, related_task_id: str | None = None) -> dict:
     """提交后台任务并立即返回 ID。同一个 request_id 和内容幂等。
 
+    必须提供 work_item_id（先 create_work_item）。缺失返回 WORK_ITEM_REQUIRED，不会静默创建根任务。
+    审核/返修还须 relation=review|rework 与同一工作项内的 related_task_id。
     Claude: text_only/read_only/edit_worktree；Codex、cursor_cli: read_only/edit_worktree。
     cursor 配置 kind=ide 时为 IDE 原生界面桥，delegate/edit_worktree，需要外部 UI worker 在线。
     Muse、Grok Bot 仅 delegate，Hub 不保证其只读，权限由远端/客户端决定。
     插件与 command 执行器名称可由配置定义；提交前用 list_agents 检查 modes/permissions。
     permissions 返回限制执行方及允许写入等信息。
-    acceptance.review={agent:执行器名称, timeout_seconds?} 显式开启 content_review 自动审核，审核端须支持 text_only 且不能自审核。"""
+    acceptance.review={agent:执行器名称, timeout_seconds?} 显式开启 content_review 自动审核，审核端须支持 text_only 且不能自审核。
+    迁移：刷新 MCP 工具列表；旧历史任务仍可读，可用 link_task 补关联。"""
     return invoke('submit_task', locals())
 
 
@@ -64,9 +81,16 @@ def get_result(task_id: str) -> dict:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
-def continue_task(request_id: str, task_id: str, prompt: str, timeout_seconds: int = 1800, controller_id: str | None = None, controller_epoch: int | None = None) -> dict:
-    """续接原生会话并创建子任务，保留旧结果和同一工作区；已被续接的验收尝试返回 ATTEMPT_SUPERSEDED。"""
-    return invoke('continue_task', locals())
+def continue_task(request_id: str, task_id: str, prompt: str, timeout_seconds: int = 1800,
+                  acceptance: dict | None = None, controller_id: str | None = None,
+                  controller_epoch: int | None = None) -> dict:
+    """续接原生会话并创建子任务，保留旧结果和同一工作区；已被续接的验收尝试返回 ATTEMPT_SUPERSEDED。
+
+    可选 acceptance 仅作用于新子任务（不追改旧 attempt）；省略则继承父任务验收。
+    需刷新 MCP／新客户端后可见本参数。安全原生验收写入口不暴露给模型 MCP。
+    """
+    args = {k: v for k, v in locals().items() if v is not None}
+    return invoke('continue_task', args)
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
@@ -135,3 +159,42 @@ def switch_executor(request_id: str, task_id: str, agent: str, mode: str, prompt
 def list_nodes() -> dict:
     """读取节点声明；SSH 配置不代表已连通。"""
     return invoke('list_nodes', {})
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+def record_activity(request_id: str, task_id: str, event_id: str, activity: dict,
+                    controller_id: str | None = None, controller_epoch: int | None = None) -> dict:
+    """向任务时间线追加一条活动记录（消息/读文件/命令/测试/变更/系统），不执行命令也不改任务状态。
+
+    需要本机管理认证。若工作项已有 controller 租约，必须提供匹配的 controller_id/epoch。
+    相同 request_id 与相同内容幂等返回原收据；相同键不同内容报冲突。
+    activity 严格白名单，JSON 不超过 64KiB；operation 内全部保留输出与 metadata 共享 UTF-8 16KiB 预算。路径按工作区相对显示。
+    可在终态后补记，但不会复活执行、改 updated 或影响验收。浏览器只读会话不能调用。
+    上报方填写的模型名称仅为显示标签，前端标明“总控上报”，不冒充执行器观测。
+    """
+    return invoke('record_activity', locals())
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+def link_task(request_id: str, work_item_id: str, task_id: str, relation: str = 'linked',
+              related_task_id: str | None = None, controller_id: str | None = None,
+              controller_epoch: int | None = None) -> dict:
+    """显式将历史任务补关联到工作项：只改分组元数据，不重发、不改执行结果/验收。
+
+    需要管理认证与（若有）controller 租约。拒绝跨工作项、未知 task、自环，以及伪造内部 review 字段。
+    不靠相似提示词/cwd/session 猜测关系。"""
+    args = {k: v for k, v in locals().items() if v is not None}
+    return invoke('link_task', args)
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
+def reconcile_task(request_id: str, task_id: str, controller_id: str | None = None,
+                   controller_epoch: int | None = None) -> dict:
+    """核对/回收已 accepted 但本地观测中断的远端任务（如 Grok REMOTE_STATE_UNKNOWN）。
+
+    仅使用已持久化 session/baseline/marker 做有界 GET；禁止 POST 新消息/新会话/interrupt/重复派发。
+    远端仍忙则记录“远端仍在运行”；仅有归属正确、baseline 之后、匹配本任务结束标记且稳定 idle 才回收结果。
+    不复活用户已取消的执行，不覆盖新 attempt 验收。只读看板不能调用；客户端应沿原 task_id 重试本工具。
+    """
+    args = {k: v for k, v in locals().items() if v is not None}
+    return invoke('reconcile_task', args)

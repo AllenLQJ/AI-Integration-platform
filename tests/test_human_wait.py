@@ -76,8 +76,9 @@ class ServiceWaitTests(unittest.TestCase):
                 event('user_wait_resumed', dict(execution_deadline=time.time()+10))
                 return dict(answer='done', session_id='sid')
         self.service = Service(self.tmp.name, {'muse': Adapter()})
-        self.task_id = self.service.call('submit_task', dict(request_id='start', agent='muse',
-            prompt='lookup', cwd=self.tmp.name, mode='delegate'))['id']
+        from hub_fixtures import with_work_item
+        self.task_id = self.service.call('submit_task', with_work_item(self.service, dict(
+            request_id='start', agent='muse', prompt='lookup', cwd=self.tmp.name, mode='delegate')))['id']
         for _ in range(200):
             if self.service.store.get(self.task_id)['state'] == 'waiting_for_user':
                 break
