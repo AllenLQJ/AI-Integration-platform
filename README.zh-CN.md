@@ -2,7 +2,7 @@
 
 [English](README.md) | **简体中文**
 
-本地 Agent Hub：通过统一 MCP 接口协调 Codex、Claude Code、Muse、Cursor CLI 和 Grok Bot。独立后台执行任务，SQLite 保存状态、事件和结果；代码编辑可在独立 Git worktree 中进行，再返回差异供审阅。
+本地 Agent Hub：通过统一 MCP 接口协调 Codex、Claude Code、Muse、Cursor CLI 和 Grok Bot。独立后台执行任务，SQLite 保存状态、事件和结果；代码编辑可在独立 Git worktree edit_worktree 收集的 diff 与未跟踪文本摘录合计默认最多 1 MiB（UTF-8，`Workspaces.MAX_ARTIFACT_BYTES`）；超限时设置 `artifact_truncated` 与 `artifact_omitted`，不会把不完整 diff 当作完整变更。 中进行，再返回差异供审阅。
 
 **Python 3.10+ · Windows / macOS · 服务版本 0.3.0 · 16 个 MCP 工具**
 
