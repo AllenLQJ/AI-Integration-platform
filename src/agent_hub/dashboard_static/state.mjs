@@ -18,13 +18,19 @@ export function mergeEvents(previous, incoming) {
 
 export class DashboardState {
   constructor() {
-    this.listGate = new RequestGate(); this.detailGate = new RequestGate();
+    this.listGate = new RequestGate(); this.detailGate = new RequestGate(); this.chainGate = new RequestGate();
+    this.chainId = null; this.chain = null;
     this.filters = {q:'',state:'',agent:''}; this.offset = 0; this.nextOffset = null;
     this.items = []; this.selected = null; this.detail = null; this.events = []; this.cursor = 0;
   }
   changeFilters(filters) {
     this.listGate.invalidate(); this.filters = {...this.filters,...filters};
     this.items = []; this.offset = 0; this.nextOffset = null;
+  }
+  selectChain(id) {
+    const token = this.chainGate.next(); this.detailGate.invalidate();
+    this.chainId = id; this.chain = null; this.selected = null; this.detail = null; this.events = []; this.cursor = 0;
+    return token;
   }
   select(id) {
     const token = this.detailGate.next(); this.selected = id;
