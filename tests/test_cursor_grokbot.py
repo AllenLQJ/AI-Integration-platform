@@ -141,6 +141,27 @@ class GrokBotTests(unittest.TestCase):
         self.assertEqual(len([c for c in self.calls if c[1].endswith('/messages')]), 1)
         self.assertIn(('accepted', {'baseline': 10}), self.events)
 
+    def test_public_progress_messages_dedup_and_ignore_thought(self):
+        marker = '[HUB-END:' + self.task['id'] + ']'
+        progress = dict(seq='20', updatedSeq='21', kind='send-message', role='assistant', text='working')
+        revised = dict(seq='20', updatedSeq='22', kind='send-message', role='assistant', text='working more')
+        thought = dict(seq='21', updatedSeq='23', kind='thought', role='assistant', text='secret thought')
+        final = dict(seq='22', updatedSeq='24', kind='send-message', role='assistant', text='done\n'+marker)
+        self.responses([
+            self.page(),
+            self.page('21', [progress], True),
+            self.page('22', [revised], True),
+            self.page('24', [thought, final], True),
+        ] + [self.page('24')] * 4)
+        result = self.run_bot()
+        self.assertEqual(result['answer'], 'done\n'+marker)
+        messages = [payload for kind, payload in self.events if kind == 'message']
+        self.assertFalse(any('secret thought' in (m.get('message') or '') for m in messages))
+        # seq 20 revised once: first then higher revision.
+        seq20 = [m for m in messages if m.get('provider_message_id') == '20']
+        self.assertGreaterEqual(len(seq20), 1)
+        self.assertEqual(seq20[-1]['provider_revision'], 22)
+
     def test_busy_bot_does_not_send(self):
         self.responses([self.page(busy=True)])
         with self.assertRaises(HubError) as error:

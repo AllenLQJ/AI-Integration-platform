@@ -159,10 +159,11 @@ class PluginTests(unittest.TestCase):
     def test_service_rejects_unadvertised_continuation_without_creating_task(self):
         echo = Echo({}, PluginContext('assistant', self.root))
         echo.capabilities = ['delegate']
+        from hub_fixtures import with_work_item
         service = Service(self.root / 'data', {'assistant': ValidatedExecutor(echo, 'echo')})
         try:
-            task = service.call('submit_task', dict(request_id='one', agent='assistant',
-                                prompt='hello', cwd=str(self.root), mode='delegate'))
+            task = service.call('submit_task', with_work_item(service, dict(request_id='one', agent='assistant',
+                                prompt='hello', cwd=str(self.root), mode='delegate')))
             for _ in range(100):
                 if service.call('get_result', {'task_id': task['id']})['ready']:
                     break
@@ -200,10 +201,11 @@ class PluginTests(unittest.TestCase):
     def test_non_json_plugin_result_becomes_terminal_and_releases_slot(self):
         echo = Echo({}, PluginContext('assistant', self.root))
         echo.run = Mock(return_value={'answer': 'ok', 'artifacts': {1: 'file.txt'}})
+        from hub_fixtures import with_work_item
         service = Service(self.root / 'data', {'assistant': ValidatedExecutor(echo, 'echo')})
         try:
-            task = service.call('submit_task', dict(request_id='bad-result', agent='assistant',
-                                prompt='hello', cwd=str(self.root), mode='delegate'))
+            task = service.call('submit_task', with_work_item(service, dict(request_id='bad-result', agent='assistant',
+                                prompt='hello', cwd=str(self.root), mode='delegate')))
             for _ in range(70):
                 result = service.call('get_result', {'task_id': task['id']})
                 if result['ready']:

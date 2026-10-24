@@ -28,7 +28,7 @@ class DashboardChainsTests(unittest.TestCase):
 
     def create(self, prompt='goal', **fields):
         self.counter += 1
-        return self.store.create(str(self.counter), dict(prompt=prompt, agent='coder', mode='read_only', **fields))
+        return self.store.create(str(self.counter), dict({'prompt': prompt, 'agent': 'coder', 'mode': 'read_only'}, **fields))
 
     def dates(self, task, created, updated=None):
         with self.store.connection() as db:
@@ -146,6 +146,58 @@ class DashboardChainsTests(unittest.TestCase):
         item = self.chains.chains()['items'][0]
         self.assertEqual(item['latest_task_id'], root['id'])
         self.assertEqual(item['state'], 'succeeded')
+
+    def test_explicit_rework_is_latest_implementation_not_first_round_rework_required(self):
+        """Synthetic: develop pass checks / review fail → rework all pass; chain follows rework."""
+        from agent_hub.work_items import WorkItems, software_dashboard_acceptance
+        work_items = WorkItems(self.store)
+        soft = software_dashboard_acceptance()
+        wid = work_items.create('wi-rework-latest', title='看板返修', acceptance=soft)['work_item_id']
+        dev = self.create('implement dashboard', acceptance=soft)
+        self.dates(dev, 1)
+        self.store.finish(dev['id'], 'succeeded', {'answer': 'v1'})
+        work_items.attach(wid, dev['id'], 'development', None, 'link-dev')
+        with self.store.connection() as db:
+            db.execute('INSERT INTO verifications VALUES (?,?,?)',
+                       (dev['id'], 'rework_required',
+                        json.dumps({'checks': [
+                            {'criterion_id': 'tests', 'outcome': 'pass'},
+                            {'criterion_id': 'ui', 'outcome': 'pass'},
+                            {'criterion_id': 'review', 'outcome': 'fail'},
+                        ]})))
+        review = self.create('independent review', review_of={'task_id': dev['id']}, agent='reviewer')
+        self.dates(review, 2)
+        self.store.finish(review['id'], 'succeeded', {'answer': 'needs rework'})
+        work_items.attach(wid, review['id'], 'review', dev['id'], 'link-rev')
+        # Explicit rework may be parented under the review attempt; still implementation.
+        rework = self.create('rework all checks', parent_id=review['id'], acceptance=soft)
+        self.dates(rework, 3)
+        self.store.finish(rework['id'], 'succeeded', {'answer': 'v2 fixed'})
+        work_items.attach(wid, rework['id'], 'rework', dev['id'], 'link-rework')
+        with self.store.connection() as db:
+            db.execute('INSERT INTO verifications VALUES (?,?,?)',
+                       (rework['id'], 'passed',
+                        json.dumps({'checks': [
+                            {'criterion_id': 'tests', 'outcome': 'pass'},
+                            {'criterion_id': 'ui', 'outcome': 'pass'},
+                            {'criterion_id': 'review', 'outcome': 'pass'},
+                        ]})))
+        # Review continuation must not override latest implementation.
+        review_cont = self.create('review follow-up', parent_id=review['id'],
+                                  resume_session='rev-sess', agent='reviewer')
+        self.dates(review_cont, 4)
+        self.store.update(review_cont['id'], state='failed')
+        work_items.attach(wid, review_cont['id'], 'continuation', review['id'], 'link-rev-cont')
+
+        item = self.chains.chains()['items'][0]
+        self.assertEqual(item['latest_task_id'], rework['id'])
+        self.assertEqual(item['state'], 'succeeded')
+        self.assertEqual(item['verification_state'], 'passed')
+        self.assertEqual(item['work_status'], 'completed')
+        self.assertNotEqual(item['verification_state'], 'rework_required')
+        detail = self.chains.detail(dev['id'])
+        self.assertEqual(detail['chain']['latest_task_id'], rework['id'])
+        self.assertEqual(detail['chain']['verification_state'], 'passed')
 
     def test_message_count_cap_and_null_timestamp_order(self):
         root = self.create()

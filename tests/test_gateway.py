@@ -9,6 +9,20 @@ from test_service import Fake
 
 
 class GatewayTests(unittest.TestCase):
+    def test_interrupted_remote_observation_is_distinct_from_local_exit(self):
+        from agent_hub.gateway import result_fields
+        local = result_fields('interrupted', {'error_code': 'LOCAL_INTERRUPTED', 'error': 'local process stopped',
+                                              'exit_code': 1, 'cancel_scope': 'local_process'})
+        self.assertFalse(local['execution_uncertain'])
+        self.assertFalse(local['errors'][0]['retryable'])
+        self.assertNotIn('REMOTE_STATE_UNKNOWN', str(local))
+        remote = result_fields('interrupted', {'error_code': 'REMOTE_STATE_UNKNOWN', 'error': 'observation lost',
+                                               'remote_cancelled': False})
+        self.assertTrue(remote['execution_uncertain'])
+        self.assertEqual(remote['gateway_state'], 'unknown')
+        self.assertFalse(remote['errors'][0]['retryable'])
+        self.assertEqual(remote['errors'][0]['details']['recovery'], 'reconcile_original_task')
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -20,8 +34,10 @@ class GatewayTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def submit(self, context=None):
-        return self.service.call('submit_task', dict(request_id='same', agent='fake', prompt='原始 instruction',
-            cwd=str(self.root), mode='read_only', context=context))
+        from hub_fixtures import with_work_item
+        args = dict(request_id='same', agent='fake', prompt='原始 instruction',
+                    cwd=str(self.root), mode='read_only', context=context)
+        return self.service.call('submit_task', with_work_item(self.service, args))
 
     def test_context_idempotence_and_persistence(self):
         context = {'contract_version': '1.0', 'correlation': {'attempt': 1}, 'payload': {'attachments': []}}

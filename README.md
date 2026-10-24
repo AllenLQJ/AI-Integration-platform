@@ -4,7 +4,7 @@
 
 A local Agent Hub for coordinating Codex, Claude Code, Muse, Cursor CLI, and Grok Bot through one MCP interface. An independent daemon runs tasks, while SQLite stores their state, events, and results. Coding tasks can use isolated Git worktrees and return diffs for review. Collected edit_worktree diffs and untracked text excerpts share a 1 MiB UTF-8 budget (Workspaces.MAX_ARTIFACT_BYTES); over-budget payloads set artifact_truncated with artifact_omitted file reasons instead of returning a partial diff as complete. Path lists such as artifact_omitted and changed_files are metadata outside that byte budget; the whole result JSON is not capped.
 
-**Python 3.10+ · Windows / macOS · Service version 0.3.0 · 16 MCP tools**
+**Python 3.10+ · Windows / macOS · Service version 0.3.0 · 20 MCP tools**
 
 **Portable extensions:** [Executor plugins and command bridges](docs/executor-plugins.md) connect new AI tools without editing Hub core. Install plugins into the Hub environment; keep credentials, machine configuration and task state in each device's private data directory. Includes an independently installable example and Windows/macOS/Linux contract CI; platform CI configuration is not a claim of completed multi-platform validation.
 
@@ -14,7 +14,7 @@ A local Agent Hub for coordinating Codex, Claude Code, Muse, Cursor CLI, and Gro
 - Executor-specific modes and permission descriptions, with isolated worktrees for editing tasks.
 - Independent verification, artifact evidence, a local workbench, controller handoff, and opt-in content review through a configured text-only executor.
 - Remote Hub access over standard SSH, optionally using an existing Tailscale network, without exposing the Hub on the public internet.
-- A [read-only dashboard](docs/dashboard.md) with task search, recorded conversations, execution events, and separate verification status. Open it locally with `agent-hub dashboard`; packaged static assets need no Node.js runtime.
+- A [read-only dashboard](docs/dashboard.md) with task-chain search, a unified collaboration/operation timeline, execution events, and separate verification status. Open it locally with `agent-hub dashboard`; packaged static assets need no Node.js runtime. Controllers can append observed activities with authenticated `record_activity` (does not auto-capture unpublished client internals).
 
 Implementation, historical live validation, and unverified behavior are documented separately. `ready=true` means execution has finished. For tasks with acceptance criteria, also inspect `verification` and `work_status`.
 
@@ -136,7 +136,7 @@ Windows process tests use outer `cmd.exe /c` and `powershell.exe -c`, covering l
 
 Codex, Claude Code, and Cursor can connect to the same Hub as orchestrators. See the [three-agent setup record](docs/2026-10-11-local-three-agents.md). `cursor` with `kind=ide` selects the native IDE bridge; `cursor_cli` selects CLI execution. Example configuration disables Cursor IDE by default. Recorded IDE validation covers plain-text delegation and same-session continuation after Pro activation. An external UI-capable worker is required; no unattended resident driver is provided. IDE editing, cancellation, and session recovery after reopening remain unverified.
 
-Register `agent_hub` in MCP settings with the absolute environment Python path and `["-m", "agent_hub", "mcp"]`. Reload MCP or open a new chat to discover the current 16 tools. Update registered paths when moving source or environments. The [Windows migration record](docs/2026-10-10-d-drive-migration.md) is historical; each device uses its own paths.
+Register `agent_hub` in MCP settings with the absolute environment Python path and `["-m", "agent_hub", "mcp"]`. Reload MCP or open a new chat to discover the current 20 tools (`create_work_item`, `submit_task` requiring `work_item_id`, `link_task`, `reconcile_task`, `record_activity`, …). Update registered paths when moving source or environments. The [Windows migration record](docs/2026-10-10-d-drive-migration.md) is historical; each device uses its own paths.
 
 Example Claude Code configuration; substitute your own absolute Python path:
 
@@ -166,7 +166,7 @@ Responses include `state`, `events`, `next_seq`, `has_more`, and `timed_out`. `t
 
 Persist the last received `next_seq`. Continue with that cursor until terminal, draining remaining events while `has_more=true` before reading the final result. Pages contain at most 200 events and advance only through returned events. Resume from the last received cursor after disconnection and deduplicate by `seq`; do not resubmit a task because a wait response was lost.
 
-The orchestrator continues the wait loop. The Hub does not wake finished chats or send desktop notifications. Shutdown returns `SERVICE_STOPPING`; reconnect with the same task/cursor. Updated code/tools require an idle, authorized daemon stop with `python -m agent_hub stop`; the next call starts the new code. Reload MCP for the current 16 tools. Earlier eight-tool live validation is historical.
+The orchestrator continues the wait loop. The Hub does not wake finished chats or send desktop notifications. Shutdown returns `SERVICE_STOPPING`; reconnect with the same task/cursor. Updated code/tools require an idle, authorized daemon stop with `python -m agent_hub stop`; the next call starts the new code. Reload MCP for the current 20 tools. Earlier eight-tool live validation is historical.
 
 Coding uses `edit_worktree` based on committed `HEAD`. Tracked files must be clean and a baseline commit must exist. Untracked files stay in the original directory, are excluded from the task worktree, and appear in `excluded_untracked_files`; `baseline` records the commit SHA. Deliberately prepare a baseline if uncommitted content is required. The Hub returns diffs, changed files, and log paths without automatically committing, merging, or deleting worktrees. Worktrees are not security sandboxes, and completion claims are not proof of passing tests.
 
@@ -219,7 +219,7 @@ Historical records and request idempotency are retained. Old Claude `read_only` 
 
 ## HubGateway v1 (service version 0.3.0)
 
-`get_capabilities()` and `get_artifact(artifact_id)` expose capabilities and registered artifacts. The initial Gateway stage had 11 MCP tools; the current service includes later verification features for a total of 16. Optional `submit_task.context` participates in the idempotency hash in full; omission or `null` retains compatibility with earlier requests. Original task `state` is retained alongside `gateway_state`, `execution_uncertain`, `errors`, and `media_artifacts`. See the [Gateway handoff](docs/HubGateway-v1-实现交接.md).
+`get_capabilities()` and `get_artifact(artifact_id)` expose capabilities and registered artifacts. The current MCP surface has 20 tools. Public `submit_task` requires `work_item_id` from `create_work_item` (default title “工作项”; optional `acceptance`). Templates: `Client.software_dashboard_acceptance()` (tests/ui/review content_review) and `Client.conversation_acceptance()` (`policy=no_extra`); development/rework inherit, review does not; `continue_task.acceptance` overrides only the new child. Missing work_item_id → `WORK_ITEM_REQUIRED`, never a silent root. Review/rework also need `related_task_id` in the same work item. Use `link_task` for explicit historical association (metadata only). After accepted delivery with local `REMOTE_STATE_UNKNOWN`, controllers may call `reconcile_task` (GET-only recovery). Optional `submit_task.context` participates in the idempotency hash in full. Original task `state` is retained alongside `gateway_state`, `execution_uncertain`, `errors`, and `media_artifacts`; interrupted/delivery_unknown map to gateway_state `unknown`, not definitive failure. See the [Gateway handoff](docs/HubGateway-v1-实现交接.md).
 
 ## Muse human intervention
 
@@ -231,7 +231,7 @@ Each task has a total human-wait budget of 15 minutes. Normal execution time is 
 
 Detection prioritizes the prompted `[HUB_WAIT:<task_id>:human_verification|login|approval]` marker, with conservative detection of explicit blockers in the latest assistant message and recorded `evidence`. Native structured intervention fields are not verified. This is not general browser-state detection; manual inspection may be necessary when the model does not report a blocker. The Hub does not perform human verification.
 
-The current MCP surface has 16 tools. Reload an idle daemon and reconnect clients to discover `resume_task` and updated wait definitions; old running workers are not hot-upgraded. SSH intervention passthrough was outside the recorded implementation stage. Gateway media validation covers `text.review/deepseek-flash[1m]` and `image.generate/muse:auto`; the latter is a default route with an unknown underlying model and covers one PNG without a reference image.
+The current MCP surface has 20 tools. Reload an idle daemon and reconnect clients to discover `record_activity`, `resume_task` and updated wait definitions; old running workers are not hot-upgraded. SSH intervention passthrough was outside the recorded implementation stage. Gateway media validation covers `text.review/deepseek-flash[1m]` and `image.generate/muse:auto`; the latter is a default route with an unknown underlying model and covers one PNG without a reference image.
 
 ## Independent task verification (phase 1)
 

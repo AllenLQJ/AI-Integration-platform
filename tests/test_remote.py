@@ -218,10 +218,11 @@ class RemoteTests(unittest.TestCase):
         shim=self.root/'ssh-fixture'
         shim.write_text('#!'+sys.executable+'\nimport sys,subprocess,shlex\np=subprocess.run(shlex.split(sys.argv[-1]),input=sys.stdin.read(),text=True)\nraise SystemExit(p.returncode)\n')
         shim.chmod(0o700)
+        from hub_fixtures import with_work_item
         client=SshClient('fixture',sys.executable,str(remote_root),str(shim))
         try:
             agents=client.call('list_agents');self.assertTrue(agents['worker']['available'])
-            args=dict(request_id='stable',agent='worker',cwd=str(self.root),mode='read_only',prompt='BRIDGE-UNIQUE',timeout_seconds=10)
+            args=with_work_item(service,dict(request_id='stable',agent='worker',cwd=str(self.root),mode='read_only',prompt='BRIDGE-UNIQUE',timeout_seconds=10))
             task=client.call('submit_task',args)
             self.assertEqual(client.call('submit_task',args)['id'],task['id'])
             result=client.call('get_result',{'task_id':task['id']})
@@ -238,7 +239,7 @@ class RemoteTests(unittest.TestCase):
             (controller_root / 'config.json').write_text(json.dumps({'agents': {'target-worker': {'platform': 'darwin'}}}))
             controller=Service(controller_root,{'target-worker':proxy})
             try:
-                job=controller.call('submit_task',dict(request_id='proxy',agent='target-worker',cwd=str(self.root),mode='delegate',prompt='PROXY-MARKER',timeout_seconds=30))
+                job=controller.call('submit_task',with_work_item(controller,dict(request_id='proxy',agent='target-worker',cwd=str(self.root),mode='delegate',prompt='PROXY-MARKER',timeout_seconds=30)))
                 for _ in range(100):
                     result=controller.call('get_result',{'task_id':job['id']})
                     if result['ready']:break

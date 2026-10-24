@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import math
@@ -42,6 +43,8 @@ class Service:
         from .nodes import Nodes
         self.nodes = Nodes(self)
         self.verification.adapters = self.adapters
+        from .work_items import WorkItems
+        self.work_items = WorkItems(self.store)
         from .review import Reviewer
         self.reviewer = Reviewer(self)
         # 重启只恢复已持久化的审核：已建任务不重发，终态任务按收据幂等回写。
@@ -64,15 +67,37 @@ class Service:
         if (tool in {'submit_task', 'continue_task', 'switch_executor'} and isinstance(arguments, dict)
                 and isinstance(arguments.get('request_id'), str) and arguments['request_id'].startswith('auto-review:')):
             raise HubError('INVALID_ARGUMENT', 'auto-review: 请求键保留给内部审核服务')
-        controlled = {'continue_task', 'cancel_task', 'verify_task', 'record_verification', 'switch_executor', 'record_external_verification'}
-        if tool == 'claim_controller' or tool in controlled or tool == 'record_external_verification':
+        controlled = {'continue_task', 'cancel_task', 'verify_task', 'record_verification', 'switch_executor',
+                      'record_external_verification', 'record_activity', 'link_task', 'reconcile_task'}
+        if tool == 'claim_controller' or tool in controlled:
             if any(k.startswith('_') for k in arguments):
                 raise HubError('INVALID_ARGUMENT', '不允许设置内部任务字段')
-            root = self.verification.root_id(arguments['task_id'])
+            task_key = arguments.get('task_id') or arguments.get('related_task_id')
+            if tool == 'link_task':
+                task_key = arguments.get('task_id')
+            if not isinstance(task_key, str) or not task_key:
+                raise HubError('INVALID_ARGUMENT', 'task_id 需要非空字符串')
+            root = self.verification.root_id(task_key)
+            # reconcile_task: auth/lease under lock, network I/O outside the global Service lock
+            # and outside the long-held verification lock.
+            if tool == 'reconcile_task':
+                args = dict(arguments)
+                if set(args) - {'request_id', 'task_id', 'controller_id', 'controller_epoch'}:
+                    raise HubError('INVALID_ARGUMENT', 'reconcile_task 参数不正确')
+                controller_id = args.pop('controller_id', None)
+                controller_epoch = args.pop('controller_epoch', None)
+                with self.verification.task_lock(root):
+                    self.verification.check_controller(args['task_id'], controller_id, controller_epoch)
+                    prepared = self._reconcile_prepare(args['request_id'], args['task_id'])
+                    if prepared.get('cached'):
+                        return prepared['response']
+                return self._reconcile_execute(prepared, controller_id=controller_id,
+                                               controller_epoch=controller_epoch)
             with self.verification.task_lock(root):
                 args = dict(arguments)
                 if tool in controlled:
-                    self.verification.check_controller(args['task_id'], args.pop('controller_id', None), args.pop('controller_epoch', None))
+                    self.verification.check_controller(args.get('task_id') or task_key,
+                                                       args.pop('controller_id', None), args.pop('controller_epoch', None))
                 if tool == 'claim_controller':
                     return self.verification.claim(**args)
                 if tool in {'record_verification', 'record_external_verification'} and isinstance(args.get('verifier_id'), str) and (
@@ -82,6 +107,14 @@ class Service:
                     return self.verification.record(**args)
                 if tool == 'record_external_verification':
                     return self.verification.external(**args)
+                if tool == 'record_activity':
+                    if set(args) - {'request_id', 'task_id', 'event_id', 'activity'}:
+                        raise HubError('INVALID_ARGUMENT', 'record_activity 参数不正确')
+                    return self.record_activity(**args)
+                if tool == 'link_task':
+                    if set(args) - {'request_id', 'work_item_id', 'task_id', 'relation', 'related_task_id'}:
+                        raise HubError('INVALID_ARGUMENT', 'link_task 参数不正确')
+                    return self.work_items.link_task(**args)
                 if tool == 'verify_task':
                     result = self.verification.request(args['request_id'], dict(tool=tool, task_id=args['task_id']),
                                                        lambda: self.verification.run(args['task_id'], args['request_id']))
@@ -121,11 +154,32 @@ class Service:
                     args['target_host_id'] = node['host_id']
                     args['target_transport'] = node['transport']
                 return self.nodes.artifact(**args)
+            if tool == 'create_work_item':
+                if set(arguments) - {'request_id', 'title', 'acceptance'}:
+                    raise HubError('INVALID_ARGUMENT', 'create_work_item 参数不正确')
+                return self.work_items.create(**arguments)
             if tool == 'submit_task':
-                allowed = {'request_id', 'agent', 'prompt', 'cwd', 'mode', 'timeout_seconds', 'context', 'acceptance', 'node_id'}
+                allowed = {'request_id', 'agent', 'prompt', 'cwd', 'mode', 'timeout_seconds', 'context',
+                           'acceptance', 'node_id', 'work_item_id', 'relation', 'related_task_id'}
                 if set(arguments) - allowed:
                     raise HubError('INVALID_ARGUMENT', '不允许设置内部任务字段')
-                return self.submit(**arguments)
+                args = dict(arguments)
+                work_item_id = args.pop('work_item_id', None)
+                relation = args.pop('relation', None)
+                related_task_id = args.pop('related_task_id', None)
+                if work_item_id is None:
+                    raise HubError('WORK_ITEM_REQUIRED',
+                                   '公开提交必须提供 work_item_id；请先 create_work_item，审核/返修还需 related_task_id')
+                _, relation = self.work_items.require_for_submit(work_item_id, relation, related_task_id)
+                if args.get('acceptance') is None:
+                    inherited = self.work_items.acceptance_for_dispatch(work_item_id, relation)
+                    if inherited is not None:
+                        args['acceptance'] = inherited
+                # Relation participates in task digest so replay with changed link metadata conflicts.
+                task = self.submit(**args, work_item_id=work_item_id,
+                                   work_relation=relation, work_related_task_id=related_task_id)
+                self.work_items.attach(work_item_id, task['id'], relation, related_task_id, args['request_id'])
+                return task
             if tool == 'resume_task':
                 return self.resume_task(**arguments)
             if tool == 'continue_task':
@@ -142,11 +196,166 @@ class Service:
                 result = dict(task.get('result', {}))
                 if result.get('path'):
                     result = json.loads(Path(result['path']).read_text(encoding='utf-8'))
-                result.update(result_fields(task['state'], result))
+                if task.get('remote_observation') and 'remote_observation' not in result:
+                    result['remote_observation'] = task['remote_observation']
+                if task.get('last_reconcile') and 'last_reconcile' not in result:
+                    result['last_reconcile'] = task['last_reconcile']
+                result.update(result_fields(task['state'], result, task))
                 return dict(result, ready=True, state=task['state'], permissions=self.permissions(task), **self.verification.fields(task))
             if tool == 'cancel_task':
                 return self.cancel(**arguments)
             raise HubError('UNKNOWN_TOOL', '未知工具')
+
+    def record_activity(self, request_id, task_id, event_id, activity):
+        """Append a controller-reported activity without mutating task lifecycle."""
+        if not isinstance(task_id, str) or not task_id:
+            raise HubError('INVALID_ARGUMENT', 'task_id 需要非空字符串')
+        task = self.store.get(task_id)
+        from .activity import normalize_activity
+        workspace = str(task.get('cwd') or task.get('workspace') or '')
+        normalized = normalize_activity(activity, workspace, force_provenance='controller_reported')
+        return self.store.record_activity(request_id, task_id, event_id, normalized)
+
+    def _reconcile_prepare(self, request_id, task_id):
+        """Validate and snapshot under lock; peek idempotent receipt. No network."""
+        import hashlib
+        digest = hashlib.sha256(json.dumps(
+            dict(tool='reconcile_task', task_id=task_id), sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        with self.store.connection() as db:
+            row = db.execute('SELECT * FROM reconcile_requests WHERE request_id=?', (request_id,)).fetchone()
+            if row:
+                if row['digest'] != digest or row['task_id'] != task_id:
+                    raise HubError('REQUEST_CONFLICT', 'request_id 已用于不同核对内容')
+                return dict(cached=True, response=json.loads(row['response']))
+        task = self.store.get(task_id)
+        if task['state'] not in TERMINAL:
+            raise HubError('INVALID_STATE', '仅终态任务可核对；运行中任务请继续 wait/get_result')
+        if task.get('delivery') != 'accepted' or type(task.get('baseline')) is not int or not task.get('session_id'):
+            raise HubError('INVALID_STATE', '缺少已持久化的 accepted/baseline/session，无法安全核对')
+        adapter = self.adapters.get(task['agent'])
+        if adapter is None or not hasattr(adapter, 'reconcile'):
+            raise HubError('UNSUPPORTED_MODE', '该执行器不支持 reconcile_task')
+        # Newer acceptance attempt must not be overwritten by recycling an old task.
+        try:
+            current = self.verification.work_item(task_id)['current_task_id']
+        except HubError:
+            current = task_id
+        return dict(
+            cached=False, request_id=request_id, task_id=task_id, task=task,
+            agent=task['agent'], current_task_id=current,
+            allow_complete=(
+                task['state'] in {'interrupted', 'delivery_unknown'}
+                and task['state'] != 'cancelled'
+                and current == task_id
+            ),
+        )
+
+    def _release_task_locks(self, task, adapter):
+        """After validated complete under lease: clear only locks owned by this task."""
+        paths = []
+        state_file = getattr(adapter, 'state_file', None)
+        if state_file is not None:
+            paths.append(Path(state_file))
+        sid = task.get('session_id')
+        if sid and hasattr(adapter, 'session_state_file'):
+            paths.append(Path(adapter.session_state_file(sid)))
+        if hasattr(adapter, 'legacy_state_file'):
+            paths.append(Path(adapter.legacy_state_file))
+        for path in paths:
+            try:
+                if not path.exists():
+                    continue
+                owned = json.loads(path.read_text(encoding='utf-8'))
+                if owned.get('task_id') == task['id'] and owned.get('session_id') in (None, sid):
+                    if owned.get('bot_name') in (None, getattr(adapter, 'name', None)):
+                        path.unlink()
+            except (OSError, ValueError, TypeError):
+                continue
+
+    @staticmethod
+    def _reconcile_result_name(task_id, request_id):
+        """Immutable result filename: task id + digest only (never raw request_id path segments)."""
+        digest = hashlib.sha256(request_id.encode('utf-8')).hexdigest()[:16]
+        return task_id + '.reconciled.' + digest + '.json'
+
+    def _reconcile_execute(self, prepared, controller_id=None, controller_epoch=None):
+        """Network I/O outside Service.lock; re-check lease/attempt before persisting."""
+        import os
+        task = prepared['task']
+        adapter = self.adapters[prepared['agent']]
+        # Bounded probe longer than a single slow GET round-trip; client timeout must exceed this.
+        observation = adapter.reconcile(task, timeout_seconds=24)
+        root = self.verification.root_id(prepared['task_id'])
+        with self.verification.task_lock(root):
+            self.verification.check_controller(prepared['task_id'], controller_id, controller_epoch)
+            fresh = self.store.get(prepared['task_id'])
+            try:
+                current = self.verification.work_item(prepared['task_id'])['current_task_id']
+            except HubError:
+                current = prepared['task_id']
+            if fresh['state'] in TERMINAL and fresh['state'] not in {'interrupted', 'delivery_unknown'}:
+                # Cancelled/failed/succeeded: still record observation, never complete.
+                return self.store.apply_reconcile(
+                    prepared['request_id'], prepared['task_id'], observation,
+                    allow_complete=False, result_path=None,
+                    expected_session=fresh.get('session_id'), expected_baseline=fresh.get('baseline'))
+            allow_complete = (
+                fresh['state'] in {'interrupted', 'delivery_unknown'}
+                and current == prepared['task_id']
+                and observation.get('status') == 'completed'
+            )
+            result_path = None
+            if allow_complete:
+                result = self.store.safe(dict(
+                    answer=observation.get('answer'),
+                    session_id=observation.get('session_id') or fresh.get('session_id'),
+                    completion_evidence=observation.get('completion_evidence'),
+                    remote_observation=observation.get('remote_observation'),
+                    reconciled=True,
+                    warnings=observation.get('warnings') or [],
+                ))
+                directory = self.root / 'results'
+                directory.mkdir(exist_ok=True)
+                final = directory / self._reconcile_result_name(prepared['task_id'], prepared['request_id'])
+                staging = final.with_suffix(final.suffix + '.tmp')
+                try:
+                    staging.write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
+                    # File must be immutable and readable BEFORE any DB reference to succeeded.
+                    os.replace(str(staging), str(final))
+                    Path(final).read_text(encoding='utf-8')
+                    result_path = str(final)
+                except (OSError, ValueError, TypeError):
+                    allow_complete = False
+                    result_path = None
+                    for path in (staging, final):
+                        try:
+                            path.unlink()
+                        except OSError:
+                            pass
+            response = self.store.apply_reconcile(
+                prepared['request_id'], prepared['task_id'], observation,
+                allow_complete=allow_complete and bool(result_path), result_path=result_path,
+                expected_session=fresh.get('session_id'), expected_baseline=fresh.get('baseline'))
+            if response.get('completed'):
+                self._release_task_locks(fresh, adapter)
+                try:
+                    self.verification.track(self.store.get(prepared['task_id']))
+                    self.verification.ensure(self.store.get(prepared['task_id']))
+                except Exception:
+                    pass
+            elif result_path:
+                # Evidence/lease rejected after file write — do not leave an orphan result.
+                try:
+                    Path(result_path).unlink()
+                except OSError:
+                    pass
+            return response
+
+    def reconcile_task(self, request_id, task_id, controller_id=None, controller_epoch=None):
+        prepared = self._reconcile_prepare(request_id, task_id)
+        if prepared.get('cached'):
+            return prepared['response']
+        return self._reconcile_execute(prepared, controller_id=controller_id, controller_epoch=controller_epoch)
 
     def wait_for_task(self, task_id, after_seq=0, timeout_seconds=10):
         if not isinstance(task_id, str) or not task_id:
@@ -195,8 +404,18 @@ class Service:
             raise HubError('INVALID_ARGUMENT', 'prompt 需要非空字符串，最多 100000 字符')
         if type(timeout_seconds) not in (int, float) or not 10 <= timeout_seconds <= 7200:
             raise HubError('INVALID_ARGUMENT', '期限须在 10–7200 秒内')
+        work_item_id = internal.pop('work_item_id', None)
+        work_relation = internal.pop('work_relation', None)
+        work_related_task_id = internal.pop('work_related_task_id', None)
         spec = dict(agent=agent, prompt=prompt, cwd=str(Path(cwd).resolve()), mode=mode,
                     timeout_seconds=timeout_seconds, **internal)
+        if isinstance(work_item_id, str) and work_item_id:
+            spec['work_item_id'] = work_item_id
+        # Include collaboration link metadata in the idempotency digest.
+        if work_relation is not None:
+            spec['work_relation'] = work_relation
+        if work_related_task_id is not None:
+            spec['work_related_task_id'] = work_related_task_id
         if node_id is not None:
             spec['node_id'] = node_id
         validate(acceptance)
@@ -235,7 +454,8 @@ class Service:
             self.store.event(task['parent_id'], 'session', dict(new_attempt_id=task['id'], native_session_shared=bool(task.get('resume_session'))))
         return self.public(task)
 
-    def continue_task(self, request_id, task_id, prompt, timeout_seconds=1800, _auto_rework_run_id=None):
+    def continue_task(self, request_id, task_id, prompt, timeout_seconds=1800, acceptance=None,
+                      _auto_rework_run_id=None):
         parent = self.store.get(task_id)
         if parent['agent'] == 'muse' and parent['mode'] == 'read_only' and not self.store.by_request(request_id):
             raise HubError('LEGACY_MODE', '旧 Muse read_only 不保证只读；请使用 delegate 新建任务并确认操作范围')
@@ -243,16 +463,29 @@ class Service:
             parent = dict(parent, mode='text_only')
         workspace_metadata = ({'excluded_untracked_files': parent['excluded_untracked_files']}
                               if 'excluded_untracked_files' in parent else {})
-        workspace_metadata['acceptance'] = parent.get('acceptance')
+        # Explicit acceptance override applies only to the new child; default inherits parent.
+        if acceptance is not None:
+            validate(acceptance)
+            workspace_metadata['acceptance'] = acceptance
+        else:
+            workspace_metadata['acceptance'] = parent.get('acceptance')
         if parent.get('node_id'):
             workspace_metadata['node_id'] = parent['node_id']
         if _auto_rework_run_id is not None:
             workspace_metadata['auto_rework_run_id'] = _auto_rework_run_id
+        wid, _, related = self.work_items.inherit_from_parent(parent)
+        work_relation = 'rework' if _auto_rework_run_id is not None else 'continuation'
+        if wid:
+            workspace_metadata['work_item_id'] = wid
         if self.store.by_request(request_id):
-            return self.submit(request_id, parent['agent'], prompt, parent['cwd'], parent['mode'],
+            child = self.submit(request_id, parent['agent'], prompt, parent['cwd'], parent['mode'],
                                timeout_seconds, parent_id=task_id, workspace=parent.get('workspace'),
                                baseline=parent.get('baseline'), resume_session=parent.get('session_id'),
+                               work_relation=work_relation, work_related_task_id=related,
                                **workspace_metadata)
+            if wid:
+                self.work_items.attach(wid, child['id'], work_relation, related, request_id)
+            return child
         adapter = self.adapters.get(parent['agent'])
         if getattr(adapter, 'api_version', None) == 1 and 'continue' not in adapter.capabilities:
             raise HubError('UNSUPPORTED_MODE', '执行器未声明会话续接能力')
@@ -278,10 +511,14 @@ class Service:
             # Idempotent replay of the exact same child is allowed.
             if not any(t['request_id'] == request_id for t in siblings):
                 raise HubError('WORKSPACE_BUSY', '工作区已有另一轮任务')
-        return self.submit(request_id, parent['agent'], prompt, parent['cwd'], parent['mode'],
-                           timeout_seconds, parent_id=task_id, workspace=parent['workspace'],
+        child = self.submit(request_id, parent['agent'], prompt, parent['cwd'], parent['mode'],
+                           timeout_seconds, parent_id=task_id, workspace=parent.get('workspace'),
                            baseline=parent.get('baseline'), resume_session=parent['session_id'],
+                           work_relation=work_relation, work_related_task_id=related,
                            **workspace_metadata)
+        if wid:
+            self.work_items.attach(wid, child['id'], work_relation, related, request_id)
+        return child
 
     def switch_executor(self, request_id, task_id, agent, mode, prompt):
         if not isinstance(prompt, str) or not 0 < len(prompt) <= 100000:
@@ -313,9 +550,15 @@ class Service:
             workspace_metadata = {}
             if mode != 'edit_worktree' or parent['mode'] == 'edit_worktree':
                 workspace_metadata = {k: parent[k] for k in ('workspace', 'baseline', 'excluded_untracked_files') if k in parent}
-            return self.submit(request_id, agent, handoff + '\n用户本轮指令：\n' + prompt,
+            wid, work_relation, related = self.work_items.inherit_from_parent(parent)
+            if wid:
+                workspace_metadata['work_item_id'] = wid
+            child = self.submit(request_id, agent, handoff + '\n用户本轮指令：\n' + prompt,
                                parent['cwd'], mode, parent['timeout_seconds'], acceptance=parent.get('acceptance'),
                                parent_id=task_id, **workspace_metadata)
+            if wid:
+                self.work_items.attach(wid, child['id'], work_relation or 'switch', related, request_id)
+            return child
         return self.verification.request(request_id, dict(tool='switch_executor', task_id=task_id,
                                          agent=agent, mode=mode, prompt=prompt), apply)
 
@@ -627,6 +870,20 @@ class Service:
                             task['deadline'] = data['execution_deadline']
                             self.store.update(ident, state='waiting_for_user' if kind == 'waiting_for_user' else 'running',
                                               intervention=self.store.safe(data) if kind == 'waiting_for_user' else None)
+                if kind == 'activity':
+                    from .activity import normalize_activity
+                    try:
+                        workspace = str(task.get('cwd') or task.get('workspace') or '')
+                        data = normalize_activity(
+                            data, workspace, force_provenance='executor_observed')
+                    except HubError as error:
+                        # Never abort a live executor run over a bad activity frame.
+                        self.store.event(ident, 'system', {
+                            'message': 'activity normalize failed',
+                            'error_code': error.code,
+                            'detail': str(error)[:500],
+                        })
+                        return
                 self.store.event(ident, kind, data)
             if task.get("acceptance"):
                 self.verification.snapshot(task, cancel)

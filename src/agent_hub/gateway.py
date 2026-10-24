@@ -153,17 +153,52 @@ class Gateway:
                              'path': str(path), 'allowed_root': str(self.artifact_root.resolve())}}
 
 
-def result_fields(state, result):
+def result_fields(state, result, task=None):
     if state not in {'queued', 'running', 'waiting_for_user', 'cancelling', 'succeeded', 'failed', 'timed_out',
                      'interrupted', 'delivery_unknown', 'cancelled'}:
         raise HubError('PROTOCOL_ERROR', '未知任务状态')
-    uncertain = state in {'interrupted', 'delivery_unknown'} or (
+    task = task or {}
+    remote = (result.get('error_code') in {'REMOTE_STATE_UNKNOWN', 'DELIVERY_UNKNOWN'}
+              or result.get('cancel_scope') in {'remote_session', 'remote_hub_task'}
+              or (task.get('agent') in {'grok', 'grokbot', 'muse'}
+                  and (task.get('delivery') == 'accepted' or task.get('session_id')
+                       or type(task.get('baseline')) is int)))
+    local_confirmed = not remote and (
+        task.get('agent') in {'codex', 'claude', 'cursor', 'cursor_cli'}
+        or type(result.get('exit_code')) is int
+        or result.get('cancel_scope') in {'local_process', 'local_process_tree'})
+    uncertain = state == 'delivery_unknown' or (state == 'interrupted' and not local_confirmed) or (
         state in {'cancelled', 'timed_out'} and not result.get('remote_cancelled')
         and result.get('cancel_scope') != 'not_started')
     code = 'TASK_TIMED_OUT' if state == 'timed_out' else result.get('error_code')
-    mapped = 'running' if state in {'cancelling', 'waiting_for_user'} else 'failed' if state in {
-        'timed_out', 'interrupted', 'delivery_unknown', 'cancelled'} else state
-    return {'contract_version': CONTRACT_VERSION, 'gateway_state': mapped, 'media_artifacts': result.get('media_artifacts', []),
-            'execution_uncertain': uncertain,
-            'errors': [{'code': code or 'TASK_FAILED', 'message': result.get('error', '任务失败'),
-                        'retryable': False, 'details': {}}] if code or result.get('error') else []}
+    # Local observation vs remote execution: interrupted/delivery_unknown stay unknown,
+    # never presented as a definitive gateway failure while execution may still run.
+    if state in {'cancelling', 'waiting_for_user'}:
+        mapped = 'running'
+    elif state in {'interrupted', 'delivery_unknown'}:
+        mapped = 'unknown' if uncertain else 'failed'
+    elif state in {'timed_out', 'cancelled'}:
+        mapped = 'failed'
+    else:
+        mapped = state
+    errors = []
+    if code or result.get('error'):
+        message = result.get('error') or (
+            '连接中断／远端状态未知；本地观测已中断，远端可能仍在执行'
+            if remote and uncertain else '本地执行已中断' if state == 'interrupted' and local_confirmed
+            else '执行状态未确认' if uncertain else '任务失败')
+        details = {'execution_uncertain': True, 'local_state': state} if uncertain else {}
+        if result.get('remote_observation'):
+            details['remote_observation'] = result['remote_observation']
+        if remote and uncertain:
+            details['recovery'] = 'reconcile_original_task'
+        errors.append({
+            'code': code or ('REMOTE_STATE_UNKNOWN' if remote and uncertain else 'TASK_INTERRUPTED'
+                            if state == 'interrupted' else 'TASK_FAILED'),
+            'message': message,
+            'retryable': False,
+            'details': details,
+        })
+    return {'contract_version': CONTRACT_VERSION, 'gateway_state': mapped,
+            'media_artifacts': result.get('media_artifacts', []),
+            'execution_uncertain': uncertain, 'errors': errors}

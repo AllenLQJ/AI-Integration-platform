@@ -4,7 +4,7 @@
 
 本地 Agent Hub：通过统一 MCP 接口协调 Codex、Claude Code、Muse、Cursor CLI 和 Grok Bot。独立后台执行任务，SQLite 保存状态、事件和结果；代码编辑可在独立 Git worktree edit_worktree 收集的 diff 与未跟踪文本摘录合计默认最多 1 MiB（UTF-8，`Workspaces.MAX_ARTIFACT_BYTES`）；超限时设置 `artifact_truncated` 与 `artifact_omitted`，不会把不完整 diff 当作完整变更。省略路径列表（如 artifact_omitted、changed_files）属于预算外元数据，整个结果 JSON 不设上限。 中进行，再返回差异供审阅。
 
-**Python 3.10+ · Windows / macOS · 服务版本 0.3.0 · 16 个 MCP 工具**
+**Python 3.10+ · Windows / macOS · 服务版本 0.3.0 · 20 个 MCP 工具**
 
 **通用接入：**[执行器插件与命令桥接](docs/executor-plugins.md) 支持不修改 Hub 核心接入新 AI 工具。插件安装在 Hub 环境中；账号、机器配置、任务和日志保存在各设备独立的数据目录。提供可独立安装的示例包及 Windows/macOS/Linux 契约测试 CI；配置了 CI 不等于已完成跨平台实测。
 
@@ -14,7 +14,7 @@
 - 按执行器提供任务模式和权限声明，编辑任务使用隔离 worktree。
 - 独立验收、产物证据、本机工作台、总控接管与显式开启的可配置执行器内容审核。
 - 通过标准 SSH 调用远端 Hub；可使用已有 Tailscale 网络连接，不开放公网 Hub 服务。
-- [本机只读看板](docs/dashboard.md)：搜索任务、阅读协作记录和执行事件，分别查看执行与验收状态。运行 `agent-hub dashboard` 打开，安装包自带静态资源，无需 Node.js 运行时。
+- [本机只读看板](docs/dashboard.md)：搜索任务链、阅读统一协作/操作时间线与执行事件，分别查看执行与验收状态。运行 `agent-hub dashboard` 打开，安装包自带静态资源，无需 Node.js 运行时。总控可通过已认证的 `record_activity` 补记活动（不会自动截获未公开的客户端内部工具）。
 
 实现、历史实机验收与尚未验证的范围分别说明。`ready=true` 表示执行结束；有验收条件时，应进一步检查 `verification` 和 `work_status`。
 
@@ -137,7 +137,7 @@ Windows 专用实进程测试使用与 sshd 匹配的外层 `cmd.exe /c`、`powe
 
 Mac 三方入口的最新路由与验证见 [Claude/Codex/Cursor 双向接入](docs/2026-10-11-local-three-agents.md)：本机 `cursor` 默认原生 IDE 界面桥，`cursor_cli` 显式选择 CLI；项目示例里 Cursor IDE 默认 `enabled: false`（见 `config.example.json`），`cursor_cli` 单独配置。Claude、Codex 的真实总控与被调用双向复验通过。开通 Pro 后，Cursor IDE 总控调度 Claude、Hub 委托 IDE 纯文本任务和同会话续接均实测通过，Cursor CLI 读取随机文件复验通过。IDE 桥需要具备电脑控制能力的外部 worker 在线，尚无常驻无人值守驱动；IDE 编辑、取消及重开后会话定位尚未验收。
 
-在 Codex 的 MCP 设置中登记 `agent_hub`，command 使用本机项目虚拟环境 Python 的绝对路径，args 为 `["-m", "agent_hub", "mcp"]`。重新加载 MCP 或打开新聊天后应看到 16 个工具。移动源码或环境后需同步修改 MCP 注册路径；Windows 测试环境的 D 盘迁移见 `docs/2026-10-10-d-drive-migration.md`，Mac 使用自己的项目路径。
+在 Codex 的 MCP 设置中登记 `agent_hub`，command 使用本机项目虚拟环境 Python 的绝对路径，args 为 `["-m", "agent_hub", "mcp"]`。重新加载 MCP 或打开新聊天后应看到 20 个工具（含 `create_work_item`、要求 `work_item_id` 的 `submit_task`、`link_task`、`reconcile_task`、`record_activity`）。移动源码或环境后需同步修改 MCP 注册路径；Windows 测试环境的 D 盘迁移见 `docs/2026-10-10-d-drive-migration.md`，Mac 使用自己的项目路径。
 
 Claude Code 可以作为总控连接同一服务，例如保存下述本机 MCP 配置（换成自己的 Python 绝对路径）：
 
@@ -171,7 +171,7 @@ request_id 应为稳定且唯一的请求键。相同键和内容只执行一次
 
 等待由 Hub 执行，但持续续接由总控负责；不会自动唤醒已结束聊天或发桌面通知。服务关闭时等待返回 SERVICE_STOPPING，重连后继续原任务游标。
 
-更新源码后，已运行后台不会自动加载新工具。在无在途任务且明确允许停止的时机运行 `python -m agent_hub stop`，下次调用启动新版后台；重新加载 MCP 或开启新聊天刷新当前 16 个工具。验收脚本使用隔离服务；2026-10-10 已按用户授权重启共享后台并验证八个工具，见等待验收记录。后续更新仍需手动重载。
+更新源码后，已运行后台不会自动加载新工具。在无在途任务且明确允许停止的时机运行 `python -m agent_hub stop`，下次调用启动新版后台；重新加载 MCP 或开启新聊天刷新当前 20 个工具。验收脚本使用隔离服务；2026-10-10 已按用户授权重启共享后台并验证八个工具，见等待验收记录。后续更新仍需手动重载。
 
 编码任务使用 `edit_worktree`，以 `HEAD` 已提交版本为基线，要求已跟踪文件没有未提交修改且有基线提交。主目录可以存在未跟踪文件：这些文件保留在原目录，不复制到任务工作区，任务状态和结果的 `excluded_untracked_files` 列出未纳入的路径，`baseline` 记录提交 SHA。需要使用未提交内容时，先明确并准备相应基线。Hub 不自动提交或合并、不删除任务 worktree。返回 diff、变更文件和日志路径；模型说完成不等于代码测试通过。worktree 不是安全沙箱。
 
@@ -226,7 +226,7 @@ list_agents 的 permissions 按模式说明 enforced_by、enforced、allows_writ
 
 ## HubGateway v1（服务版本 0.3.0）
 
-提供 `get_capabilities()`、`get_artifact(artifact_id)`。最初 HubGateway 阶段为 11 个 MCP 工具；当前包含后续验收功能，共 16 个工具。
+提供 `get_capabilities()`、`get_artifact(artifact_id)`。当前共 20 个 MCP 工具。公开 `submit_task` 必须带 `work_item_id`（先 `create_work_item`，默认标题「工作项」，可选 `acceptance`）；缺失返回 `WORK_ITEM_REQUIRED`，不会静默建根。软件看板模板见 `Client.software_dashboard_acceptance()`（tests/ui/review），对话见 `conversation_acceptance()`；开发/返修继承、审核不继承；`continue_task.acceptance` 仅作用于新子任务。历史任务用 `link_task` 补关联；`reconcile_task` 仅 GET 核对已 accepted 但本地观测中断的远端任务。`interrupted`/`delivery_unknown` 的 `gateway_state` 为 `unknown`，不得当成确定失败。
 `submit_task` 新增可选 `context`，省略或 null 保持旧请求哈希兼容；对象内容全部参与幂等哈希。
 任务状态保留原始 `state`；结果另提供 `gateway_state`、`execution_uncertain`、`errors` 和 `media_artifacts`。
 实现边界、配置和测试见 [HubGateway 交接说明](docs/HubGateway-v1-实现交接.md)。
@@ -241,7 +241,7 @@ Muse 遇到人机验证、登录或审批时，可报告 `waiting_for_user`（�
 
 当前检测优先使用派发提示中约定的 `[HUB_WAIT:<task_id>:human_verification|login|approval]` 消息标记，保守识别最新助手消息中的明确阻碍和接管请求作为辅助，并标明 `evidence`。尚未验证 Muse 原生结构化人工等待字段；这不是通用浏览器状态探测，模型不报告时可能仍需人工查看。Hub 不操作人机验证。
 
-当前本机 MCP 共 16 个工具；后台需在无在途任务时重载，Cursor/Codex 客户端需重新连接 MCP 才能发现 resume_task 和新版等待说明。已开始的旧 worker 不会热升级。SSH 执行器的人工等待透传不在该次实现范围。
+当前本机 MCP 共 20 个工具；后台需在无在途任务时重载，Cursor/Codex 客户端需重新连接 MCP 才能发现 `record_activity`、resume_task 和新版等待说明。已开始的旧 worker 不会热升级。SSH 执行器的人工等待透传不在该次实现范围。
 
 HubGateway 媒体接入已完成首轮真实文本审核与 Muse 默认图片路由验收：`text.review/deepseek-flash[1m]` 和 `image.generate/muse:auto` 已登记证据。`muse:auto` 表示默认路由，底层模型未知；仅支持已验收的一张 PNG 无参考图路径。
 
@@ -263,7 +263,7 @@ python -m agent_hub show TASK_ID --data-dir /path/to/private-data
 python -m agent_hub rpc record_verification --data-dir /path/to/private-data --arguments '{"request_id":"review-1","task_id":"TASK_ID","verifier_id":"human","decision":"pass","reason":"已核对"}'
 ```
 
-MediaFlow 以 context + acceptance 提交，通过 get_work_item / get_result.verification 读取。外部检查结果由下文的 `record_external_verification` 写入，Hub 仍不生成图片或解码视频；此外部验收写入尚未接通 Muse。设计与边界见 [验收设计](docs/2026-10-12-verification-phase1-design.md)。第一阶段当时新增 verify_task、get_work_item；加上后续阶段后，MCP 现为 16 个工具。客户端需重新加载后才能看到新工具。
+MediaFlow 以 context + acceptance 提交，通过 get_work_item / get_result.verification 读取。外部检查结果由下文的 `record_external_verification` 写入，Hub 仍不生成图片或解码视频；此外部验收写入尚未接通 Muse。设计与边界见 [验收设计](docs/2026-10-12-verification-phase1-design.md)。第一阶段当时新增 verify_task、get_work_item；加上后续阶段与时间线上报后，MCP 现为 20 个工具。客户端需重新加载后才能看到新工具。
 
 带 acceptance 的尝试链保持线性：只能从当前末端 continue_task，旧尝试的新请求返回 ATTEMPT_SUPERSEDED（同键重放仍幂等）。artifact_required 要求本次新增或内容哈希改变，已有声明文件、touch 及复用其他任务媒体均不算产物。验收异常有界重试后转 needs_review。
 
