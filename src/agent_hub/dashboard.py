@@ -86,12 +86,28 @@ class Dashboard:
         prompt = _text(task.get('prompt', '')).strip()
         workspace = str(task.get('cwd') or task.get('workspace') or '').rstrip('\\/')
         label = PureWindowsPath(workspace).name
-        return dict(id=task['id'], title=prompt.splitlines()[0][:120] if prompt else task['id'],
+        verification = fields['verification']
+        cancel_scope = task.get('cancel_scope')
+        if not isinstance(cancel_scope, str):
+            adapter = self.service.adapters.get(task.get('agent')) if hasattr(self.service, 'adapters') else None
+            cancel_scope = getattr(adapter, 'cancel_scope', None) if adapter is not None else None
+        summary = dict(id=task['id'], title=prompt.splitlines()[0][:120] if prompt else task['id'],
                     agent=_text(task.get('agent', '')), state=_text(task['state']),
-                    verification_state=_text(fields['verification']['state']), work_status=_text(fields['work_status']),
+                    verification_state=_text(verification['state']),
+                    verification_label=_text(verification.get('verification_label') or verification['state']),
+                    verification_policy=_text(verification.get('verification_policy') or ''),
+                    work_status=_text(fields['work_status']),
                     created=task['created'], updated=task['updated'], workspace_label=_text(label)[:120],
                     mode=_text(task.get('mode', '')))
-
+        if isinstance(task.get('delivery'), str):
+            summary['delivery'] = _text(task['delivery'])[:64]
+        if isinstance(cancel_scope, str) and cancel_scope:
+            summary['cancel_scope'] = _text(cancel_scope)[:64]
+        if isinstance(task.get('session_id'), str) and task['session_id']:
+            summary['has_remote_session'] = True
+        if type(task.get('baseline')) is int:
+            summary['has_baseline'] = True
+        return summary
     def tasks(self, limit=30, offset=0, q='', state='', agent=''):
         _integer(limit, 'limit', 1, 100)
         _integer(offset, 'offset', 0, 9223372036854775807)
@@ -173,21 +189,32 @@ class Dashboard:
             completeness = 'truncated' if data.get('truncated') is True else (
                 'possibly_truncated' if len(text) >= 1000 else 'recorded')
             role = data.get('role')
-            role = role if isinstance(role, str) and role in {'user', 'assistant', 'system', 'tool'} else 'unknown'
-            if role in {'user', 'unknown'} and text == task.get('prompt'):
+            # Keep missing role as None — UI titles use agent fallback; never invent assistant.
+            if not (isinstance(role, str) and role in {'user', 'assistant', 'system', 'tool'}):
+                role = None
+            if role in {'user', None} and text == task.get('prompt'):
                 continue
-            recorded.append(self._message(task_id + ':event:' + str(row['seq']), role, text,
-                                          'event:' + str(row['seq']), completeness, row['timestamp']))
+            message = self._message(task_id + ':event:' + str(row['seq']), role, text,
+                                    'event:' + str(row['seq']), completeness, row['timestamp'])
+            if isinstance(data.get('provider_message_id'), str):
+                message['provider_message_id'] = data['provider_message_id'][:200]
+            if type(data.get('provider_revision')) is int:
+                message['provider_revision'] = data['provider_revision']
+            if isinstance(data.get('actor'), str) and data['actor'].strip():
+                message['actor'] = _text(data['actor'])[:200]
+            if isinstance(data.get('recipient'), str) and data['recipient'].strip():
+                message['recipient'] = _text(data['recipient'])[:200]
+            recorded.append(message)
         result = self.service.call('get_result', {'task_id': task_id}) if task['state'] in TERMINAL else {}
         answer = result.get('answer')
         final = self._message(task_id + ':result', 'assistant', answer, 'task.result', 'complete', task['updated']) if isinstance(answer, str) and answer else None
         if final:
             # CLI adapters can aggregate several event messages into one final answer.
             joined = '\n'.join(m['text'] for m in recorded)
-            if joined and joined == final['text'] and all(m['role'] in {'assistant', 'unknown'} for m in recorded):
+            if joined and joined == final['text'] and all(m['role'] in {'assistant', None} for m in recorded):
                 recorded = []
             else:
-                recorded = [m for m in recorded if m['role'] not in {'assistant', 'unknown'} or not (
+                recorded = [m for m in recorded if m['role'] not in {'assistant', None} or not (
                     m['text'] == final['text'] or (
                         m['completeness'] in {'truncated', 'possibly_truncated'} and final['text'].startswith(m['text'])))]
         if len(rows) > 200:
@@ -202,10 +229,32 @@ class Dashboard:
         acceptance = task.get('acceptance') or {}
         criteria = [_pick(item, ('id', 'kind', 'required', 'description', 'path', 'expected'))
                     for item in acceptance.get('criteria', [])[:100] if isinstance(item, dict)]
+        summary = self.service.verification.summary(task)
+        check_rows = []
+        for check in (summary.get('checks') or [])[:100]:
+            if not isinstance(check, dict):
+                continue
+            row = _pick(check, (
+                'criterion_id', 'outcome', 'reason', 'evidence', 'verifier_id', 'recorded_at', 'checked_at'))
+            verifier = check.get('verifier')
+            if isinstance(verifier, dict) and isinstance(verifier.get('name'), str):
+                row['verifier_id'] = _text(verifier['name'])[:200]
+            check_rows.append(row)
         artifacts = [_pick(item, ('artifact_id', 'logical_id', 'sha256', 'size_bytes', 'mime_type', 'source', 'change'))
                      for item in self.service.verification.artifacts(task_id)[:200] if isinstance(item, dict)]
+        from .dashboard_timeline import task_timeline
+        timeline_page = self.store.timeline_events(task_id, limit=400)
+        projected = task_timeline(task, messages, timeline_page['events'])
+        if timeline_page['truncated']:
+            projected['capture_coverage'] = dict(
+                projected['capture_coverage'],
+                note=projected['capture_coverage']['note'] + ' 事件查询已达上限。')
+            projected['truncated'] = True
         return dict(task=self._summary(task), messages=messages, relations=self._relations(task),
-                    criteria=criteria, artifacts=artifacts)
+                    criteria=criteria, verification_checks=check_rows, artifacts=artifacts,
+                    acceptance_policy=_text(acceptance.get('policy') or ''),
+                    timeline=projected['timeline'],
+                    capture_coverage=projected['capture_coverage'])
 
     def events(self, task_id, after_seq=0):
         _string(task_id, 'task_id', 200, required=True)

@@ -35,14 +35,18 @@ class WaitMCPTests(unittest.IsolatedAsyncioTestCase):
                         self.assertIn('get_capabilities', tools)
                         self.assertIn('get_artifact', tools)
                         self.assertIn('context', tools['submit_task'].inputSchema['properties'])
+                        self.assertIn('work_item_id', tools['submit_task'].inputSchema['properties'])
                         caps = json.loads((await session.call_tool('get_capabilities', {})).content[0].text)
                         self.assertEqual(caps['contract_version'], '1.0')
                         missing = json.loads((await session.call_tool('get_artifact', {'artifact_id': 'missing'})).content[0].text)
                         self.assertFalse(missing['error']['retryable'])
                         self.assertEqual(missing['error']['code'], 'ARTIFACT_NOT_FOUND')
                         self.assertTrue(tools['wait_for_task'].annotations.readOnlyHint)
+                        work_item = json.loads((await session.call_tool('create_work_item', dict(
+                            request_id='wi:mcp-wait', title='mcp wait'))).content[0].text)
                         created = await session.call_tool('submit_task', dict(request_id='mcp-wait',
-                            agent='fake', prompt='wait', cwd=td, mode='read_only'))
+                            agent='fake', prompt='wait', cwd=td, mode='read_only',
+                            work_item_id=work_item['work_item_id']))
                         task = json.loads(created.content[0].text)
                         waiting = asyncio.create_task(session.call_tool('wait_for_task',
                             dict(task_id=task['id'], timeout_seconds=1)))

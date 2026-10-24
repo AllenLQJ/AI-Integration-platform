@@ -68,6 +68,36 @@ class Muse:
         return max(replies, key=lambda e: e['seq']) if replies else None
 
     @staticmethod
+    def owned_visible_messages(events, baseline, seen):
+        """Yield public assistant messages owned by this task after baseline.
+
+        Does not cross sessions or expose non-display/thought payloads. Completion
+        marker matching and human-wait rules remain in the caller.
+        """
+        if not isinstance(events, list):
+            return
+        for entry in events:
+            if entry.get('role') not in {'assistant', 'message.assistant'}:
+                continue
+            payload = entry.get('raw', {}).get('payload', {}) if isinstance(entry.get('raw'), dict) else {}
+            if payload.get('display_text_ready', True) is not True:
+                continue
+            if payload.get('status', 'completed') != 'completed':
+                continue
+            if payload.get('kind') in {'thought', 'reasoning', 'hidden'}:
+                continue
+            seq = entry.get('seq') or 0
+            if type(seq) is not int or seq <= baseline or not isinstance(entry.get('text'), str) or not entry['text']:
+                continue
+            raw_revision = payload.get('revision')
+            revision = raw_revision if type(raw_revision) is int else seq
+            prior = seen.get(seq)
+            if prior is not None and revision <= prior:
+                continue
+            seen[seq] = revision
+            yield entry, revision
+
+    @staticmethod
     def answer_with_links(events, reply):
         import re
         links = list(dict.fromkeys(url.rstrip('.,;:!?。，；：！？') for url in
@@ -358,6 +388,7 @@ class Muse:
                 from .muse_wait import HumanWait, find_intervention
                 human_wait = HumanWait(task, sid, event)
                 previous_snapshot = None
+                progress_seen = {}
                 while time.time() < task['deadline']:
                     if cancel.is_set(): raise HubError('CANCELLED', '仅停止本地等待')
                     try:
@@ -370,6 +401,15 @@ class Muse:
                                        error.code, details) from error
                     except Exception as error:
                         raise HubError('REMOTE_STATE_UNKNOWN', '已发送，但连接中断；远端可能继续执行') from error
+                    for entry, revision in self.owned_visible_messages(history, baseline, progress_seen):
+                        text = entry['text']
+                        event('message', {
+                            'message': text[:1000],
+                            'role': 'assistant',
+                            'provider_message_id': str(entry.get('seq')),
+                            'provider_revision': revision if type(revision) is int else 0,
+                            'truncated': len(text) > 1000,
+                        })
                     intervention = human_wait.observe(history, baseline)
                     reply = self.find_reply(history, max(baseline, human_wait.reply_after), marker)
                     if intervention and find_intervention(history, baseline, task['id']):

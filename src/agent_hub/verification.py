@@ -29,10 +29,29 @@ def relative_path(value):
             and '..' not in value.replace('\\', '/').split('/'))
 
 
+def has_verifiable_acceptance(task):
+    """True when Hub should run/await criterion checks (not explicit no_extra / absent)."""
+    acceptance = task.get('acceptance') if isinstance(task, dict) else None
+    if not isinstance(acceptance, dict):
+        return False
+    if acceptance.get('policy') == 'no_extra':
+        return False
+    return isinstance(acceptance.get('criteria'), list) and bool(acceptance['criteria'])
+
+
 def validate(acceptance):
     if acceptance is None:
         return
-    if (not isinstance(acceptance, dict) or 'criteria' not in acceptance or set(acceptance) - {'criteria', 'review'}
+    if not isinstance(acceptance, dict):
+        raise HubError('INVALID_ARGUMENT', 'acceptance 需要对象')
+    policy = acceptance.get('policy')
+    if policy == 'no_extra':
+        if set(acceptance) - {'policy'}:
+            raise HubError('INVALID_ARGUMENT', 'policy=no_extra 不得附带 criteria/review')
+        return
+    if policy is not None and not isinstance(policy, str):
+        raise HubError('INVALID_ARGUMENT', 'acceptance.policy 无效')
+    if ('criteria' not in acceptance or set(acceptance) - {'criteria', 'review', 'policy'}
             or not isinstance(acceptance['criteria'], list) or not 1 <= len(acceptance['criteria']) <= 100):
         raise HubError('INVALID_ARGUMENT', 'acceptance.criteria 需要 1–100 条检查')
     if 'review' in acceptance:
@@ -138,7 +157,8 @@ class Verification:
             return self.task_locks.setdefault(task_id, threading.RLock())
 
     def ensure(self, task):
-        state = 'awaiting_verification' if task['state'] == 'succeeded' and task.get('acceptance') else 'not_requested'
+        state = ('awaiting_verification' if task['state'] == 'succeeded' and has_verifiable_acceptance(task)
+                 else 'not_requested')
         with self.store.connection() as db:
             db.execute('INSERT OR IGNORE INTO verifications VALUES (?,?,?)', (task['id'], state, '{}'))
             if state == 'awaiting_verification':
@@ -148,15 +168,26 @@ class Verification:
         with self.store.connection() as db:
             row = db.execute('SELECT * FROM verifications WHERE task_id=?', (task['id'],)).fetchone()
         if not row:
-            return dict(state='awaiting_verification' if task['state'] == 'succeeded' and task.get('acceptance') else 'not_requested')
+            return dict(state=('awaiting_verification' if task['state'] == 'succeeded' and has_verifiable_acceptance(task)
+                               else 'not_requested'))
         state = row['state']
-        if infer and state == 'not_requested' and task['state'] == 'succeeded' and task.get('acceptance'):
+        if infer and state == 'not_requested' and task['state'] == 'succeeded' and has_verifiable_acceptance(task):
             state = 'awaiting_verification'
         return dict(json.loads(row['data']), state=state)
 
     def fields(self, task):
         v = self.summary(task)
         state = task['state']
+        acceptance = task.get('acceptance') if isinstance(task.get('acceptance'), dict) else {}
+        # UI-oriented policy hint; does not invent passed for legacy tasks without criteria.
+        if v['state'] == 'not_requested':
+            if acceptance.get('policy') == 'no_extra':
+                v = dict(v, verification_policy='no_extra', verification_label='completed_no_extra')
+            elif not acceptance:
+                v = dict(v, verification_policy='unset', verification_label='not_configured')
+            else:
+                v = dict(v, verification_policy=acceptance.get('policy') or 'custom',
+                         verification_label='not_configured')
         work = state if state != 'succeeded' or v['state'] == 'not_requested' else (
             'completed' if v['state'] == 'passed' else v['state'])
         return dict(verification=v, work_status=work)

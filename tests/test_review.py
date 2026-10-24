@@ -89,10 +89,11 @@ class ReviewTests(unittest.TestCase):
         self.count += 1
         workspace = self.root / ('workspace-%d' % self.count); workspace.mkdir()
         acceptance = {'criteria': criteria, 'review': review or {'agent': 'claude', 'timeout_seconds': 60}}
+        from hub_fixtures import with_work_item
         args = dict(request_id='req-%d' % self.count, agent='fake', prompt='write', cwd=str(workspace),
                     mode='read_only', acceptance=acceptance)
         args.update(kw)
-        return self.service.call('submit_task', args)['id']
+        return self.service.call('submit_task', with_work_item(self.service, args))['id']
 
     def until(self, predicate, timeout=15):
         end = time.time() + timeout
@@ -247,17 +248,18 @@ class ReviewTests(unittest.TestCase):
                {'criteria': CONTENT, 'review': {'agent': 'claude', 'model': 'x'}},
                {'criteria': CONTENT[:1], 'review': {'agent': 'claude'}},
                {'review': {'agent': 'claude'}}]
+        from hub_fixtures import with_work_item
         for index, acceptance in enumerate(bad):
             with self.assertRaises(HubError) as caught:
-                self.service.call('submit_task', dict(request_id='bad-%d' % index, agent='fake', prompt='p',
-                                                      cwd=str(self.root), mode='read_only', acceptance=acceptance))
+                self.service.call('submit_task', with_work_item(self.service, dict(request_id='bad-%d' % index, agent='fake', prompt='p',
+                                                      cwd=str(self.root), mode='read_only', acceptance=acceptance)))
             self.assertEqual(caught.exception.code, 'INVALID_ARGUMENT')
         with self.assertRaises(HubError) as caught:
-            self.service.call('submit_task', dict(request_id='self', agent='claude', prompt='p', cwd=str(self.root),
-                                                  mode='text_only', acceptance={'criteria': CONTENT, 'review': {'agent': 'claude'}}))
+            self.service.call('submit_task', with_work_item(self.service, dict(request_id='self', agent='claude', prompt='p', cwd=str(self.root),
+                                                  mode='text_only', acceptance={'criteria': CONTENT, 'review': {'agent': 'claude'}})))
         self.assertEqual(caught.exception.code, 'INVALID_ARGUMENT')
-        plain = self.service.call('submit_task', dict(request_id='plain', agent='fake', prompt='write', cwd=str(self.root),
-                                                      mode='read_only', acceptance={'criteria': CONTENT}))
+        plain = self.service.call('submit_task', with_work_item(self.service, dict(request_id='plain', agent='fake', prompt='write', cwd=str(self.root),
+                                                      mode='read_only', acceptance={'criteria': CONTENT})))
         self.assertEqual(self.settled(plain['id'])['work_status'], 'needs_review')
         self.assertNotIn('review', self.summary(plain['id']))
         self.assertEqual(self.all_reviews(), [])
@@ -282,8 +284,9 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(self.all_reviews(), [])
 
     def test_reserved_internal_identifiers(self):
+        from hub_fixtures import with_work_item
         with self.assertRaises(HubError):
-            self.service.call('submit_task', dict(request_id='auto-review:x', agent='fake', prompt='p', cwd=str(self.root), mode='read_only'))
+            self.service.call('submit_task', with_work_item(self.service, dict(request_id='auto-review:x', agent='fake', prompt='p', cwd=str(self.root), mode='read_only')))
         self.exec.first = b'GOOD final'
         ident = self.submit(); self.settled(ident)
         with self.assertRaises(HubError):

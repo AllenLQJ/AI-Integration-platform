@@ -8,7 +8,7 @@
 - submit_task：可选 context，完整 JSON 持久化并参与幂等哈希；不传或 null 保持旧哈希兼容。无素材时 payload.input_host_id=null；非空附件仍拒绝。
 - get_result：保留原始 state、answer、artifacts.logs，附 media_artifacts、gateway_state、execution_uncertain、errors 和 contract_version。
 - get_artifact：只返回服务端登记、绑定 task_id 且哈希未变化的文件；同主机 local_file，不接受客户端任意路径，不返回 Base64。
-- waiting_for_user/cancelling 的 gateway_state 为 running；timed_out/interrupted/delivery_unknown/cancelled 为 failed，保留原始状态供客户端核对。不确定执行不自动重发；超时包含 TASK_TIMED_OUT。
+- waiting_for_user/cancelling 的 gateway_state 为 running；interrupted/delivery_unknown 的 gateway_state 为 unknown（execution_uncertain=true，errors.retryable=true），不得呈现为确定失败；timed_out/cancelled 为 failed。保留原始 state 供审计。不确定执行不自动重发；可用管理端 `reconcile_task` 仅 GET 核对。超时包含 TASK_TIMED_OUT。
 
 ## 已验证能力与模型身份
 

@@ -1,12 +1,34 @@
 import {createAPI, consumeTicket} from './api.mjs';
 import {DashboardState} from './state.mjs';
 import {createGraph} from './graph.mjs';
+import {
+  TimelineExpansion, timelineRecords, coverageNotes, kindLabel, provenanceLabel, statusLabel,
+} from './timeline.mjs';
+import {
+  names, label, verificationLabel, isRemoteUncertain, stateLabel, workStatusLabel,
+} from './status_labels.mjs';
 
-const api = createAPI(), state = new DashboardState();
+const api = createAPI(), state = new DashboardState(), expansion = new TimelineExpansion();
 const $ = id => document.getElementById(id);
-const names = {queued:'排队中',running:'执行中',waiting_for_user:'等待用户',succeeded:'执行成功',completed:'已完成',failed:'失败',timed_out:'已超时',interrupted:'已中断',delivery_unknown:'投递状态未知',cancelled:'已取消',pending:'待验收',awaiting_verification:'等待验收',verifying:'验收中',rework_required:'需要返工',passed:'验收通过',rejected:'验收未通过',not_requested:'未要求验收',unknown:'未知'};
-const label = value => names[value] || value || '未记录';
+const agentLabels = {cursor_cli:'Cursor',cursor:'Cursor',codex:'Codex',claude:'Claude',muse:'Muse',grokbot:'Grok',grok:'Grok'};
 const text = value => typeof value === 'string' ? value : value == null ? '未记录' : JSON.stringify(value);
+function messageIdentity(record) {
+  if (record.actor || record.recipient) {
+    return [record.actor, record.recipient].filter(Boolean).join(' → ');
+  }
+  if (record.title && record.role_missing) return record.title;
+  if (record.kind === 'message') {
+    if (record.role === 'assistant') return record.agent || '执行器';
+    if ({user:'任务输入',system:'系统记录',tool:'工具记录'}[record.role]) {
+      return {user:'任务输入',system:'系统记录',tool:'工具记录'}[record.role];
+    }
+    const known = agentLabels[record.agent];
+    if (known) return `${known} · 任务消息`;
+    if (record.agent) return `${record.agent} · 任务消息`;
+    return record.title || '任务消息';
+  }
+  return record.agent || kindLabel(record.kind);
+}
 function node(tag, className, value) {
   const item = document.createElement(tag);
   if (className) item.className = className;
@@ -50,7 +72,7 @@ function renderList() {
     button.dataset.taskId = task.id;
     button.setAttribute('aria-pressed', String(state.chainId === task.id));
     const meta = node('div','task-sub');
-    meta.append(node('span','',`${task.task_count} 次执行 · ${(task.agents||[]).join(' / ') || '执行器未记录'}`),node('span','',label(task.state)));
+    meta.append(node('span','',`${task.task_count} 次执行 · ${(task.agents||[]).join(' / ') || '执行器未记录'}`),node('span','',stateLabel(task)));
     if (task.active_count) button.append(node('span','chain-activity',`${task.active_count} 项进行中`));
     button.append(node('div','task-title',task.title || task.id),meta);
     button.addEventListener('click',()=>selectChain(task.id)); list.append(button);
@@ -88,15 +110,90 @@ async function loadList(offset = 0, background = false) {
     if (state.listGate.current(token)) { listPending = false; $('task-list').setAttribute('aria-busy','false'); scheduleList(); }
   }
 }
+function renderCoverage() {
+  const note = $('coverage-note');
+  if (!note) return;
+  if (view !== 'messages' || !state.chain) { note.hidden = true; note.textContent = ''; return; }
+  const lines = coverageNotes(state.chain);
+  const warnings = {
+    timeline_truncated: '时间线已截断，仅展示已载入记录；全部展开/折叠不作用于未载入历史。',
+    messages_truncated: '对话已截断，仅展示最近保留的记录。',
+  };
+  for (const item of state.chain.warnings || []) if (warnings[item]) lines.push(warnings[item]);
+  note.textContent = lines.join(' ');
+  note.hidden = !lines.length;
+}
+function cardBody(record) {
+  const body = node('div', 'timeline-body');
+  if (record.kind === 'message' || record.text) body.append(node('p', 'bubble', record.text || ''));
+  const op = record.operation;
+  if (op && typeof op === 'object') {
+    const list = node('dl', 'operation-fields');
+    const range = op.read_range && typeof op.read_range === 'object'
+      ? `${op.read_range.start ?? '?'}–${op.read_range.end ?? '?'}` : null;
+    const rows = [
+      ['工具', op.tool_name], ['路径', op.path_display || op.path], ['路径范围', op.path_scope],
+      ['读取行范围', range],
+      ['命令', op.command_display], ['工作目录', op.cwd_display], ['退出码', op.exit_code],
+      ['耗时(ms)', op.duration_ms], ['测试汇总', op.test_summary], ['变更摘要', op.change_summary],
+    ];
+    for (const [label, value] of rows) {
+      if (value == null || value === '') continue;
+      list.append(node('dt', '', label), node('dd', '', value));
+    }
+    if (op.stdout_excerpt) list.append(node('dt', '', 'stdout'), node('dd', 'excerpt', op.stdout_excerpt));
+    if (op.stderr_excerpt) list.append(node('dt', '', 'stderr'), node('dd', 'excerpt', op.stderr_excerpt));
+    if (list.children.length) body.append(list);
+  }
+  if (record.role_missing) body.append(node('p', 'muted', '历史记录未保存发言角色'));
+  if (!body.children.length) body.append(node('p', 'muted', '无更多已记录详情。'));
+  return body;
+}
+function renderTimelineCard(record) {
+  const open = expansion.isOpen(state.chainId, record);
+  const entry = node('details', 'timeline-card message');
+  entry.open = open;
+  entry.dataset.messageTask = record.task_id || '';
+  entry.dataset.recordId = record.id;
+  entry.id = `timeline-${record.id}`;
+  entry.setAttribute('aria-expanded', String(open));
+  const summary = node('summary', 'timeline-summary');
+  const meta = node('div', 'message-meta');
+  meta.append(node('strong', '', messageIdentity(record)));
+  meta.append(node('span', 'kind-pill', kindLabel(record.kind)));
+  if (record.status) meta.append(node('span', 'kind-pill', statusLabel(record.status)));
+  meta.append(node('time', '', date(record.timestamp)));
+  const preview = node('div', 'timeline-preview', record.preview || record.title || '');
+  const source = node('div', 'message-source');
+  const execution = node('button', 'message-execution', `${record.agent || '未知执行器'} · ${record.task_id || ''}`);
+  execution.setAttribute('aria-label', `查看执行 ${record.task_id} 的详情`);
+  execution.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); selectNode(record.task_id, false); });
+  source.append(
+    execution,
+    node('span', '', provenanceLabel(record.provenance)),
+    node('span', '', `来源：${record.source || '未知'}`),
+    node('span', record.completeness === 'complete' ? '' : 'incomplete',
+      ({complete:'完整记录',recorded:'已记录片段',truncated:'已截断',possibly_truncated:'可能已截断',unavailable:'采集不可用'})[record.completeness] || '完整性未知'),
+  );
+  summary.append(meta, preview, source);
+  entry.append(summary, cardBody(record));
+  entry.addEventListener('toggle', () => {
+    expansion.setOpen(state.chainId, record.id, entry.open);
+    entry.setAttribute('aria-expanded', String(entry.open));
+  });
+  return entry;
+}
 function renderContent() {
-  const content = $('content'), context = view === 'events' ? `${state.selected}:events` : `${state.chainId}:messages`;
-  const key = JSON.stringify([context,view === 'events' ? [state.detail,state.events] : state.chain?.messages]);
-  if (key === contentKey) return;
+  const content = $('content'), context = view === 'events' ? `${state.selected}:events` : `${state.chainId}:timeline`;
+  const records = view === 'messages' ? timelineRecords(state.chain) : null;
+  const key = JSON.stringify([context, view === 'events' ? [state.detail, state.events] : records]);
+  if (key === contentKey) { renderCoverage(); return; }
   contentKey = key;
   if (context !== contentContext) { content.replaceChildren(); renderedEvents = new Map(); renderedMessages = new Map(); }
   contentContext = context;
-  content.setAttribute('aria-label',view === 'messages' ? '整条任务链的协作对话' : '选中执行的事件');
+  content.setAttribute('aria-label', view === 'messages' ? '整条任务链的统一时间线' : '选中执行的事件');
   if (view === 'events') {
+    renderCoverage();
     if (!state.detail) { content.replaceChildren(empty('正在读取执行','请稍候…')); return; }
     if (!renderedEvents.size) content.replaceChildren(node('p','event-note',`仅显示选中执行 ${state.selected} 的事件。自定义事件仅展示已记录的脱敏内容。`));
     for (const event of state.events) {
@@ -108,44 +205,39 @@ function renderContent() {
     if (!state.events.length) content.append(empty('暂无执行事件','Hub 尚未记录此执行的事件。'));
     return;
   }
-  if (!state.chain) { content.replaceChildren(empty('正在读取任务链','请稍候…')); return; }
-  const roles={user:'任务输入',system:'系统记录',tool:'工具记录',unknown:'来源身份未记录'};
-  const completeness={complete:'完整记录',recorded:'已记录片段',truncated:'已截断',possibly_truncated:'可能已截断'};
-  const next=new Map(), desired=[];
-  for (const message of state.chain.messages) {
-    const key=JSON.stringify(message), old=renderedMessages.get(message.id);
-    let entry=old?.key===key ? old.entry : null;
-    if (!entry) {
-      entry=node('article','message');entry.dataset.messageTask=message.task_id;entry.id=`message-${message.id}`;
-      const body=node('div'),meta=node('div','message-meta'),source=node('div','message-source');
-      const identity=message.role==='assistant' ? message.agent||'执行器' : roles[message.role]||roles.unknown;
-      meta.append(node('strong','',identity),node('time','',date(message.timestamp)));
-      const execution=node('button','message-execution',`${message.agent||'未知执行器'} · ${message.task_id}`);
-      execution.setAttribute('aria-label',`查看执行 ${message.task_id} 的详情`);execution.addEventListener('click',()=>selectNode(message.task_id,false));
-      source.append(execution,node('span','',`来源：${message.source||'未知'}`),node('span',message.completeness==='complete'?'':'incomplete',completeness[message.completeness]||'完整性未知'));
-      body.append(meta,node('p','bubble',message.text),source);
-      entry.append(node('div','avatar'+(message.role==='assistant'?' assistant':''),message.role==='user'?'入':message.role==='assistant'?'答':'记'),body);
+  if (!state.chain) { content.replaceChildren(empty('正在读取任务链','请稍候…')); renderCoverage(); return; }
+  const next = new Map(), desired = [];
+  for (const record of records) {
+    const recordKey = JSON.stringify(record);
+    const old = renderedMessages.get(record.id);
+    let entry = old?.key === recordKey ? old.entry : null;
+    if (!entry) entry = renderTimelineCard(record);
+    else {
+      entry.open = expansion.isOpen(state.chainId, record);
+      entry.setAttribute('aria-expanded', String(entry.open));
     }
-    desired.push(entry);next.set(message.id,{key,entry});
+    desired.push(entry);
+    next.set(record.id, {key: recordKey, entry});
   }
-  // Reconcile by stable message id: unchanged conversations retain selection and DOM.
-  const wanted=new Set(desired);
-  for(const child of [...content.children]) if(!wanted.has(child))child.remove();
-  desired.forEach((entry,index)=>{if(content.children[index]!==entry)content.insertBefore(entry,content.children[index]||null);});
-  renderedMessages=next;
-  if (!desired.length) content.replaceChildren(empty('暂无对话记录','这条任务链尚未记录消息。'));
+  const wanted = new Set(desired);
+  for (const child of [...content.children]) if (!wanted.has(child)) child.remove();
+  desired.forEach((entry, index) => { if (content.children[index] !== entry) content.insertBefore(entry, content.children[index] || null); });
+  renderedMessages = next;
+  if (!desired.length) content.replaceChildren(empty('暂无时间线记录', '这条任务链尚未记录消息或操作。'));
   highlightMessages();
+  renderCoverage();
 }
 function highlightMessages() {
-  for(const {entry} of renderedMessages.values())entry.classList.toggle('selected-execution',entry.dataset.messageTask===state.selected);
+  for (const {entry} of renderedMessages.values()) entry.classList.toggle('selected-execution', entry.dataset.messageTask === state.selected);
 }
 function renderChain() {
   const task=state.chain.chain;
   $('workspace').textContent=task.workspace_label||'工作空间未记录';
   $('task-title').textContent=task.title||task.id;
-  $('subtitle').textContent=`任务链 ${task.id} · ${task.task_count} 次执行 · ${(task.agents||[]).join(' / ')}`;
-  $('status-line').replaceChildren(node('span','pill',`最近主执行 · ${label(task.state)}`),node('span','pill verification',`验收 · ${label(task.verification_state)}`),node('span','pill',`${task.active_count||0} 项进行中`));
-  const warnings={dangling_links:'部分关联任务不存在，无法展示完整关系。',cycles:'记录中存在循环关系，图中保留原始连线。',nodes_truncated:'执行节点过多，仅展示部分节点。',messages_truncated:'对话已截断，仅展示最近保留的记录。'};
+  const chainLabel = task.work_item_id ? `工作项 ${task.work_item_id}` : `任务链 ${task.id}`;
+  $('subtitle').textContent=`${chainLabel} · ${task.task_count} 次执行 · ${(task.agents||[]).join(' / ')}`;
+  $('status-line').replaceChildren(node('span','pill',`最近主执行 · ${stateLabel(task)}`),node('span','pill verification',`验收 · ${verificationLabel(task)}`),node('span','pill',`${task.active_count||0} 项进行中`));
+  const warnings={dangling_links:'部分关联任务不存在，无法展示完整关系。',cycles:'记录中存在循环关系，图中保留原始连线。',nodes_truncated:'执行节点过多，仅展示部分节点。',messages_truncated:'对话已截断，仅展示最近保留的记录。',timeline_truncated:'时间线已截断，仅展示已载入记录。'};
   const notes=state.chain.warnings.map(item=>warnings[item]||text(item));
   if(state.chain.truncated&&!notes.length)notes.push('此任务链仅展示部分记录。');
   $('chain-warning').textContent=notes.join(' ');$('chain-warning').hidden=!notes.length;
@@ -156,19 +248,36 @@ function renderChain() {
 function renderDetail() {
   const task = state.detail.task;
   const target = $('detail-content'), grid = node('dl','details-grid'); target.replaceChildren(grid);
-  for (const [key,value] of [['任务编号',task.id],['执行状态',label(task.state)],['验收状态',label(task.verification_state)],['执行器',task.agent],['模式',task.mode],['综合状态',label(task.work_status)],['创建时间',date(task.created)],['更新时间',date(task.updated)]]) grid.append(node('dt','',key),node('dd','',value));
+  for (const [key,value] of [['任务编号',task.id],['执行状态',stateLabel(task)],['验收状态',verificationLabel(task)],['执行器',task.agent],['模式',task.mode],['综合状态',workStatusLabel(task)],['创建时间',date(task.created)],['更新时间',date(task.updated)]]) grid.append(node('dt','',key),node('dd','',value));
+  if (task.verification_label === 'not_configured' || (!task.verification_label && task.verification_state === 'not_requested' && !state.detail.criteria?.length)) {
+    target.append(node('p', 'muted', '未配置验收规则；执行成功不等于独立验收通过。'));
+  } else if (task.verification_label === 'completed_no_extra') {
+    target.append(node('p', 'muted', '对话策略显式无需额外验收。'));
+  }
+  if (task.state === 'interrupted' || task.state === 'delivery_unknown') {
+    const banner = node('p', 'muted');
+    if (isRemoteUncertain(task)) {
+      banner.textContent = '本地观测已中断，远端执行状态未知（可能仍在运行）。这不是“执行失败/已停止”。管理端可用 reconcile_task 沿原任务核对，只读看板不会代为派发。';
+    } else {
+      banner.textContent = '本地执行已中断或未确认完成。这不是远端投递失败的证明；本地 CLI 任务无需 reconcile_task。';
+    }
+    target.append(banner);
+  }
   target.append(node('h2','','已记录关联'));
-  const relations = {continuation:'续接至',continued_from:'续接自',switch_executor:'换执行器至',switched_from:'换执行器自',review:'审核任务',review_of:'审核对象'};
+  const relations = {continuation:'续接至',continued_from:'续接自',switch_executor:'换执行器至',switched_from:'换执行器自',review:'审核任务',review_of:'审核对象',rework:'返修',development:'开发',linked:'已关联'};
   for (const relation of state.detail.relations) {
     const item = node('div','relation'), button = node('button','',`${relations[relation.kind] || relation.kind} · ${relation.task_id}`);
     button.addEventListener('click',()=>state.chain?.nodes.some(n=>n.id===relation.task_id) ? selectNode(relation.task_id,true) : selectChain(relation.task_id,relation.task_id));
     item.append(button,node('small','',`${relation.agent || '未知执行器'} · ${label(relation.state)}`)); target.append(item);
   }
   if (!state.detail.relations.length) target.append(node('p','muted','暂无已记录的关联。'));
-  for (const [heading,items] of [['验收条件',state.detail.criteria],['产物记录',state.detail.artifacts]]) {
+  if (state.detail.acceptance_policy) {
+    target.append(node('h2','','验收策略'), node('p','muted',state.detail.acceptance_policy));
+  }
+  for (const [heading,items] of [['验收条件',state.detail.criteria],['验收检查',state.detail.verification_checks || []],['产物记录',state.detail.artifacts]]) {
     target.append(node('h2','',heading)); const list = node('ul','detail-list');
     for (const item of items) list.append(node('li','',Object.entries(item).map(([key,value])=>`${key}: ${text(value)}`).join('\n')));
-    target.append(items.length ? list : node('p','muted','未记录'));
+    target.append(items.length ? list : node('p','muted', heading === '验收检查' ? '尚无检查结果' : '未记录'));
   }
 }
 async function poll(token, id) {
@@ -237,7 +346,14 @@ async function selectNode(id,scroll) {
   if(stopped||!state.chain?.nodes.some(n=>n.id===id))return;
   clearTimeout(timer);const token=state.select(id);graph.select(id);highlightMessages();
   $('detail-content').replaceChildren(node('p','muted','正在读取执行…'));$('detail-error').hidden=true;
-  if(scroll){setView('messages');renderContent();const first=[...renderedMessages.values()].find(({entry})=>entry.dataset.messageTask===id);first?.entry.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'});}
+  if(scroll){
+    setView('messages');
+    const firstRecord = timelineRecords(state.chain).find(item => item.task_id === id);
+    if (firstRecord) expansion.openTarget(state.chainId, firstRecord.id);
+    renderContent();
+    const first=[...renderedMessages.values()].find(({entry})=>entry.dataset.messageTask===id);
+    first?.entry.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'});
+  }
   else if(view==='events')renderContent();
   await poll(token,id);
 }
@@ -308,6 +424,14 @@ async function loadAgents() {
   finally { agentsPending = false; }
 }
 $('refresh').addEventListener('click',()=>{ if (stopped) { notice('会话已失效，请通过本机 Hub 命令重新打开看板。'); return; } loadAgents(); loadList(state.offset); if (state.chainId) selectChain(state.chainId,state.selected); });
+function applyBulk(open) {
+  if (!state.chainId) return;
+  expansion.setAll(state.chainId, open);
+  contentKey = '';
+  renderContent();
+}
+$('expand-all')?.addEventListener('click', () => applyBulk(true));
+$('collapse-all')?.addEventListener('click', () => applyBulk(false));
 async function start() {
   // Ticket stripping happens synchronously inside consumeTicket, before the first await.
   try {

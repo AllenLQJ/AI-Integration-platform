@@ -40,3 +40,8 @@ Files: docs/dashboard.md, docs/2026-10-24-task-chain-validation.md.
 - [x] Fix confirmed findings, re-run affected tests, document limits and evidence.
 - [x] Commit feature branch and deliver preview; retain worktree for review, no automatic merge/push.
 
+## Task 4 (appended): work_item_id + reconcile
+Files: work_items.py, service/mcp/client, dashboard_chains, grokbot.reconcile, gateway result_fields, tests/test_work_items.py, docs.
+- [x] Implement create/link/submit-require/inherit, GET-only reconcile, uncertain UI/gateway_state, docs.
+- [ ] Controller runs full test suite + browser; Grok re-review.
+
