@@ -14,7 +14,7 @@ A local Agent Hub for coordinating Codex, Claude Code, Muse, Cursor CLI, and Gro
 - Executor-specific modes and permission descriptions, with isolated worktrees for editing tasks.
 - Independent verification, artifact evidence, a local workbench, controller handoff, and opt-in content review through a configured text-only executor.
 - Remote Hub access over standard SSH, optionally using an existing Tailscale network, without exposing the Hub on the public internet.
-- A [read-only dashboard](docs/dashboard.md) with task-chain search, a unified collaboration/operation timeline, execution events, and separate verification status. Open it locally with `agent-hub dashboard`; packaged static assets need no Node.js runtime. Controllers can append observed activities with authenticated `record_activity` (does not auto-capture unpublished client internals).
+- A [read-only dashboard](docs/dashboard.md) with task-chain search, a unified collaboration/operation timeline (messages plus observed/reported file, command, and test operations), execution events, separate verification status, and aggregate `work_status` labels (`workStatusLabel` in the UI). Open it locally with `agent-hub dashboard`; packaged static assets need no Node.js runtime. Controllers can append observed activities with authenticated `record_activity`, which shares `normalize_activity` (output excerpts <=16 KiB UTF-8 after redaction; does not auto-capture unpublished client internals).
 
 Implementation, historical live validation, and unverified behavior are documented separately. `ready=true` means execution has finished. For tasks with acceptance criteria, also inspect `verification` and `work_status`.
 
@@ -251,7 +251,7 @@ python -m agent_hub show TASK_ID --data-dir /path/to/private-data
 python -m agent_hub rpc record_verification --data-dir /path/to/private-data --arguments '{"request_id":"review-1","task_id":"TASK_ID","verifier_id":"human","decision":"pass","reason":"Manually checked"}'
 ```
 
-MediaFlow submits `context` plus `acceptance`, reads `get_work_item` / `get_result.verification`, and writes external checks through `record_external_verification`. The Hub does not generate images or decode video, and this external-verification integration has not been connected to Muse. See the [verification design](docs/2026-10-12-verification-phase1-design.md). Reload clients to discover the current 16-tool surface.
+MediaFlow submits `context` plus `acceptance`, reads `get_work_item` / `get_result.verification`, and writes external checks through `record_external_verification`. The Hub does not generate images or decode video, and this external-verification integration has not been connected to Muse. See the [verification design](docs/2026-10-12-verification-phase1-design.md). Reload clients to discover the current 20-tool surface.
 
 Acceptance attempt chains are linear. Only the latest attempt can continue; new requests against an older one return `ATTEMPT_SUPERSEDED`, while same-key replay remains idempotent. `artifact_required` requires a new file or changed content hash; preexisting declared files, touch-only changes, or another task's media are not new evidence. Verification exceptions retry within bounds, then become `needs_review`.
 

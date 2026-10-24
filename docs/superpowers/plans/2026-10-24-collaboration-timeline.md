@@ -17,7 +17,7 @@
 - 200 nodes, 500 loaded timeline records and 1,000,000 total display characters, including operation fields.
 - record_activity <=65,536 UTF-8 JSON bytes; output excerpts <=16,384 UTF-8 bytes combined. Sanitize before excerpt truncation; strict scalar bounds.
 - Runtime records and private machine paths stay outside tracked sources/distributions. Use synthetic fixtures.
-- No merge, push, daily Hub restart or global configuration change. Cursor cannot execute commands; controller performs validation.
+- **Status (2026-10-24):** Implemented and merged to `main`. Historical development constraint was: no merge/push/daily Hub restart or global configuration change during isolated implementation; Cursor authored code while the controller ran commands/tests.
 
 ## Review Focus
 

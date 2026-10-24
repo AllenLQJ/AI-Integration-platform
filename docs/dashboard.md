@@ -24,6 +24,7 @@ agent-hub dashboard
 - 每条记录标明 provenance：执行器观测 / 总控上报 / 兼容摘要。仅有总控上报消息不会伪装成 CLI 工具观测；缺 ID 工具不会因存在其它 activity 而丢失。
 - 兼容旧 `messages` 字段；新服务同时返回 `timeline` 与 `capture_coverage`。
 - 执行事件属于当前选中的节点。
+- 详情区展示综合状态标签（`workStatusLabel`）：按 `work_status` 区分执行中、等待验收、已完成、连接中断等，与单独的执行状态/验收状态并列；`succeeded` 只表示执行结束。
 - 工作项标题/统计/最近主执行状态来自非审核实施节点，不被审核失败覆盖。`interrupted` / `delivery_unknown` 显示为「连接中断／远端状态未知」，不是「执行失败/已停止」。只读看板不会代为 reconcile；管理端沿原 task 调用 `reconcile_task`。
 - 图和时间线会自动刷新，新续接记录无需重新打开页面。
 
