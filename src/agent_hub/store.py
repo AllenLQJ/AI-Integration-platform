@@ -18,13 +18,23 @@ class Store:
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY, request_id TEXT UNIQUE NOT NULL,
                     digest TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL,
-                    created REAL NOT NULL, updated REAL NOT NULL);
+                    created REAL NOT NULL, updated REAL NOT NULL,
+                    workspace_quarantined INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS events (
                     seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
                     kind TEXT NOT NULL, data TEXT NOT NULL, timestamp REAL NOT NULL);
                 CREATE INDEX IF NOT EXISTS events_task ON events(task_id, seq);
                 CREATE INDEX IF NOT EXISTS tasks_state ON tasks(state);
             ''')
+            cols = {row['name'] for row in db.execute('PRAGMA table_info(tasks)')}
+            if 'workspace_quarantined' not in cols:
+                db.execute('ALTER TABLE tasks ADD COLUMN workspace_quarantined INTEGER NOT NULL DEFAULT 0')
+                db.execute(
+                    "UPDATE tasks SET workspace_quarantined = 1 "
+                    "WHERE json_extract(data, '$.workspace_quarantined') = 1")
+            db.execute(
+                'CREATE INDEX IF NOT EXISTS tasks_quarantined ON tasks(workspace_quarantined) '
+                'WHERE workspace_quarantined = 1')
 
     @contextmanager
     def connection(self):
@@ -53,8 +63,11 @@ class Store:
                     raise HubError('REQUEST_CONFLICT', 'request_id 已用于不同内容')
                 return self.decode(row)
             ident, now = uuid.uuid4().hex, time.time()
-            db.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?,?)',
-                       (ident, request_id, digest, 'queued', serialized, now, now))
+            quarantined = 1 if spec.get('workspace_quarantined') else 0
+            db.execute(
+                'INSERT INTO tasks(id, request_id, digest, state, data, created, updated, '
+                'workspace_quarantined) VALUES (?,?,?,?,?,?,?,?)',
+                (ident, request_id, digest, 'queued', serialized, now, now, quarantined))
             db.execute('INSERT INTO events(task_id,kind,data,timestamp) VALUES (?,?,?,?)',
                        (ident, 'state', '{"state":"queued"}', now))
             return self.decode(db.execute('SELECT * FROM tasks WHERE id=?', (ident,)).fetchone())
@@ -86,11 +99,11 @@ class Store:
             return [self.decode(r) for r in rows]
 
     def list_quarantined(self):
-        """Tasks with workspace_quarantined set in persisted JSON data."""
+        """Tasks with workspace_quarantined=1 via indexed column (JSON field kept in data)."""
         with self.connection() as db:
             rows = db.execute(
-                "SELECT * FROM tasks WHERE json_extract(data, '$.workspace_quarantined') = 1 "
-                "ORDER BY created").fetchall()
+                "SELECT * FROM tasks WHERE workspace_quarantined = 1 ORDER BY created"
+            ).fetchall()
             return [self.decode(r) for r in rows]
 
     def update(self, task_id, **fields):
@@ -104,8 +117,10 @@ class Store:
             data = json.loads(row['data'])
             state = fields.pop('state', row['state'])
             data.update(fields)
-            db.execute('UPDATE tasks SET state=?, data=?, updated=? WHERE id=?',
-                       (state, json.dumps(data, ensure_ascii=False), time.time(), task_id))
+            quarantined = 1 if data.get('workspace_quarantined') else 0
+            db.execute(
+                'UPDATE tasks SET state=?, data=?, updated=?, workspace_quarantined=? WHERE id=?',
+                (state, json.dumps(data, ensure_ascii=False), time.time(), quarantined, task_id))
             return True
 
     def finish(self, task_id, state, result):
@@ -121,8 +136,10 @@ class Store:
             data = json.loads(row['data'])
             data['result'] = result
             now = time.time()
-            db.execute('UPDATE tasks SET state=?, data=?, updated=? WHERE id=?',
-                       (state, json.dumps(data, ensure_ascii=False), now, task_id))
+            quarantined = 1 if data.get('workspace_quarantined') else 0
+            db.execute(
+                'UPDATE tasks SET state=?, data=?, updated=?, workspace_quarantined=? WHERE id=?',
+                (state, json.dumps(data, ensure_ascii=False), now, quarantined, task_id))
             db.execute('INSERT INTO events(task_id,kind,data,timestamp) VALUES (?,?,?,?)',
                        (task_id, 'state', json.dumps({'state': state}), now))
             return True

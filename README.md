@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-A local Agent Hub for coordinating Codex, Claude Code, Muse, Cursor CLI, and Grok Bot through one MCP interface. An independent daemon runs tasks, while SQLite stores their state, events, and results. Coding tasks can use isolated Git worktrees and return diffs for review. Collected edit_worktree diffs and untracked text excerpts share a 1 MiB UTF-8 budget (Workspaces.MAX_ARTIFACT_BYTES); over-budget payloads set artifact_truncated with artifact_omitted file reasons instead of returning a partial diff as complete.
+A local Agent Hub for coordinating Codex, Claude Code, Muse, Cursor CLI, and Grok Bot through one MCP interface. An independent daemon runs tasks, while SQLite stores their state, events, and results. Coding tasks can use isolated Git worktrees and return diffs for review. Collected edit_worktree diffs and untracked text excerpts share a 1 MiB UTF-8 budget (Workspaces.MAX_ARTIFACT_BYTES); over-budget payloads set artifact_truncated with artifact_omitted file reasons instead of returning a partial diff as complete. Path lists such as artifact_omitted and changed_files are metadata outside that byte budget; the whole result JSON is not capped.
 
 **Python 3.10+ · Windows / macOS · Service version 0.3.0 · 16 MCP tools**
 
