@@ -32,6 +32,8 @@ class InstanceLock:
 
 
 def make_server(service, token):
+    from .dashboard_http import DashboardHTTP
+    dashboard = DashboardHTTP(service)
     sessions = {}
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args): pass
@@ -58,6 +60,8 @@ def make_server(service, token):
             except Exception:
                 return False
         def do_GET(self):
+            if dashboard.handle(self, 'GET'):
+                return
             path = urlsplit(self.path)
             parts = path.path.strip('/').split('/')
             if len(parts) in {2, 3} and parts[0] == 'work':
@@ -113,6 +117,8 @@ def make_server(service, token):
             if self.path != '/health': return self.respond(404, {'error': 'NOT_FOUND'})
             return self.respond(200, {'ok': True, 'pid': os.getpid()})
         def do_POST(self):
+            if dashboard.handle(self, 'POST'):
+                return
             if not self.authorized(): return self.respond(401, {'error': 'UNAUTHORIZED'})
             parts = urlsplit(self.path).path.strip('/').split('/')
             if len(parts) == 3 and parts[0] == 'work' and parts[2] == 'session':

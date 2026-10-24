@@ -14,3 +14,6 @@ agent-hub = "agent_hub.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+agent_hub = ["dashboard_static/*.html", "dashboard_static/*.css", "dashboard_static/*.mjs"]
