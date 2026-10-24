@@ -2,7 +2,7 @@
 
 ## Scope
 
-Unified chronological timeline of public collaboration messages and observed/reported file/command/test operations, with per-card and loaded-only bulk expand/collapse. Spec: `docs/superpowers/specs/2026-10-24-collaboration-timeline-design.md`. Plan tasks 1–5 implemented in the isolated collaboration-timeline worktree. No merge, push, daily Hub restart, global hooks, or private chat-library scraping.
+Unified chronological timeline of public collaboration messages and observed/reported file/command/test operations, with per-card and loaded-only bulk expand/collapse. Spec: `docs/superpowers/specs/2026-10-24-collaboration-timeline-design.md`. Plan tasks 1–5 implemented and merged to `main` (feature commit `a684868`, merge `17e0759`). Development did not restart the daily Hub, install global hooks, or scrape private chat libraries.
 
 ## Developer note (Cursor)
 
@@ -48,12 +48,11 @@ Fixture marker: `SYNTHETIC_COLLABORATION_TIMELINE_DEMO`. Expect two-model chain 
 | command v1 | Result protocol only | No stdout event parsing / fake hub_event |
 | External `record_activity` | Authenticated controller-reported whitelist activities | Does not auto-hook desktop clients |
 
-## Unverified in developer session
+## Validation status after merge
 
-- Actual unittest / node / wheel exit codes and durations (Cursor developer session: no Shell; do not treat code presence as green)
-- Directed suite above + full discover + frontend + browser after refresh/new arrivals
-- Live Grok/Muse provider tool-parameter availability beyond public messages
-- Production reconcile against real Grok history (synthetic page fixtures cover algorithm)
+- Directed Python suite (`test_activity`, `test_stream_events`, `test_work_items`, `test_dashboard*`, `test_acceptance_dashboard`) and frontend `node --test tests/frontend/*.mjs` were re-run on the controller machine after merge and passed before the docs sync commit.
+- Live Grok/Muse provider tool-parameter availability beyond public messages remains out of scope for automatic capture.
+- Production reconcile against real Grok history is not claimed by the synthetic fixtures.
 
 ## Boundaries retained
 

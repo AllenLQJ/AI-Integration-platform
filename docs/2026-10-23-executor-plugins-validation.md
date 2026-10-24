@@ -51,7 +51,7 @@ python -m unittest discover -s tests -v
 - 通用插件的人机接管/恢复钩子不在 v1 中；既有 Muse 专用流程仍保留。
 - 不自动迁移跨设备数据库、会话、工作区、凭据或产物；跨机调用继续使用已有 SSH 节点机制。
 - 配置了 Windows/macOS/Linux × Python 3.10/3.12 的契约/分发 CI，尚未触发远端 CI。组件用法参考官方 [checkout](https://github.com/actions/checkout) 与 [setup-python](https://github.com/actions/setup-python)。
-- 本次仅在独立分支实现和验证，未合并、推送、发布，未修改共享运行配置或重启共享后台。
+- 功能已合入 `main`（本记录撰写时仍在独立分支验证；合并后未因此重启共享后台或改动共享运行配置）。
 - 执行记录在 Windows 下使用 PowerShell 维护，替代技能中的 Bash 辅助脚本；测试命令和结果已写入本记录。
 
 接入规范见 [executor-plugins.md](executor-plugins.md)，可独立安装示例见 [echo-plugin](../examples/echo-plugin/README.md)。

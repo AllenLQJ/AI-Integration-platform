@@ -2,7 +2,7 @@
 
 [English](README.md) | **简体中文**
 
-本地 Agent Hub：通过统一 MCP 接口协调 Codex、Claude Code、Muse、Cursor CLI 和 Grok Bot。独立后台执行任务，SQLite 保存状态、事件和结果；代码编辑可在独立 Git worktree edit_worktree 收集的 diff 与未跟踪文本摘录合计默认最多 1 MiB（UTF-8，`Workspaces.MAX_ARTIFACT_BYTES`）；超限时设置 `artifact_truncated` 与 `artifact_omitted`，不会把不完整 diff 当作完整变更。省略路径列表（如 artifact_omitted、changed_files）属于预算外元数据，整个结果 JSON 不设上限。 中进行，再返回差异供审阅。
+本地 Agent Hub：通过统一 MCP 接口协调 Codex、Claude Code、Muse、Cursor CLI 和 Grok Bot。独立后台执行任务，SQLite 保存状态、事件和结果。代码编辑任务可使用隔离的 Git worktree，并返回差异供审阅。edit_worktree 收集的 diff 与未跟踪文本摘录合计默认最多 1 MiB（UTF-8，`Workspaces.MAX_ARTIFACT_BYTES`）；超限时设置 `artifact_truncated` 与 `artifact_omitted`，不会把不完整 diff 当作完整变更。省略路径列表（如 artifact_omitted、changed_files）属于预算外元数据，整个结果 JSON 不设上限。
 
 **Python 3.10+ · Windows / macOS · 服务版本 0.3.0 · 20 个 MCP 工具**
 
@@ -14,7 +14,7 @@
 - 按执行器提供任务模式和权限声明，编辑任务使用隔离 worktree。
 - 独立验收、产物证据、本机工作台、总控接管与显式开启的可配置执行器内容审核。
 - 通过标准 SSH 调用远端 Hub；可使用已有 Tailscale 网络连接，不开放公网 Hub 服务。
-- [本机只读看板](docs/dashboard.md)：搜索任务链、阅读统一协作/操作时间线与执行事件，分别查看执行与验收状态。运行 `agent-hub dashboard` 打开，安装包自带静态资源，无需 Node.js 运行时。总控可通过已认证的 `record_activity` 补记活动（不会自动截获未公开的客户端内部工具）。
+- [本机只读看板](docs/dashboard.md)：搜索任务链、阅读统一协作/操作时间线（消息与已观测/已上报的读文件、命令、测试等操作）、执行事件，分别查看执行与验收状态，并展示综合 `work_status` 标签（界面 `workStatusLabel`）。运行 `agent-hub dashboard` 打开，安装包自带静态资源，无需 Node.js 运行时。总控可通过已认证的 `record_activity` 补记活动，走共享 `normalize_activity`（脱敏后输出摘录合计 <=16 KiB UTF-8；不会自动截获未公开的客户端内部工具）。
 
 实现、历史实机验收与尚未验证的范围分别说明。`ready=true` 表示执行结束；有验收条件时，应进一步检查 `verification` 和 `work_status`。
 
