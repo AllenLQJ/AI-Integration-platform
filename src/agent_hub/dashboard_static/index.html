@@ -17,8 +17,8 @@
   <div class="overlay" id="overlay" hidden></div>
   <div class="shell" id="shell">
     <aside class="sidebar" id="sidebar" aria-label="任务列表">
-      <div class="side-heading">全部任务 <span id="list-count"></span><button class="icon-btn close-sidebar" id="close-sidebar" aria-label="关闭任务列表">×</button></div>
-      <label class="search"><span class="sr-only">搜索任务</span><input id="search" type="search" placeholder="搜索任务…" autocomplete="off"></label>
+      <div class="side-heading">任务链 <span id="list-count"></span><button class="icon-btn close-sidebar" id="close-sidebar" aria-label="关闭任务列表">×</button></div>
+      <label class="search"><span class="sr-only">搜索任务</span><input id="search" type="search" placeholder="搜索任务链…" autocomplete="off"></label>
       <div class="filters"><label><span>执行状态</span><select id="state-filter"><option value="">全部状态</option><option value="queued">排队中</option><option value="running">执行中</option><option value="completed">已完成</option><option value="failed">失败</option><option value="cancelled">已取消</option></select></label><label><span>执行器</span><select id="agent-filter"><option value="">全部执行器</option></select></label></div>
       <div id="task-list" class="task-list" aria-label="匹配任务" aria-busy="true"></div>
       <div class="pagination"><button id="previous" class="plain-btn" disabled>上一页</button><span id="page-label"></span><button id="next" class="plain-btn" disabled>下一页</button></div>
@@ -27,14 +27,21 @@
     <main class="main" id="main">
       <div class="eyebrow" id="workspace">工作空间</div>
       <div class="title-row"><h1 id="task-title">任务与协作，一目了然。</h1><button class="icon-btn" id="detail-toggle" aria-label="切换任务详情" aria-controls="detail" aria-expanded="true">▤</button></div>
-      <p class="subtitle" id="subtitle">选择一个任务，查看已记录的输入、回复和执行事件。</p>
+      <p class="subtitle" id="subtitle">选择一条任务链，查看执行关系与完整协作过程。</p>
       <div class="status-line" id="status-line"></div>
-      <div class="section-bar"><nav class="tabs" aria-label="任务内容"><button data-view="messages" class="active" aria-pressed="true">协作对话</button><button data-view="events" aria-pressed="false">执行事件</button></nav><span class="sync-time" id="sync-time"></span></div>
+      <div id="chain-error" class="inline-error" role="status" hidden></div>
+      <section id="graph-panel" class="graph-panel" aria-label="任务执行关系图" hidden>
+        <div class="graph-heading"><div><strong>执行关系</strong><span id="graph-count"></span></div><div class="graph-controls"><button id="zoom-out" aria-label="缩小关系图">−</button><span id="zoom-label">100%</span><button id="zoom-in" aria-label="放大关系图">+</button><button id="graph-reset">复位</button><button id="graph-toggle" aria-expanded="true" aria-controls="graph-viewport">收起</button></div></div>
+        <div id="graph-viewport" class="graph-viewport" tabindex="0" aria-label="执行关系图，可横向滚动"><div id="graph-stage" class="graph-stage"></div></div>
+        <p class="graph-hint" id="graph-hint">点击节点定位对话 · 实线表示续接或切换，虚线表示审查</p>
+      </section>
+      <div id="chain-warning" class="inline-error" role="status" hidden></div>
+      <div class="section-bar"><nav class="tabs" aria-label="任务内容"><button data-view="messages" class="active" aria-pressed="true">协作对话</button><button data-view="events" aria-pressed="false">选中执行的事件</button></nav><span class="sync-time" id="sync-time"></span></div>
       <div id="detail-error" class="inline-error" role="status" hidden></div>
       <section id="content" class="content" aria-label="协作对话" aria-busy="false"><div class="empty-state"><span class="empty-symbol" aria-hidden="true">◇</span><h2>准备好了解进展</h2><p>任务加载后，选择左侧记录开始查看。</p></div></section>
       <p class="callout">仅展示已记录的信息。执行完成与验收通过是两个独立状态。</p>
     </main>
-    <aside class="detail" id="detail" aria-label="任务详情"><div class="detail-heading">任务详情<button class="icon-btn close-detail" id="close-detail" aria-label="关闭任务详情">×</button></div><div id="detail-content"><p class="muted">选择任务后查看上下文。</p></div></aside>
+    <aside class="detail" id="detail" aria-label="任务详情"><div class="detail-heading">选中执行详情<button class="icon-btn close-detail" id="close-detail" aria-label="关闭任务详情">×</button></div><div id="detail-content"><p class="muted">选择任务后查看上下文。</p></div></aside>
   </div>
 </body>
 </html>

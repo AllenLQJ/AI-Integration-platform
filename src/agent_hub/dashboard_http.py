@@ -17,7 +17,7 @@ from .models import HubError
 
 STATIC_ROOT = Path(__file__).with_name('dashboard_static')
 ASSETS = {'index.html': 'text/html', 'app.mjs': 'text/javascript',
-          'api.mjs': 'text/javascript', 'state.mjs': 'text/javascript', 'style.css': 'text/css'}
+          'graph.mjs': 'text/javascript', 'api.mjs': 'text/javascript', 'state.mjs': 'text/javascript', 'style.css': 'text/css'}
 COOKIE_PREFIX = 'hub_dashboard_'
 SESSION_TTL = 8 * 60 * 60
 TICKET_TTL = 60
@@ -220,18 +220,24 @@ class DashboardHTTP:
             if not self.authenticated(handler):
                 return self.error(handler, 401, 'UNAUTHORIZED')
             from .dashboard import Dashboard
+            from .dashboard_chains import DashboardChains
             dashboard = Dashboard(self.service)
-            if path == '/dashboard/api/v1/tasks':
+            chains = DashboardChains(dashboard)
+            if path in {'/dashboard/api/v1/tasks', '/dashboard/api/v1/chains'}:
                 args = self.query(query, {'limit', 'offset', 'q', 'state', 'agent'})
                 limit = self.integer(args.get('limit', '30'), 1, 100)
                 offset = self.integer(args.get('offset', '0'), 0, 9223372036854775807)
                 if any(len(args.get(key, '')) > bound for key, bound in [('q', 500), ('state', 100), ('agent', 200)]):
                     raise ValueError()
-                result = dashboard.tasks(limit=limit, offset=offset, q=args.get('q', ''),
+                listing = chains.chains if path.endswith('/chains') else dashboard.tasks
+                result = listing(limit=limit, offset=offset, q=args.get('q', ''),
                                          state=args.get('state', ''), agent=args.get('agent', ''))
             elif path == '/dashboard/api/v1/agents':
                 self.query(query, set())
                 result = dashboard.agents()
+            elif re.fullmatch(r'/dashboard/api/v1/chains/([A-Za-z0-9_-]{1,128})', path):
+                self.query(query, set())
+                result = chains.detail(path.rsplit('/', 1)[1])
             else:
                 match = re.fullmatch(r'/dashboard/api/v1/tasks/([A-Za-z0-9_-]{1,128})(/events)?', path)
                 if not match:

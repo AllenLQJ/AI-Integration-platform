@@ -36,6 +36,15 @@ export function createAPI(fetcher = globalThis.fetch.bind(globalThis)) {
       const data = await request(`api/v1/tasks?${params}`, {signal});
       return valid(data, Array.isArray(data?.items) && (data.next_offset === null || Number.isInteger(data.next_offset)));
     },
+    async chains(filters, signal) {
+      const params = new URLSearchParams(Object.entries(filters).filter(([,v])=>v !== '' && v != null));
+      const data = await request(`api/v1/chains?${params}`, {signal});
+      return valid(data, Array.isArray(data?.items) && (data.next_offset === null || Number.isInteger(data.next_offset)));
+    },
+    async chain(id, signal) {
+      const data = await request(`api/v1/chains/${encodeURIComponent(id)}`, {signal});
+      return valid(data, typeof data?.chain?.id === 'string' && ['nodes','edges','messages','warnings'].every(key=>Array.isArray(data[key])) && typeof data.truncated === 'boolean');
+    },
     async agents(signal) {
       const data = await request('api/v1/agents', {signal}); return valid(data, Array.isArray(data?.items));
     },

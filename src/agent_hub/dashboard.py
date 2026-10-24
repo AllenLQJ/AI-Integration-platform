@@ -125,6 +125,8 @@ class Dashboard:
         related = []
         parent_id = task.get('parent_id')
         review_id = (task.get('review_of') or {}).get('task_id') if isinstance(task.get('review_of'), dict) else None
+        parent_id = parent_id if isinstance(parent_id, str) else None
+        review_id = review_id if isinstance(review_id, str) else None
         with self.store.connection() as db:
             rows = db.execute("""SELECT * FROM tasks WHERE id IN (?, ?)
                 OR json_extract(data, '$.parent_id') = ? OR json_extract(data, '$.review_of.task_id') = ?

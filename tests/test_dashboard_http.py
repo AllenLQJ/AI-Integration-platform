@@ -131,7 +131,7 @@ class DashboardHTTPTests(unittest.TestCase):
             self.assertEqual(self.request('/dashboard/api/v1/tasks', headers={'Cookie': cookie, **extra})[0], 403)
 
     def test_static_mime_security_headers_and_traversal(self):
-        for path, mime in [('/dashboard/', 'text/html'), ('/dashboard/app.mjs', 'text/javascript'),
+        for path, mime in [('/dashboard/', 'text/html'), ('/dashboard/app.mjs', 'text/javascript'), ('/dashboard/graph.mjs', 'text/javascript'),
                            ('/dashboard/style.css', 'text/css')]:
             status, headers, body = self.request(path)
             self.assertEqual(status, 200, body)
@@ -168,6 +168,30 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertEqual(self.request('/dashboard/api/v1/tasks/missing', headers=headers)[0], 404)
         after = self.service.store.get(task['id'])
         self.assertEqual(after.get('controller_epoch'), task.get('controller_epoch'))
+
+    def test_chain_routes_are_authenticated_additive_and_bounded(self):
+        task = self.service.call('submit_task', dict(request_id='chain-http', agent='fake',
+            prompt='chain HTTP goal', cwd=str(self.root), mode='read_only'))
+        child = self.service.store.create('chain-child', dict(agent='fake', prompt='continuation',
+            mode='read_only', cwd=str(self.root), parent_id=task['id'], resume_session='existing-session'))
+        self.assertEqual(self.request('/dashboard/api/v1/chains')[0], 401)
+        self.assertEqual(self.request('/dashboard/api/v1/chains/' + child['id'])[0], 401)
+        headers = {'Cookie': self.session(), 'Origin': self.origin}
+        status, _, body = self.request('/dashboard/api/v1/chains?q=HTTP&agent=fake', headers=headers)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)['items'][0]['task_count'], 2)
+        status, _, body = self.request('/dashboard/api/v1/chains/' + child['id'], headers=headers)
+        self.assertEqual(status, 200, body)
+        detail = json.loads(body)
+        self.assertEqual(detail['chain']['root_task_id'], task['id'])
+        self.assertEqual(detail['edges'][0]['kind'], 'continuation')
+        self.assertEqual(self.request('/dashboard/api/v1/chains/missing', headers=headers)[0], 404)
+        for suffix in ['?limit=0', '?state=' + 'x' * 65, '?q=x&q=y', '?after_seq=0']:
+            self.assertEqual(self.request('/dashboard/api/v1/chains' + suffix, headers=headers)[0], 400)
+        self.assertEqual(self.request('/dashboard/api/v1/chains/' + task['id'] + '?q=x', headers=headers)[0], 400)
+        self.assertEqual(self.request('/dashboard/api/v1/chains/' + task['id'] + '/events', headers=headers)[0], 404)
+        self.assertEqual(self.request('/dashboard/api/v1/chains', headers={**headers, 'Origin': 'https://evil.example'})[0], 403)
+        self.assertEqual(self.request('/dashboard/api/v1/tasks/' + child['id'], headers=headers)[0], 200)
 
     def test_missing_assets_reports_actionable_code(self):
         with patch('agent_hub.dashboard_http.STATIC_ROOT', self.root / 'missing-static'):

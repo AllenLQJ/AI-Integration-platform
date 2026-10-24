@@ -44,3 +44,23 @@ test('event cursor cannot move to another task from a late poll', () => {
 test('incremental events are ordered and deduplicated by sequence', () => {
   assert.deepEqual(mergeEvents([{seq:2,kind:'old'}], [{seq:3},{seq:2,kind:'new'}]).map(x=>x.seq), [2,3]);
 });
+
+test('chain API accepts member id while retaining encoded URLs and validates graph shape', async () => {
+  const urls = [];
+  const api = createAPI(async url=>{ urls.push(url); return new Response(JSON.stringify(url.includes('?') ? {items:[],next_offset:null} : {chain:{id:'root'},nodes:[],edges:[],messages:[],warnings:[],truncated:false})); });
+  await api.chains({q:'branch & review',offset:0});
+  await api.chain('member/id');
+  assert.equal(new URL(urls[0],'http://local').searchParams.get('q'),'branch & review');
+  assert.ok(urls[1].endsWith('/chains/member%2Fid'));
+  await assert.rejects(createAPI(async()=>new Response('{}')).chain('root'),/响应/);
+});
+
+test('chain and node selections have independent gates and reject stale responses', () => {
+  const state = new DashboardState(); const chainA = state.selectChain('a');
+  const nodeA = state.select('a1'); const nodeB = state.select('a2');
+  assert.ok(state.chainGate.current(chainA)); assert.ok(!state.detailGate.current(nodeA));
+  const chainB = state.selectChain('b');
+  assert.ok(!state.chainGate.current(chainA)); assert.ok(!state.detailGate.current(nodeB));
+  assert.ok(state.chainGate.current(chainB)); assert.equal(state.chainId,'b');
+  assert.equal(state.chain,null); assert.equal(state.detail,null);
+});
