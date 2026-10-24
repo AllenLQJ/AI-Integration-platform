@@ -14,6 +14,7 @@ A local Agent Hub for coordinating Codex, Claude Code, Muse, Cursor CLI, and Gro
 - Executor-specific modes and permission descriptions, with isolated worktrees for editing tasks.
 - Independent verification, artifact evidence, a local workbench, controller handoff, and opt-in content review through a configured text-only executor.
 - Remote Hub access over standard SSH, optionally using an existing Tailscale network, without exposing the Hub on the public internet.
+- A [read-only dashboard](docs/dashboard.md) with task search, recorded conversations, execution events, and separate verification status. Open it locally with `agent-hub dashboard`; packaged static assets need no Node.js runtime.
 
 Implementation, historical live validation, and unverified behavior are documented separately. `ready=true` means execution has finished. For tasks with acceptance criteria, also inspect `verification` and `work_status`.
 
