@@ -54,4 +54,4 @@ Muse 取消和 SSH Hub 调度的代码已实现；写本文时真实双机 SSH�
 
 这是用户自己的 Tailscale 与标准 SSH 配置。Hub 仍调用本机 `ssh`，使用主机别名、`BatchMode=yes` 和 `StrictHostKeyChecking=yes`；端口、密钥和 ProxyJump 留在 `~/.ssh/config`。配置步骤见 README「额外说明」。SSH 传输修复在 main `5ca9724`（UTF-8 二进制 JSON、远端 `-X utf8`、RPC 错误与任务失败区分、不确定投递保留任务 ID）。
 
-Hub 没有内置 Tailscale 管理。密钥和 Hub 配置留在本机私有目录。受限或跨境网络环境下 Tailscale 可能偶发不稳定。Windows 作为 SSH 目标机仍没有新的实测结论；目标机命令仍要求 POSIX shell 与绝对路径。自动审核闭环的 Windows 真实任务、Muse 验收回写和非 headless GUI 工作台不在这次实机范围内。
+Hub 没有内置 Tailscale 管理。密钥和 Hub 配置留在本机私有目录。网络不稳定时 Tailscale 可能偶发不稳定。Windows 作为 SSH 目标机仍没有新的实测结论；目标机命令仍要求 POSIX shell 与绝对路径。自动审核闭环的 Windows 真实任务、Muse 验收回写和非 headless GUI 工作台不在这次实机范围内。
