@@ -45,7 +45,7 @@ class PluginTests(unittest.TestCase):
     def test_explicit_plugin_and_separate_private_state(self):
         first, second = self.load(), self.load('writer')
         a, b = [call.kwargs['context'] for call in self.factory.call_args_list]
-        self.assertEqual(a, PluginContext('assistant', self.root / 'plugins' / 'assistant'))
+        self.assertEqual(a, PluginContext('assistant', self.root.resolve() / 'plugins' / 'assistant'))
         self.assertNotEqual(a.data_dir, b.data_dir)
         load_plugin('assistant', {'plugin': 'echo'}, self.root / 'other-device')
         self.assertNotEqual(a.data_dir, self.factory.call_args.kwargs['context'].data_dir)
