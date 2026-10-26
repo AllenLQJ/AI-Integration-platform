@@ -18,7 +18,12 @@ def safe(value):
     if isinstance(value, list):
         return [safe(v) for v in value]
     if isinstance(value, str):
-        value = re.sub(r'[A-Za-z][A-Za-z0-9+.-]*://[^\s/<>]+@[^\s<>]+', '[URL]', value)
+        if '://' not in value:
+            return value
+        # Visit each scheme-character run only once. Preserve leading digits or
+        # punctuation that the original letter-starting scheme did not consume.
+        value = re.sub(r'(?<![A-Za-z0-9+.-])([0-9+.-]*)[A-Za-z][A-Za-z0-9+.-]*://[^\s/<>]+@[^\s<>]+',
+                       lambda match: match.group(1) + '[URL]', value)
         return re.sub(r'https?://[^\s<>"\']+', '[URL]', value)
     return value
 
@@ -94,7 +99,7 @@ class VerificationStopped(HubError):
 
 
 class Verification:
-    def __init__(self, store, gateway, stopping=None):
+    def __init__(self, store, gateway, stopping=None, notify=None):
         self.store, self.gateway = store, gateway
         self.lock = threading.RLock()
         self.task_locks, self.request_locks = weakref.WeakValueDictionary(), weakref.WeakValueDictionary()
@@ -103,6 +108,8 @@ class Verification:
         self.max_files, self.max_total_bytes, self.max_entries = 1000, 256 * 1024 * 1024, 5000
         self.max_scan_seconds = 10
         self.pending_ids = set()
+        self.notify = notify or (lambda: None)
+        self.next_retry_at = None
         self.max_file_bytes = 64 * 1024 * 1024
         self.max_retries = 3
         self.use_dir_fd = os.name == 'posix'
@@ -125,14 +132,24 @@ class Verification:
                 UPDATE verifications SET state='awaiting_verification' WHERE state='verifying';
             ''')
         # 补齐历史任务及 finish 后尚未入队就退出的窗口。
-        for task in store.list():
-            self.ensure(task)
-            self.track(task)
+        initial = []
+        with store.connection() as db:
+            for row in db.execute("SELECT id,state,json_extract(data,'$.acceptance') AS acceptance FROM tasks"):
+                task = dict(id=row['id'], state=row['state'],
+                            acceptance=json.loads(row['acceptance']) if row['acceptance'] else None)
+                state = ('awaiting_verification' if task['state'] == 'succeeded' and has_verifiable_acceptance(task)
+                         else 'not_requested')
+                initial.append((task['id'], state, '{}'))
+                self.track(task)
+            db.executemany('INSERT OR IGNORE INTO verifications VALUES (?,?,?)', initial)
+            db.executemany("UPDATE verifications SET state='awaiting_verification' WHERE task_id=? AND state='not_requested'",
+                           [(ident,) for ident, state, _ in initial if state == 'awaiting_verification'])
 
     def track(self, task):
         if task.get('acceptance'):
             with self.lock:
                 self.pending_ids.add(task['id'])
+            self.notify()
 
     def checkpoint(self):
         cancel = getattr(self.local, 'cancel', None)
@@ -167,6 +184,10 @@ class Verification:
     def summary(self, task, infer=True):
         with self.store.connection() as db:
             row = db.execute('SELECT * FROM verifications WHERE task_id=?', (task['id'],)).fetchone()
+        return self.summary_from_row(task, row, infer=infer)
+
+    @staticmethod
+    def summary_from_row(task, row, infer=True):
         if not row:
             return dict(state=('awaiting_verification' if task['state'] == 'succeeded' and has_verifiable_acceptance(task)
                                else 'not_requested'))
@@ -175,8 +196,8 @@ class Verification:
             state = 'awaiting_verification'
         return dict(json.loads(row['data']), state=state)
 
-    def fields(self, task):
-        v = self.summary(task)
+    def fields(self, task, summary=None):
+        v = self.summary(task) if summary is None else dict(summary)
         state = task['state']
         acceptance = task.get('acceptance') if isinstance(task.get('acceptance'), dict) else {}
         # UI-oriented policy hint; does not invent passed for legacy tasks without criteria.
@@ -667,20 +688,37 @@ class Verification:
     def pending(self):
         with self.lock:
             ids = list(self.pending_ids)
-        candidates = []
-        for ident in ids:
-            task = self.store.get(ident)
-            if task['state'] == 'succeeded':
-                summary = self.summary(task)
-                if summary['state'] == 'awaiting_verification' and summary.get('next_retry_at', 0) <= time.time():
-                    candidates.append(ident)
-                elif summary['state'] not in {'awaiting_verification', 'verifying'}:
-                    with self.lock:
-                        self.pending_ids.discard(ident)
-            elif task['state'] in {'failed', 'cancelled', 'timed_out', 'interrupted', 'delivery_unknown'}:
-                with self.lock:
-                    self.pending_ids.discard(ident)
-        return candidates
+            self.next_retry_at = None
+            if not ids:
+                return []
+            candidates, found = [], set()
+            with self.store.connection() as db:
+                db.execute('BEGIN')
+                for offset in range(0, len(ids), 400):
+                    group = ids[offset:offset + 400]
+                    marks = ','.join('?' for _ in group)
+                    rows = db.execute(f"""SELECT t.id,t.state,json_extract(t.data,'$.acceptance') AS acceptance,
+                        v.state AS verification_state,v.data AS verification_data
+                        FROM tasks t LEFT JOIN verifications v ON v.task_id=t.id WHERE t.id IN ({marks})""", group)
+                    for row in rows:
+                        ident = row['id']; found.add(ident)
+                        task = dict(id=ident, state=row['state'],
+                                    acceptance=json.loads(row['acceptance']) if row['acceptance'] else None)
+                        if task['state'] == 'succeeded':
+                            record = (dict(state=row['verification_state'], data=row['verification_data'])
+                                      if row['verification_state'] is not None else None)
+                            summary = self.summary_from_row(task, record)
+                            if summary['state'] == 'awaiting_verification' and summary.get('next_retry_at', 0) <= time.time():
+                                candidates.append(ident)
+                            elif summary['state'] == 'awaiting_verification':
+                                retry_at = summary['next_retry_at']
+                                self.next_retry_at = min(self.next_retry_at or retry_at, retry_at)
+                            elif summary['state'] not in {'awaiting_verification', 'verifying'}:
+                                self.pending_ids.discard(ident)
+                        elif task['state'] in {'failed', 'cancelled', 'timed_out', 'interrupted', 'delivery_unknown'}:
+                            self.pending_ids.discard(ident)
+            self.pending_ids.difference_update(set(ids) - found)
+            return candidates
 
     def request(self, request_id, content, operation):
         if not isinstance(request_id, str) or not 0 < len(request_id) <= 200:
@@ -709,30 +747,60 @@ class Verification:
             return response
 
     def work_item(self, task_id):
-        task = self.store.get(task_id)
-        while task.get('parent_id'):
-            task = self.store.get(task['parent_id'])
-        root = task['id']
-        tasks = self.store.list()
-        included = {root}
-        while True:
-            children = {t['id'] for t in tasks if t.get('parent_id') in included}
-            if children <= included:
-                break
-            included |= children
-        attempts = []
-        for t in tasks:
-            if t['id'] not in included:
-                continue
-            depth, cursor = 1, t
-            while cursor.get('parent_id'):
-                depth += 1; cursor = self.store.get(cursor['parent_id'])
-            with self.store.connection() as db:
-                events = [dict(seq=r['seq'], kind=r['kind'], data=json.loads(r['data']), timestamp=r['timestamp'])
-                          for r in db.execute('SELECT * FROM events WHERE task_id=? ORDER BY seq DESC LIMIT 20', (t['id'],))][::-1]
-            attempts.append(dict(task_id=t['id'], parent_id=t.get('parent_id'), attempt=depth, state=t['state'],
-                                 session_id=t.get('session_id'), workspace=t.get('workspace'), criteria=(t.get('acceptance') or {}).get('criteria', []),
-                                 **self.fields(t), checks=self.history(t['id']), artifacts=self.artifacts(t['id']), events=events))
+        from collections import defaultdict, deque
+        # One snapshot, indexed traversal of this family only. UNION terminates
+        # even for corrupt cyclic ancestry instead of following it forever.
+        with self.store.connection() as db:
+            db.execute('BEGIN')
+            ancestors = db.execute("""WITH RECURSIVE ancestors(id,parent_id) AS (
+                SELECT id,json_extract(data,'$.parent_id') FROM tasks WHERE id=?
+                UNION SELECT t.id,json_extract(t.data,'$.parent_id') FROM tasks t
+                JOIN ancestors a ON t.id=a.parent_id)
+                SELECT id,parent_id FROM ancestors""", (task_id,)).fetchall()
+            if not ancestors:
+                raise HubError('TASK_NOT_FOUND', '任务不存在')
+            root_row = next((row for row in ancestors if not row['parent_id']), None)
+            if root_row is None:
+                raise HubError('INVALID_TASK_GRAPH', '任务祖先缺失或存在循环，请核对历史数据')
+            root = root_row['id']
+            tasks = [self.store.decode(row) for row in db.execute("""WITH RECURSIVE family(id) AS (
+                SELECT ? UNION SELECT t.id FROM tasks t
+                JOIN family f ON json_extract(t.data,'$.parent_id')=f.id)
+                SELECT t.* FROM tasks t JOIN family f ON t.id=f.id ORDER BY t.created""", (root,))]
+            indexed = {t['id']: t for t in tasks}
+            task = indexed[root]
+            children = defaultdict(list)
+            for t in tasks:
+                children[t.get('parent_id')].append(t['id'])
+            depths, pending = {root: 1}, deque([root])
+            while pending:
+                parent = pending.popleft()
+                for child in children[parent]:
+                    if child not in depths:
+                        depths[child] = depths[parent] + 1
+                        pending.append(child)
+            summaries, checks, artifacts, events = {}, defaultdict(list), defaultdict(list), defaultdict(list)
+            ids = list(indexed)
+            for offset in range(0, len(ids), 100):
+                group = ids[offset:offset + 100]
+                marks = ','.join('?' for _ in group)
+                for row in db.execute(f'SELECT * FROM verifications WHERE task_id IN ({marks})', group):
+                    summaries[row['task_id']] = row
+                for row in db.execute(f'SELECT task_id,data FROM verification_checks WHERE task_id IN ({marks}) ORDER BY seq', group):
+                    checks[row['task_id']].append(json.loads(row['data']))
+                for row in db.execute(f'SELECT task_id,data FROM artifact_index WHERE task_id IN ({marks}) ORDER BY id', group):
+                    artifacts[row['task_id']].append(json.loads(row['data']))
+                query = ' UNION ALL '.join('SELECT * FROM (SELECT * FROM events WHERE task_id=? '
+                                           'ORDER BY seq DESC LIMIT 20)' for _ in group)
+                for row in db.execute(query, group):
+                    events[row['task_id']].append(dict(seq=row['seq'], kind=row['kind'],
+                        data=json.loads(row['data']), timestamp=row['timestamp']))
+            attempts = [dict(task_id=t['id'], parent_id=t.get('parent_id'), attempt=depths[t['id']], state=t['state'],
+                session_id=t.get('session_id'), workspace=t.get('workspace'), criteria=(t.get('acceptance') or {}).get('criteria', []),
+                **self.fields(t, self.summary_from_row(t, summaries.get(t['id']))),
+                checks=checks[t['id']], artifacts=artifacts[t['id']], events=list(reversed(events[t['id']]))) for t in tasks]
+            controller_row = db.execute('SELECT controller_id,epoch FROM controllers WHERE root_task_id=?', (root,)).fetchone()
+            controller = dict(controller_row) if controller_row else None
         parents = {a['parent_id'] for a in attempts}
         leaves = [a for a in attempts if a['task_id'] not in parents]
         current = leaves[-1] if task.get('acceptance') else attempts[-1]
@@ -746,7 +814,7 @@ class Verification:
             actions.append(f"自动审核{review.get('state')}：{review['reason']}")
         elif status == 'rework_required' and current['verification'].get('auto_rework_reason'):
             actions.append(current['verification']['auto_rework_reason'] + '，请人工决定是否 continue_task')
-        return safe(dict(controller=self.controller(root), root_task_id=root, current_task_id=current['task_id'], work_status=status, attempts=attempts, pending_actions=actions))
+        return safe(dict(controller=controller, root_task_id=root, current_task_id=current['task_id'], work_status=status, attempts=attempts, pending_actions=actions))
 
     def expected_artifact(self, task, digest, path):
         return any(c['kind'] == 'sha256' and c.get('expected', '').lower() == digest

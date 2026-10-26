@@ -1,5 +1,7 @@
 # AI Integration Platform
 
+可选的[跨目录诊断工具](docs/portable-helpers.md)支持显式指定 Muse Python 环境并继承代理配置；Windows 认证脚本提供仅检查本机命令的 `-CheckOnly` 模式。
+
 [English](README.md) | **简体中文**
 
 本地 Agent Hub：通过统一 MCP 接口协调 Codex、Claude Code、Muse、Cursor CLI 和 Grok Bot。独立后台执行任务，SQLite 保存状态、事件和结果。代码编辑任务可使用隔离的 Git worktree，并返回差异供审阅。edit_worktree 收集的 diff 与未跟踪文本摘录合计默认最多 1 MiB（UTF-8，`Workspaces.MAX_ARTIFACT_BYTES`）；超限时设置 `artifact_truncated` 与 `artifact_omitted`，不会把不完整 diff 当作完整变更。省略路径列表（如 artifact_omitted、changed_files）属于预算外元数据，整个结果 JSON 不设上限。

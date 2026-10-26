@@ -152,5 +152,7 @@ class CLI:
         result['session_id'] = session_id
         if 'blocked by policy' in err or 'Failed to write' in err or 'Failed to delete' in err:
             result['warnings'] = ['执行日志包含工具失败，请检查差异和日志；CLI 回合结束不等于任务目标已完成']
+        if logs.get('stderr_truncated'):
+            result.setdefault('warnings', []).append('stderr 返回内容已截断，完整已采集记录见任务日志')
         result.update(exit_code=rc, artifacts={'logs': logs})
         return result

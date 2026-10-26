@@ -23,7 +23,7 @@ test('real app safely renders and recovers initialization while polling preserve
   const payload = '<img src=x onerror=alert(1)>';
   const task = {task_count:1,agents:['custom-executor'],active_count:0,root_task_id:'task-1',latest_task_id:'task-1',id:'task-1',title:payload,agent:'custom-executor',state:'succeeded',verification_state:'awaiting_verification',workspace_label:'workspace',created:1,updated:2,mode:'custom'};
   const requests = [];
-  let members=[task], edges=[], chainFailure=false, pendingSlow, relationItems=[];
+  let historyItems=null; let verificationChecks=[]; let members=[task], edges=[], chainFailure=false, pendingSlow, relationItems=[];
   const omittedTask={...task,id:'task-omitted',title:'older omitted execution'};
   const messages=(items=members)=>items.map((member,index)=>({id:`m${index+1}`,task_id:member.id,agent:member.agent,role:'unknown',text:payload,source:'event:1',completeness:'possibly_truncated'}));
   let agentCalls = 0, taskItems = [task], taskState = 'succeeded', eventItems = [{seq:1,kind:'custom',data:{text:payload},timestamp:2}];
@@ -47,7 +47,7 @@ test('real app safely renders and recovers initialization while polling preserve
       if(url.endsWith('/chains/slow'))return new Promise(resolve=>{pendingSlow=()=>resolve(new Response(JSON.stringify({chain:{...task,id:'slow'},nodes:[task],edges:[],messages:[],warnings:[],truncated:false})));});
       if(url.includes('/chains/')&&chainFailure)throw new Error('chain unavailable');
       const visibleMembers=url.endsWith('/chains/task-omitted') ? [task,omittedTask] : members;
-      const data = url.endsWith('/session') ? {} : url.endsWith('/agents') ? {items:[{id:'custom-executor',modes:['custom']}]} : url.includes('/events?') ? {events:eventItems,next_seq:eventItems.at(-1)?.seq || 1} : url.includes('/chains?') ? {items:taskItems,next_offset:null} : url.includes('/chains/') ? {chain:{...task,state:taskState,task_count:members.length},nodes:visibleMembers,edges,messages:messages(visibleMembers),warnings:[],truncated:false} : {task:{...([...members,omittedTask].find(m=>url.endsWith('/'+m.id))||task),state:taskState},messages:[],relations:relationItems,criteria:[],artifacts:[]};
+      const data = url.endsWith('/session') ? {} : url.endsWith('/agents') ? {items:[{id:'custom-executor',modes:['custom']}]} : url.includes('/events?') ? {events:url.includes('before_seq=') ? (historyItems || eventItems) : eventItems,next_seq:(url.includes('before_seq=') ? (historyItems || eventItems) : eventItems).at(-1)?.seq || 1,has_more:true} : url.includes('/chains?') ? {items:taskItems,next_offset:null} : url.includes('/chains/') ? {chain:{...task,state:taskState,task_count:members.length},nodes:visibleMembers,edges,messages:messages(visibleMembers),warnings:[],truncated:false} : {task:{...([...members,omittedTask].find(m=>url.endsWith('/'+m.id))||task),state:taskState},messages:[],relations:relationItems,criteria:[],artifacts:[],verification_checks:verificationChecks};
       return new Response(JSON.stringify(data));
     };
     await import('../../src/agent_hub/dashboard_static/app.mjs');
@@ -68,6 +68,13 @@ test('real app safely renders and recovers initialization while polling preserve
     await taskButton.listeners.click();
     await settle();
     assert.equal(nodes.get('task-title').textContent,payload);
+    verificationChecks=[{criterion_id:'tests',outcome:'inconclusive',reason:'UPDATED_EVIDENCE'}];
+    await tick(2500);
+    const evidenceTexts=[];
+    function evidenceWalk(n){evidenceTexts.push(n.textContent);for(const c of n.children)evidenceWalk(c);}
+    evidenceWalk(nodes.get('detail-content'));
+    assert.ok(evidenceTexts.some(x=>x.includes('UPDATED_EVIDENCE')),'checks-only changes refresh the detail panel');
+
     const rendered = [];
     function walk(element) { rendered.push(element); for (const child of element.children) walk(child); }
     walk(nodes.get('content'));
@@ -111,6 +118,23 @@ test('real app safely renders and recovers initialization while polling preserve
     await tick(2500);
     assert.equal(rawEvent.open,true); assert.equal(document.activeElement,summary);
     assert.equal(nodes.get('content').children.filter(x=>x.tagName === 'details').length,2);
+    for(let batch=0;batch<6;batch++) {
+      eventItems=Array.from({length:200},(_,i)=>({seq:100+batch*200+i,kind:'progress',data:{index:i}}));
+      await tick(batch===0 ? 2500 : 0);
+    }
+    assert.ok(nodes.get('content').children.filter(x=>x.tagName==='details').length<=1000,'evicted events must also leave the DOM');
+    eventItems=[{seq:1299,kind:'progress',data:{index:199}}]; await tick(0);
+    historyItems=[{seq:5,kind:'progress',data:{text:'OLDER_PAGE'}}];
+    await nodes.get('events-older').listeners.click(); await settle();
+    assert.equal(nodes.get('content').children.filter(x=>x.tagName==='details').length,1);
+    assert.match(nodes.get('content').children.find(x=>x.tagName==='details').children[0].textContent,/#5/);
+    await tick(2500);
+    assert.equal(nodes.get('content').children.filter(x=>x.tagName==='details').length,1,'polling preserves historical page');
+    historyItems=[{seq:2000,kind:'progress',data:{text:'LATEST_PAGE'}}]; eventItems=historyItems;
+    await nodes.get('events-latest').listeners.click(); await settle();
+    assert.match(nodes.get('content').children.find(x=>x.tagName==='details').children[0].textContent,/#2000/);
+    historyItems=null;
+
     // Refreshing the selected task from Events must clear the temporary loading view.
     nodes.get('refresh').listeners.click(); await settle();
     const afterRefresh = [];

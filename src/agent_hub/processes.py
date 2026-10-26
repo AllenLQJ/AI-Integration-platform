@@ -2,6 +2,7 @@ import os
 import signal
 import subprocess
 import json
+import queue
 import threading
 import time
 from pathlib import Path
@@ -110,8 +111,13 @@ def spawn_process(argv, cwd, env):
         raise SpawnError(error) from error
 
 
+MAX_STDOUT_BYTES = 8 * 1024 * 1024
+MAX_LINE_BYTES = 4 * 1024 * 1024
+MAX_STDERR_BYTES = 64 * 1024
+
+
 def run_process(argv, cwd, env, cancel, deadline, log_dir, event, allow_hub_events=True,
-                parse_cli_events=True, stdout_line=None):
+                parse_cli_events=True, stdout_line=None, capture_stdout=True):
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     out_path, err_path = log_dir / 'stdout.log', log_dir / 'stderr.log'
@@ -119,12 +125,16 @@ def run_process(argv, cwd, env, cancel, deadline, log_dir, event, allow_hub_even
         raise HubError('INVALID_WORKSPACE', 'workspace directory does not exist: ' + str(cwd),
                        {'workspace': str(cwd)})
     process = spawn_process(argv, cwd, env)
+    failures = queue.Queue(maxsize=2)
     def pump(stream, path, structured):
         from .store import Store
         tool_names = {}
         session_seen = False
         with path.open('w', encoding='utf-8') as log:
-            for line in iter(stream.readline, b''):
+            for line in iter(lambda: stream.readline(MAX_LINE_BYTES + 1), b''):
+                if len(line) > MAX_LINE_BYTES:
+                    log.write('[omitted oversized output line]\n'); log.flush()
+                    raise HubError('OUTPUT_TOO_LARGE', '执行输出超过单行字节预算', {'limit_bytes': MAX_LINE_BYTES})
                 text = line.decode('utf-8', errors='replace')
                 if structured and stdout_line is not None:
                     stdout_line(text)
@@ -140,7 +150,11 @@ def run_process(argv, cwd, env, cancel, deadline, log_dir, event, allow_hub_even
                     log.write(logged); log.flush()
                     continue
                 try:
-                    data = safe(Store.safe(json.loads(text)))
+                    data = json.loads(text)
+                except ValueError:
+                    text = safe(redact(text))
+                else:
+                    data = safe(Store.safe(data))
                     if structured and isinstance(data, dict) and data.get('hub_event'):
                         if allow_hub_events:
                             entry = data['hub_event']
@@ -161,13 +175,30 @@ def run_process(argv, cwd, env, cancel, deadline, log_dir, event, allow_hub_even
                                     payload['name'] = tool_names[ident]
                             event(kind, payload)
                     text = json.dumps(log_record(data) if parse_cli_events else data, ensure_ascii=False) + '\n'
-                except ValueError: text = safe(redact(text))
                 log.write(text); log.flush()
-    readers = [threading.Thread(target=pump, args=(stream, path, stream is process.stdout), daemon=True)
+
+    def read_stream(stream, path, structured):
+        try:
+            pump(stream, path, structured)
+        except Exception as error:
+            limited = isinstance(error, HubError) and error.code == 'OUTPUT_TOO_LARGE'
+            failures.put((path.stem, type(error).__name__, limited,
+                          error.details.get('limit_bytes') if limited else None))
+
+    readers = [threading.Thread(target=read_stream, args=(stream, path, stream is process.stdout), daemon=True)
                for stream, path in ((process.stdout, out_path), (process.stderr, err_path))]
     for reader in readers: reader.start()
     reason = None
+    code = None
+    wait_timed_out = False
     tracked = {}
+
+    def stop_process():
+        nonlocal wait_timed_out
+        try:
+            terminate_tree(process)
+        except subprocess.TimeoutExpired:
+            wait_timed_out = True
     try:
         event('process', {'pid': process.pid})
         while process.poll() is None:
@@ -177,10 +208,26 @@ def run_process(argv, cwd, env, cancel, deadline, log_dir, event, allow_hub_even
                 reason = 'CANCELLED' if cancel.is_set() else 'TIMED_OUT'
                 if os.name != 'nt':
                     stop_descendants(tracked)
-                terminate_tree(process)
+                stop_process()
+                break
+            if not failures.empty():
+                stop_process()
                 break
             time.sleep(.1)
-        code = process.wait(15)
+        try:
+            code = process.poll() if wait_timed_out else process.wait(15)
+        except subprocess.TimeoutExpired:
+            wait_timed_out = True
+            stop_process()
+            code = process.poll()
+    except BaseException:
+        if os.name != 'nt':
+            try:
+                track_descendants(process.pid, tracked)
+            except OSError:
+                pass
+        stop_process()
+        raise
     finally:
         if os.name == 'nt': process.close_tree()
         else:
@@ -189,12 +236,51 @@ def run_process(argv, cwd, env, cancel, deadline, log_dir, event, allow_hub_even
         if os.name == 'nt': process.close()
         else:
             process.stdout.close(); process.stderr.close()
-    stdout = out_path.read_text(encoding='utf-8', errors='replace')
-    stderr = err_path.read_text(encoding='utf-8', errors='replace')
+    logs = {'stdout': str(out_path), 'stderr': str(err_path)}
+
+    def fail(error_code, message, **details):
+        # Re-evaluate at publication as cancellation/deadline can change while
+        # waiting for the process or draining its readers.
+        if cancel.is_set() or reason == 'CANCELLED':
+            error_code = 'CANCELLED'
+        elif reason == 'TIMED_OUT' or time.time() >= (deadline() if callable(deadline) else deadline):
+            error_code = 'TIMED_OUT'
+        evidence = dict(exit_code=code, local_process_stopped=code is not None, artifacts={'logs': logs})
+        if wait_timed_out:
+            evidence['wait_timeout'] = True
+        evidence.update(details)
+        raise HubError(error_code, message, evidence)
+
     if reason:
-        raise HubError(reason, '本地执行进程树已停止', {'exit_code': code,
-                       'artifacts': {'logs': {'stdout': str(out_path), 'stderr': str(err_path)}}})
-    return code, stdout, stderr, {'stdout': str(out_path), 'stderr': str(err_path)}
+        fail(reason, '本地执行进程树已停止' if code is not None else '已请求停止，本地进程停止尚未确认')
+    if not failures.empty():
+        stream, cause, limited, limit = failures.get_nowait()
+        if limited:
+            logs[stream + '_truncated'] = True
+        fail('OUTPUT_TOO_LARGE' if limited else 'PROCESS_STREAM_ERROR',
+             '执行输出超过单行预算' if limited else '执行输出采集失败，请检查任务日志',
+             stream=stream, cause=cause, limit_bytes=limit)
+    if wait_timed_out:
+        fail('PROCESS_STREAM_ERROR', '执行进程退出未确认，请核对任务日志', cause='ProcessWaitTimeout')
+    if any(reader.is_alive() for reader in readers):
+        fail('PROCESS_STREAM_ERROR', '执行输出采集未能及时结束，请核对任务日志', cause='ReaderJoinTimeout')
+    stdout = ''
+    if capture_stdout:
+        with out_path.open('rb') as output:
+            content = output.read(MAX_STDOUT_BYTES + 1)
+        if len(content) > MAX_STDOUT_BYTES:
+            logs['stdout_truncated'] = True
+            fail('OUTPUT_TOO_LARGE', '执行输出超过内存预算，完整已采集日志保留在磁盘', limit_bytes=MAX_STDOUT_BYTES)
+        stdout = content.decode('utf-8', errors='replace')
+    with err_path.open('rb') as errors:
+        size = errors.seek(0, os.SEEK_END)
+        errors.seek(max(0, size - MAX_STDERR_BYTES))
+        stderr = errors.read(MAX_STDERR_BYTES).decode('utf-8', errors='replace')
+    if size > MAX_STDERR_BYTES:
+        logs['stderr_truncated'] = True
+    if cancel.is_set() or time.time() >= (deadline() if callable(deadline) else deadline):
+        fail('TIMED_OUT', '执行收尾期间收到停止请求或达到期限')
+    return code, stdout, stderr, logs
 
 
 OUTPUT_EXCERPT_BUDGET = 16384

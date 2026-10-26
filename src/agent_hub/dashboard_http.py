@@ -4,10 +4,13 @@ The management bearer mints single-use launch tickets. Browser sessions are
 separate credentials and are never consulted by RPC or the legacy workbench.
 """
 import json
+import hashlib
 import re
 import secrets
+import sqlite3
 import threading
 import time
+from collections import OrderedDict
 from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -33,18 +36,62 @@ class DashboardHTTP:
         self.tickets = {}
         self.sessions = {}
         self.lock = threading.Lock()
+        self.revalidated = OrderedDict()
+        self.result_files = {}
+        self.monitor = None
+        self.cache_epoch = secrets.token_hex(12)
+
+    def revision(self, route, files=None):
+        # data_version is meaningful across commits only on the SAME connection.
+        # A read-only, autocommit observer notices every DB writer, including
+        # verification changes that do not touch tasks.updated or append events.
+        with self.lock:
+            if self.monitor is None:
+                self.monitor = sqlite3.connect(Path(self.service.store.path).resolve().as_uri() + '?mode=ro',
+                                               uri=True, check_same_thread=False)
+            version = self.monitor.execute('PRAGMA data_version').fetchone()[0]
+            paths = tuple(self.result_files.get(route, ())) if files is None else tuple(files)
+        key = hashlib.sha256(route.encode('utf-8')).hexdigest()[:24]
+        from .store import Store
+        signatures = [(path, Store.result_file_signature(path)) for path in paths]
+        file_key = hashlib.sha256(json.dumps(signatures, ensure_ascii=False).encode('utf-8')).hexdigest()[:16]
+        return f'"{self.cache_epoch}-{version}-{key}-{file_key}"'
+
+    def unchanged(self, route, etag):
+        with self.lock:
+            return self.revalidated.get(route) == etag
+
+    def remember(self, route, etag, files=()):
+        with self.lock:
+            self.revalidated[route] = etag
+            self.result_files[route] = tuple(files)
+            self.revalidated.move_to_end(route)
+            while len(self.revalidated) > 128:
+                removed, _ = self.revalidated.popitem(last=False)
+                self.result_files.pop(removed, None)
+
+    def close(self):
+        with self.lock:
+            if self.monitor is not None:
+                self.monitor.close()
+                self.monitor = None
+            self.revalidated.clear()
+            self.result_files.clear()
 
     @staticmethod
-    def send(handler, status, body, content_type='application/json', cookie=None):
+    def send(handler, status, body, content_type='application/json', cookie=None, etag=None):
         content = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode('utf-8')
         handler.send_response(status)
         handler.send_header('Content-Type', content_type + '; charset=utf-8')
-        handler.send_header('Content-Length', str(len(content)))
+        if status != 304:
+            handler.send_header('Content-Length', str(len(content)))
         handler.send_header('Cache-Control', 'no-store')
         handler.send_header('Content-Security-Policy', CSP)
         handler.send_header('X-Content-Type-Options', 'nosniff')
         handler.send_header('Referrer-Policy', 'no-referrer')
         handler.send_header('Cross-Origin-Resource-Policy', 'same-origin')
+        if etag:
+            handler.send_header('ETag', etag)
         if cookie:
             handler.send_header('Set-Cookie', cookie)
         handler.end_headers()
@@ -53,6 +100,42 @@ class DashboardHTTP:
     def error(self, handler, status, code):
         # Do not reflect URLs, native tokens, exception text or filesystem paths.
         self.send(handler, status, {'error': {'code': code, 'message': code}})
+        if status in {401, 403}:
+            self.discard_rejected_body(handler)
+
+    @staticmethod
+    def discard_rejected_body(handler):
+        # Send the denial first. A closing socket with an unread POST body can
+        # reset that response on Windows. Drain only a small, explicitly framed
+        # body, under one deadline; never parse it or authorize any operation.
+        if getattr(handler, 'command', None) != 'POST' or getattr(handler, '_dashboard_body_read', False):
+            return
+        lengths = handler.headers.get_all('Content-Length', [])
+        if len(lengths) != 1 or handler.headers.get('Transfer-Encoding') is not None:
+            return
+        try:
+            remaining = int(lengths[0])
+        except ValueError:
+            return
+        if not 0 < remaining <= 4096:
+            return
+        connection = handler.connection
+        previous_timeout = connection.gettimeout()
+        deadline = time.monotonic() + .2
+        try:
+            while remaining:
+                timeout = deadline - time.monotonic()
+                if timeout <= 0:
+                    break
+                connection.settimeout(timeout)
+                block = handler.rfile.read1(remaining)
+                if not block:
+                    break
+                remaining -= len(block)
+        except OSError:
+            pass
+        finally:
+            connection.settimeout(previous_timeout)
 
     @staticmethod
     def origin(handler):
@@ -129,7 +212,9 @@ class DashboardHTTP:
         size = int(handler.headers['Content-Length'])
         if not 0 < size <= 4096:
             raise ValueError()
-        body = json.loads(handler.rfile.read(size))
+        raw = handler.rfile.read(size)
+        handler._dashboard_body_read = True
+        body = json.loads(raw)
         if not isinstance(body, dict):
             raise ValueError()
         return body
@@ -221,6 +306,11 @@ class DashboardHTTP:
         if path.startswith('/dashboard/api/'):
             if not self.authenticated(handler):
                 return self.error(handler, 401, 'UNAUTHORIZED')
+            conditional = bool(re.fullmatch(r'/dashboard/api/v1/(?:chains|tasks)(?:/[A-Za-z0-9_-]{1,128})?', path))
+            revision = self.revision(handler.path) if conditional else None
+            if (revision and handler.headers.get('If-None-Match') == revision
+                    and self.unchanged(handler.path, revision)):
+                return self.send(handler, 304, b'', etag=revision)
             from .dashboard import Dashboard
             from .dashboard_chains import DashboardChains
             dashboard = Dashboard(self.service)
@@ -245,13 +335,27 @@ class DashboardHTTP:
                 if not match:
                     return self.error(handler, 404, 'NOT_FOUND')
                 if match[2]:
-                    args = self.query(query, {'after_seq'})
-                    after = self.integer(args.get('after_seq', '0'), 0, 9223372036854775807)
-                    result = dashboard.events(match[1], after_seq=after)
+                    args = self.query(query, {'after_seq', 'before_seq'})
+                    if 'before_seq' in args:
+                        if 'after_seq' in args:
+                            raise ValueError()
+                        before = self.integer(args['before_seq'], 1, 9223372036854775807)
+                        result = dashboard.events(match[1], before_seq=before)
+                    else:
+                        after = self.integer(args.get('after_seq', '0'), 0, 9223372036854775807)
+                        result = dashboard.events(match[1], after_seq=after)
                 else:
                     self.query(query, set())
                     result = dashboard.detail(match[1])
-            return self.send(handler, 200, result)
+            # Never associate a projection with a newer revision if a writer
+            # committed while it was being read. The next poll will rebuild it.
+            candidate = self.revision(handler.path, files=dashboard.result_files) if revision else None
+            if revision and revision == self.revision(handler.path) and dashboard.results_unchanged():
+                revision = candidate
+                self.remember(handler.path, revision, dashboard.result_files)
+            else:
+                revision = None
+            return self.send(handler, 200, result, etag=revision)
         name = 'index.html' if path in {'/dashboard', '/dashboard/'} else path.removeprefix('/dashboard/')
         if name not in ASSETS:
             return self.error(handler, 404, 'NOT_FOUND')

@@ -157,6 +157,20 @@ class CommandTests(unittest.TestCase):
                 self.run_command(cancel=stop)
             run.assert_not_called()
 
+    def test_cancel_and_timeout_preserve_unconfirmed_local_stop(self):
+        for code in ('CANCELLED', 'TIMED_OUT'):
+            error = HubError(code, 'Process did not confirm exit',
+                             {'local_process_stopped': False, 'wait_timeout': True})
+            with self.subTest(code=code), patch('agent_hub.adapters.command.run_process', side_effect=error):
+                with self.assertRaises(HubError) as caught:
+                    self.run_command()
+                self.assertIs(caught.exception, error)
+                self.assertFalse(error.details['local_process_stopped'])
+                self.assertTrue(error.details['wait_timeout'])
+                self.assertFalse(error.details['remote_cancelled'])
+                self.assertEqual(error.details['cancel_scope'], 'remote_session')
+                self.assert_no_requests()
+
     def test_new_config_instance_loads_without_core_registration(self):
         (self.root / 'config.json').write_text(json.dumps({'agents': {'any-ai': dict(kind='command', **self.config())}}))
         adapter = adapters(self.root)['any-ai']

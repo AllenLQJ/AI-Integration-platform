@@ -13,6 +13,18 @@ from .models import HubError
 from .service import Service
 
 
+class HubHTTPServer(ThreadingHTTPServer):
+    def __init__(self, address, handler, dashboard):
+        self.dashboard = dashboard
+        super().__init__(address, handler)
+
+    def server_close(self):
+        try:
+            super().server_close()
+        finally:
+            self.dashboard.close()
+
+
 class InstanceLock:
     def __init__(self, root):
         self.file = (Path(root) / 'daemon.lock').open('a+b')
@@ -151,7 +163,7 @@ def make_server(service, token):
                 self.respond(400, {'error': {'code': 'INVALID_ARGUMENT', 'message': '请求格式不正确'}})
             except Exception:
                 self.respond(500, {'error': {'code': 'INTERNAL_ERROR', 'message': '服务内部错误'}})
-    return ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    return HubHTTPServer(('127.0.0.1', 0), Handler, dashboard)
 
 
 def run(root):

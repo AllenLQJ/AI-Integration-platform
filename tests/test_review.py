@@ -369,7 +369,14 @@ class ReviewTests(unittest.TestCase):
         return gate
 
     def reviewing(self, ident):
-        return self.until(lambda: (lambda r: r if r and r[0]['state'] == 'running' else None)(self.reviews(ident)))[0]
+        def started():
+            reviews = self.reviews(ident)
+            # running is persisted before adapter.run. These scenarios need an
+            # actually dispatched review, not cancellation in that earlier gap.
+            if (reviews and reviews[0]['state'] == 'running'
+                    and any(call['id'] == reviews[0]['id'] for call in self.claude.calls)):
+                return reviews[0]
+        return self.until(started)
 
     def test_late_review_after_human_verdict_is_superseded(self):
         gate = self.gated()

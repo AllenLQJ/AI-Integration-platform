@@ -4,7 +4,18 @@ export class APIError extends Error {
 }
 
 export function createAPI(fetcher = globalThis.fetch.bind(globalThis)) {
+  // Memory only: never persist conversation payloads or credentials to storage.
+  const responses = new Map();
+  let responseBytes = 0;
+  function forget(path) {
+    const old = responses.get(path);
+    if (old) responseBytes -= old.bytes;
+    responses.delete(path);
+  }
+  function clear() { responses.clear(); responseBytes = 0; }
   async function request(path, { signal, method = 'GET', body } = {}) {
+    if (method !== 'GET') clear();
+    const cached = method === 'GET' ? responses.get(path) : null;
     const controller = new AbortController();
     const abort = () => controller.abort();
     if (signal?.aborted) controller.abort();
@@ -13,12 +24,29 @@ export function createAPI(fetcher = globalThis.fetch.bind(globalThis)) {
     try {
       const response = await fetcher(`/dashboard/${path}`, {
         method, credentials: 'same-origin', cache: 'no-store', redirect: 'error',
-        headers: { Accept: 'application/json', ...(body ? {'Content-Type': 'application/json'} : {}) },
+        headers: { Accept: 'application/json', ...(body ? {'Content-Type': 'application/json'} : {}),
+          ...(cached ? {'If-None-Match': cached.etag} : {}) },
         signal: controller.signal, ...(body ? {body: JSON.stringify(body)} : {}),
       });
-      if (!response.ok) throw new APIError(response.status === 401 || response.status === 403
-        ? '会话已失效，请在本机重新打开看板。' : `请求失败（${response.status}），请稍后重试。`, response.status);
-      try { return await response.json(); }
+      if (response.status === 304 && cached) return JSON.parse(cached.text);
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) clear();
+        throw new APIError(response.status === 401 || response.status === 403
+          ? '会话已失效，请在本机重新打开看板。' : `请求失败（${response.status}），请稍后重试。`, response.status);
+      }
+      try {
+        const data = await response.json();
+        forget(path);
+        const etag = response.headers?.get?.('ETag');
+        if (method === 'GET' && etag) {
+          const text = JSON.stringify(data), bytes = text.length * 2;
+          if (bytes <= 2 * 1024 * 1024) {
+            responses.set(path, {etag,text,bytes}); responseBytes += bytes;
+            while (responses.size > 32 || responseBytes > 8 * 1024 * 1024) forget(responses.keys().next().value);
+          }
+        }
+        return data;
+      }
       catch { throw new APIError('服务器响应无法解析。'); }
     } catch (error) {
       if (error.name === 'AbortError' && !signal?.aborted) throw new APIError('连接超时，请检查 Hub 是否运行。');
@@ -55,6 +83,10 @@ export function createAPI(fetcher = globalThis.fetch.bind(globalThis)) {
     async events(id, after, signal) {
       const data = await request(`api/v1/tasks/${encodeURIComponent(id)}/events?after_seq=${after}`, {signal});
       return valid(data, Array.isArray(data?.events) && Number.isInteger(data.next_seq));
+    },
+    async eventHistory(id, before = '9223372036854775807', signal) {
+      const data = await request(`api/v1/tasks/${encodeURIComponent(id)}/events?before_seq=${before}`, {signal});
+      return valid(data, Array.isArray(data?.events) && Number.isInteger(data.next_seq) && typeof data.has_more === 'boolean');
     },
   };
 }

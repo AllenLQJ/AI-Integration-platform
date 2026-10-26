@@ -47,6 +47,8 @@ Muse, Remote, and Cursor IDE use their own path conventions rather than this CLI
 
 Keep login data, cookies, and model keys in each executor's private user configuration. See the [macOS setup record](docs/2026-10-11-macos-setup-validation.md) for historical details.
 
+Optional [portable diagnostic helpers](docs/portable-helpers.md) accept external Muse Python installations and inherit your proxy settings. The Windows authentication helper supports a local `-CheckOnly` command check.
+
 ## Windows setup
 
 Use Python 3.10 or later and run from the source directory:

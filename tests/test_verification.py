@@ -403,7 +403,7 @@ class VerificationTests(unittest.TestCase):
         self.wait(ident)
         self.service.store.event(ident, 'tool', dict(name='Read', status='success'))
         token = 'handler-test-private-token'
-        with patch('agent_hub.daemon.ThreadingHTTPServer', side_effect=lambda address, handler: handler):
+        with patch('agent_hub.daemon.HubHTTPServer', side_effect=lambda address, handler, dashboard: handler):
             Handler = make_server(self.service, token)
         handler = Handler.__new__(Handler)
         handler.client_address = ('127.0.0.1', 12345)

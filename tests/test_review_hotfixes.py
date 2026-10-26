@@ -164,6 +164,7 @@ class ScheduleQuarantineTests(unittest.TestCase):
                 service.store.create(f'queued{i}', dict(agent='fake', prompt='x', cwd=str(root / 'other'),
                                                         mode='read_only', timeout_seconds=10))
             calls = []
+            pass_observed = threading.Event()
             original_list = service.store.list
             original_q = service.store.list_quarantined
 
@@ -173,12 +174,14 @@ class ScheduleQuarantineTests(unittest.TestCase):
 
             def counting_q():
                 calls.append(('quarantined', None))
+                pass_observed.set()
                 return original_q()
 
             service.store.list = counting_list
             service.store.list_quarantined = counting_q
-            # Drive one scheduling pass by waiting briefly for the daemon thread.
-            time.sleep(0.2)
+            # Direct Store writes use the bounded recovery poll, not a fixed
+            # 50ms scheduling cadence. Observe a pass instead of sleeping .2s.
+            self.assertTrue(pass_observed.wait(2))
             full_scans = [c for c in calls if c == ('list', None)]
             self.assertEqual(full_scans, [], msg=f'unexpected full-table list calls: {calls}')
             self.assertTrue(any(c[0] == 'quarantined' for c in calls), calls)

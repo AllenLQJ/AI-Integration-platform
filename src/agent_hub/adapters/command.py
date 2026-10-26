@@ -117,13 +117,13 @@ class Command(Executor):
             try:
                 code, stdout, stderr, logs = run_process(argv, task['workspace'], env, cancel,
                     lambda: task['deadline'], log_dir, event, allow_hub_events=False,
-                    parse_cli_events=False, stdout_line=capture)
+                    parse_cli_events=False, stdout_line=capture, capture_stdout=False)
             except SpawnError as error:
                 raise HubError('AGENT_UNAVAILABLE', 'Command process could not start (' + type(error.cause).__name__ + ')') from None
             except HubError as error:
                 if error.code in {'CANCELLED', 'TIMED_OUT'}:
-                    error.details.update(remote_cancelled=False, local_process_stopped=True,
-                                         cancel_scope=self.cancel_scope)
+                    error.details.setdefault('local_process_stopped', True)
+                    error.details.update(remote_cancelled=False, cancel_scope=self.cancel_scope)
                 raise
             if code:
                 raise HubError('CLI_FAILED', 'Command exited unsuccessfully',

@@ -26,6 +26,8 @@ class Store:
                     kind TEXT NOT NULL, data TEXT NOT NULL, timestamp REAL NOT NULL);
                 CREATE INDEX IF NOT EXISTS events_task ON events(task_id, seq);
                 CREATE INDEX IF NOT EXISTS tasks_state ON tasks(state);
+                CREATE INDEX IF NOT EXISTS tasks_parent ON tasks(json_extract(data, '$.parent_id'));
+                CREATE INDEX IF NOT EXISTS tasks_review ON tasks(json_extract(data, '$.review_of.task_id'));
                 CREATE TABLE IF NOT EXISTS activity_receipts (
                     request_id TEXT PRIMARY KEY, digest TEXT NOT NULL,
                     task_id TEXT NOT NULL, event_id TEXT NOT NULL,
@@ -60,6 +62,33 @@ class Store:
         data = json.loads(row['data'])
         data.update(id=row['id'], request_id=row['request_id'], state=row['state'], created=row['created'], updated=row['updated'])
         return data
+
+    @staticmethod
+    def result_file_signature(path):
+        try:
+            stat = Path(path).stat()
+            return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        except (OSError, ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def read_result(task):
+        reference = task.get('result') or {}
+        if not isinstance(reference, dict):
+            reference = {}
+        if not reference.get('path'):
+            return dict(reference)
+        try:
+            result = json.loads(Path(reference['path']).read_text(encoding='utf-8'))
+            if not isinstance(result, dict):
+                raise ValueError('result must be an object')
+            return result
+        except (OSError, ValueError, TypeError):
+            # Preserve inline uncertainty evidence, never disclose the local path
+            # or turn a previously recorded execution into a fabricated failure.
+            evidence = {key: value for key, value in reference.items() if key != 'path'}
+            return dict(evidence, result_available=False, result_error_code='RESULT_UNAVAILABLE',
+                        result_error='执行结果文件不可用，请检查数据目录或备份。')
 
     def create(self, request_id, spec):
         serialized = json.dumps(spec, sort_keys=True, ensure_ascii=False)
@@ -396,6 +425,16 @@ class Store:
             events = [dict(seq=r['seq'], kind=r['kind'], data=json.loads(r['data']),
                            timestamp=r['timestamp']) for r in rows]
             return {'events': events, 'next_seq': events[-1]['seq'] if events else after_seq}
+
+    def events_before(self, task_id, before_seq, limit=200):
+        self.get(task_id)
+        limit = max(1, min(int(limit), 200))
+        with self.connection() as db:
+            rows = db.execute('SELECT * FROM events WHERE task_id=? AND seq<? ORDER BY seq DESC LIMIT ?',
+                              (task_id, before_seq, limit + 1)).fetchall()
+        events = [dict(seq=r['seq'], kind=r['kind'], data=json.loads(r['data']), timestamp=r['timestamp'])
+                  for r in reversed(rows[:limit])]
+        return dict(events=events, next_seq=events[-1]['seq'] if events else 0, has_more=len(rows) > limit)
 
     def recover(self):
         for task in self.list({'running', 'waiting_for_user', 'cancelling'}):

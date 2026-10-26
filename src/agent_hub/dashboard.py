@@ -5,7 +5,7 @@ DTOs intentionally exclude task internals and executable/artifact filesystem pat
 """
 import json
 import re
-from pathlib import PureWindowsPath
+from pathlib import Path, PureWindowsPath
 
 from .models import HubError, TERMINAL, redact
 
@@ -80,9 +80,14 @@ class Dashboard:
     def __init__(self, service):
         self.service = service
         self.store = service.store
+        self.result_files = {}
 
-    def _summary(self, task):
-        fields = self.service.verification.fields(task)
+    def results_unchanged(self):
+        return all(self.store.result_file_signature(path) == signature
+                   for path, signature in self.result_files.items())
+
+    def _summary(self, task, verification=None):
+        fields = self.service.verification.fields(task, summary=verification)
         prompt = _text(task.get('prompt', '')).strip()
         workspace = str(task.get('cwd') or task.get('workspace') or '').rstrip('\\/')
         label = PureWindowsPath(workspace).name
@@ -170,14 +175,71 @@ class Dashboard:
             completeness = 'truncated'
         return dict(id=ident, role=role, text=safe, source=source, completeness=completeness, timestamp=timestamp)
 
-    def detail(self, task_id):
+    def chain_details(self, task_ids):
+        """Stream bounded projections from one request-local DB snapshot.
+
+        Each event subquery uses the task/seq index and its own LIMIT, so a busy
+        task cannot exhaust another task's history or load unbounded history.
+        Relations, criteria and artifacts belong to the separately polled node
+        inspector and are not needed by the chain's conversation projection.
+        """
+        ids = list(dict.fromkeys(task_ids))
+        if len(ids) > 200:
+            raise HubError('INVALID_ARGUMENT', 'Too many displayed nodes')
+        with self.store.connection() as db:
+            db.execute('BEGIN')
+            for offset in range(0, len(ids), 25):
+                group = ids[offset:offset + 25]
+                batch = dict(tasks={}, verification={}, messages={}, timeline={})
+                placeholders = ','.join('?' for _ in group)
+                for row in db.execute(f'SELECT * FROM tasks WHERE id IN ({placeholders})', group):
+                    batch['tasks'][row['id']] = self.store.decode(row)
+                for row in db.execute(f'SELECT * FROM verifications WHERE task_id IN ({placeholders})', group):
+                    batch['verification'][row['task_id']] = dict(row)
+                queries, parameters = [], []
+                for ident in group:
+                    # A sentinel also projects nodes with no events. UNION ALL
+                    # streams one node at a time; do not fetchall these payloads.
+                    queries.append("SELECT 'node' AS bucket, NULL AS seq, ? AS task_id, "
+                                   'NULL AS kind, NULL AS data, NULL AS timestamp')
+                    parameters.append(ident)
+                    for bucket, condition, limit in (
+                        ('messages', "kind='message'", 201),
+                        ('timeline', "kind IN ('message','activity','tool','progress','approval','system')", 401)):
+                        queries.append(f"SELECT '{bucket}' AS bucket, * FROM (SELECT * FROM events "
+                                       f"WHERE task_id=? AND {condition} ORDER BY seq DESC LIMIT {limit})")
+                        parameters.append(ident)
+                current = None
+                for row in db.execute(' UNION ALL '.join(queries), parameters):
+                    if row['bucket'] == 'node':
+                        if current is not None:
+                            yield current, self.detail(current, _batch=batch)
+                        batch['messages'].clear()
+                        batch['timeline'].clear()
+                        current = row['task_id']
+                    else:
+                        batch[row['bucket']].setdefault(row['task_id'], []).append(dict(row))
+                if current is not None:
+                    yield current, self.detail(current, _batch=batch)
+
+    def detail(self, task_id, *, _batch=None):
         _string(task_id, 'task_id', 200, required=True)
-        task = self.store.get(task_id)
+        if _batch is None:
+            task = self.store.get(task_id)
+            summary = self.service.verification.summary(task)
+        else:
+            task = _batch['tasks'].get(task_id)
+            if task is None:
+                raise HubError('TASK_NOT_FOUND', 'Task not found')
+            summary = self.service.verification.summary_from_row(task, _batch['verification'].get(task_id))
         messages = [self._message(task_id + ':prompt', 'user', task.get('prompt', ''),
                                   'task.prompt', 'complete', task['created'])]
-        with self.store.connection() as db:
-            rows = db.execute("SELECT * FROM events WHERE task_id=? AND kind='message' ORDER BY seq DESC LIMIT 201",
-                              (task_id,)).fetchall()
+        if _batch is None:
+            with self.store.connection() as db:
+                rows = db.execute("SELECT * FROM events WHERE task_id=? AND kind='message' ORDER BY seq DESC LIMIT 201",
+                                  (task_id,)).fetchall()
+        else:
+            rows = sorted(_batch['messages'].get(task_id, []), key=lambda row: row['seq'], reverse=True)
         recorded = []
         for row in reversed(rows[:200]):
             data = json.loads(row['data'])
@@ -205,7 +267,16 @@ class Dashboard:
             if isinstance(data.get('recipient'), str) and data['recipient'].strip():
                 message['recipient'] = _text(data['recipient'])[:200]
             recorded.append(message)
-        result = self.service.call('get_result', {'task_id': task_id}) if task['state'] in TERMINAL else {}
+        result = {}
+        if task['state'] in TERMINAL:
+            reference = task.get('result')
+            path = reference.get('path') if isinstance(reference, dict) else None
+            if isinstance(path, str) and path:
+                self.result_files.setdefault(path, self.store.result_file_signature(path))
+            if _batch is None:
+                result = self.service.call('get_result', {'task_id': task_id})
+            else:
+                result = self.store.read_result(task)
         answer = result.get('answer')
         final = self._message(task_id + ':result', 'assistant', answer, 'task.result', 'complete', task['updated']) if isinstance(answer, str) and answer else None
         if final:
@@ -226,10 +297,12 @@ class Dashboard:
             messages.append(final)
         if isinstance(result.get('error'), str) and result['error']:
             messages.append(self._message(task_id + ':error', 'system', result['error'], 'task.result.error', 'complete', task['updated']))
+        if result.get('result_available') is False:
+            messages.append(self._message(task_id + ':result-unavailable', 'system',
+                result['result_error'], 'task.result.unavailable', 'complete', task['updated']))
         acceptance = task.get('acceptance') or {}
         criteria = [_pick(item, ('id', 'kind', 'required', 'description', 'path', 'expected'))
                     for item in acceptance.get('criteria', [])[:100] if isinstance(item, dict)]
-        summary = self.service.verification.summary(task)
         check_rows = []
         for check in (summary.get('checks') or [])[:100]:
             if not isinstance(check, dict):
@@ -240,25 +313,40 @@ class Dashboard:
             if isinstance(verifier, dict) and isinstance(verifier.get('name'), str):
                 row['verifier_id'] = _text(verifier['name'])[:200]
             check_rows.append(row)
-        artifacts = [_pick(item, ('artifact_id', 'logical_id', 'sha256', 'size_bytes', 'mime_type', 'source', 'change'))
-                     for item in self.service.verification.artifacts(task_id)[:200] if isinstance(item, dict)]
+        artifacts = ([_pick(item, ('artifact_id', 'logical_id', 'sha256', 'size_bytes', 'mime_type', 'source', 'change'))
+                      for item in self.service.verification.artifacts(task_id)[:200] if isinstance(item, dict)]
+                     if _batch is None else [])
         from .dashboard_timeline import task_timeline
-        timeline_page = self.store.timeline_events(task_id, limit=400)
+        if _batch is None:
+            timeline_page = self.store.timeline_events(task_id, limit=400)
+        else:
+            timeline_rows = sorted(_batch['timeline'].get(task_id, []), key=lambda row: row['seq'], reverse=True)
+            timeline_page = dict(truncated=len(timeline_rows) > 400, events=[
+                dict(seq=row['seq'], kind=row['kind'], data=json.loads(row['data']), timestamp=row['timestamp'])
+                for row in reversed(timeline_rows[:400])])
         projected = task_timeline(task, messages, timeline_page['events'])
         if timeline_page['truncated']:
             projected['capture_coverage'] = dict(
                 projected['capture_coverage'],
                 note=projected['capture_coverage']['note'] + ' 事件查询已达上限。')
             projected['truncated'] = True
-        return dict(task=self._summary(task), messages=messages, relations=self._relations(task),
+        return dict(task=self._summary(task, verification=summary), messages=messages,
+                    relations=self._relations(task) if _batch is None else [],
                     criteria=criteria, verification_checks=check_rows, artifacts=artifacts,
                     acceptance_policy=_text(acceptance.get('policy') or ''),
                     timeline=projected['timeline'],
                     capture_coverage=projected['capture_coverage'])
 
-    def events(self, task_id, after_seq=0):
+    def events(self, task_id, after_seq=0, before_seq=None):
         _string(task_id, 'task_id', 200, required=True)
         _integer(after_seq, 'after_seq', 0, 9223372036854775807)
-        page = self.store.events(task_id, after_seq, limit=200)
+        if before_seq is not None:
+            _integer(before_seq, 'before_seq', 1, 9223372036854775807)
+            if after_seq != 0:
+                raise HubError('INVALID_ARGUMENT', '不能同时读取两个方向的事件')
+            page = self.store.events_before(task_id, before_seq, limit=200)
+        else:
+            page = self.store.events(task_id, after_seq, limit=200)
         return dict(events=[dict(seq=item['seq'], kind=_text(item['kind'])[:200], data=_safe(item['data']),
-                                 timestamp=item['timestamp']) for item in page['events']], next_seq=page['next_seq'])
+                                 timestamp=item['timestamp']) for item in page['events']], next_seq=page['next_seq'],
+                    **({'has_more': page['has_more']} if before_seq is not None else {}))

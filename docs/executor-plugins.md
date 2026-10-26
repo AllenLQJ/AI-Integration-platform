@@ -97,6 +97,8 @@ Only these response keys are accepted. Duplicate keys, wrong types and unknown f
 
 `delegate` is the default; optional `edit_worktree` uses Hub's Git workspace preparation. The command adapter cannot claim read-only/text-only enforcement or an OS sandbox. On cancellation/timeout Hub stops the local process tree but reports `remote_cancelled: false`, because a provider may continue remotely. Remote uncertainty blocks automatic session reuse; a provider-specific plugin is needed to confirm remote cancellation.
 
+Process output collection has byte budgets independent of the command response's character limit: one line is limited to 4 MiB, native executor stdout returned for parsing to 8 MiB, and returned stderr to a 64 KiB tail. Oversized protocol lines or native stdout fail with `OUTPUT_TOO_LARGE`; incomplete output is never parsed as a complete successful result. Oversized lines are explicitly omitted from sanitized logs. Other collected sanitized log records remain on disk, and truncated stderr is marked in log metadata. The command bridge parses its separately bounded original protocol callback and does not reread the full sanitized stdout. Stream callback/logging failures return `PROCESS_STREAM_ERROR`. For remote executors, these errors preserve execution uncertainty unless remote stopping is confirmed.
+
 Pass device credentials by environment **reference**, not plaintext config:
 
 ```json

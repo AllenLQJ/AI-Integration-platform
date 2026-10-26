@@ -33,13 +33,16 @@ class DashboardChains:
                      WHEN length(json_extract(data,'$.resume_session')) > 0 THEN 1 ELSE 0 END AS resumed,
                 ((? = '' OR id LIKE ? ESCAPE '\\' OR json_extract(data,'$.prompt') LIKE ? ESCAPE '\\')
                  AND (? = '' OR state = ?)
-                 AND (? = '' OR json_extract(data,'$.agent') = ?)) AS matches
-                FROM tasks""", (q, pattern, pattern, state, state, agent, agent)).fetchall()
+                 AND (? = '' OR json_extract(data,'$.agent') = ?)) AS matches,
+                ((? = '' OR state = ?) AND (? = '' OR json_extract(data,'$.agent') = ?)) AS filter_matches
+                FROM tasks""", (q, pattern, pattern, state, state, agent, agent,
+                                 state, state, agent, agent)).fetchall()
             # work_item tables are created by WorkItems; older pure-Store fixtures may lack them.
             try:
                 member_rows = db.execute(
                     'SELECT work_item_id, task_id, relation, related_task_id FROM work_item_members').fetchall()
-                item_rows = db.execute('SELECT id, title, created, updated FROM work_items').fetchall()
+                item_rows = db.execute("SELECT id, title, created, updated, title LIKE ? ESCAPE '\\' AS title_matches "
+                                       'FROM work_items', (pattern,)).fetchall()
             except Exception:
                 member_rows, item_rows = [], []
         tasks = {row['id']: dict(row) for row in rows}
@@ -72,7 +75,11 @@ class DashboardChains:
             'switch': 'switch_executor', 'development': 'development', 'linked': 'linked',
             'root': 'linked',
         }
+        representatives = {}
         for task_id, member in task_work.items():
+            meta = work_items.get(member['work_item_id']) or {}
+            if meta.get('title_matches') and tasks[task_id]['filter_matches']:
+                tasks[task_id]['matches'] = True
             related = member.get('related_task_id')
             kind = relation_kind.get(member.get('relation'), 'linked')
             if related and related in tasks:
@@ -81,11 +88,12 @@ class DashboardChains:
                 neighbors[task_id].add(related)
                 if kind == 'review':
                     reviews.add(task_id)
-            # Same work_item members always share a component even without related_task_id.
-            for other_id, other in task_work.items():
-                if other['work_item_id'] == member['work_item_id'] and other_id != task_id:
-                    neighbors[task_id].add(other_id)
-                    neighbors[other_id].add(task_id)
+            # A star preserves component membership without a quadratic clique.
+            # These grouping links are not displayed as fabricated graph edges.
+            representative = representatives.setdefault(member['work_item_id'], task_id)
+            if representative != task_id:
+                neighbors[task_id].add(representative)
+                neighbors[representative].add(task_id)
         # Continuing a reviewer remains review work and must not replace the
         # latest implementation's acceptance/execution state.
         # Explicit work_item relation=rework is always implementation (even if
@@ -177,7 +185,7 @@ class DashboardChains:
         latest_summary = root_summary if latest == root else self.dashboard._summary(self.store.get(latest))
         # Title / stats / latest main execution from implementation — not overridden by review state.
         chain_id = component.get('work_item_id') or root
-        title = component.get('work_item_title') or root_summary['title']
+        title = _text(component.get('work_item_title') or root_summary['title'])[:500]
         return dict(latest_summary, id=chain_id, title=title, created=root_summary['created'],
                     updated=component['updated'], root_task_id=root, latest_task_id=latest,
                     work_item_id=component.get('work_item_id'),
@@ -245,8 +253,7 @@ class DashboardChains:
         coverages = []
         omitted = False
         timeline_omitted = False
-        for ident in selected:
-            detail = self.dashboard.detail(ident)
+        for ident, detail in self.dashboard.chain_details(selected):
             nodes.append(detail['task'])
             coverages.append(detail.get('capture_coverage') or {})
             for message in detail['messages']:

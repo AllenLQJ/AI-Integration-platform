@@ -163,7 +163,7 @@ def result_fields(state, result, task=None):
               or (task.get('agent') in {'grok', 'grokbot', 'muse'}
                   and (task.get('delivery') == 'accepted' or task.get('session_id')
                        or type(task.get('baseline')) is int)))
-    local_confirmed = not remote and (
+    local_confirmed = not remote and result.get('local_process_stopped') is not False and (
         task.get('agent') in {'codex', 'claude', 'cursor', 'cursor_cli'}
         or type(result.get('exit_code')) is int
         or result.get('cancel_scope') in {'local_process', 'local_process_tree'})

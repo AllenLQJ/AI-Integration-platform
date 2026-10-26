@@ -3,16 +3,15 @@ import asyncio
 import argparse
 import json
 import os
-from pathlib import Path
+import sys
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 
-async def main(send=False):
-    root = Path(__file__).resolve().parent
+async def main(send=False, python=None):
     params = StdioServerParameters(
-        command=str(root / 'muse-mcp/.venv/Scripts/python.exe'),
+        command=python or os.environ.get('MUSE_PYTHON') or sys.executable,
         args=['-m', 'muse_mcp'],
         env={name: value for name, value in os.environ.items() if name.upper() in {
             'PATH', 'SYSTEMROOT', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA',
@@ -42,5 +41,7 @@ async def main(send=False):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--python', help='Python with muse_mcp installed (default: MUSE_PYTHON or current Python)')
     parser.add_argument('--send', action='store_true', help='Send one connection-test message after successful status check')
-    asyncio.run(main(parser.parse_args().send))
+    options = parser.parse_args()
+    asyncio.run(main(options.send, options.python))

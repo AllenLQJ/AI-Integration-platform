@@ -1,6 +1,12 @@
 import subprocess
+import os
 from pathlib import Path
 from .models import HubError
+
+
+def workspace_key(path):
+    """Canonical identity shared by admission, quarantine and scheduling."""
+    return os.path.normcase(str(Path(path).resolve()))
 
 # Total UTF-8 budget for edit_worktree review payload (diff + untracked excerpts).
 # Boundary: artifact_omitted path list / metadata is NOT counted against this budget;

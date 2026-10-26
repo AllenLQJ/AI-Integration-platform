@@ -386,12 +386,15 @@ class ReconcileTaskTests(unittest.TestCase):
         path.write_text(json.dumps({
             'error': '连接中断', 'error_code': 'REMOTE_STATE_UNKNOWN', 'remote_cancelled': False,
         }, ensure_ascii=False), encoding='utf-8')
-        task = self.service.store.create('req-' + suffix, dict(
-            agent='grok', prompt=prompt, cwd=str(self.root), mode='delegate',
-            timeout_seconds=1800, delivery='accepted', baseline=240, session_id='12535208'))
-        self.service.store.finish(task['id'], 'interrupted', {
-            'error': '连接中断', 'error_code': 'REMOTE_STATE_UNKNOWN', 'remote_cancelled': False,
-            'path': str(path)})
+        # This is historical state, not a queued dispatch. Hold the scheduler's
+        # lock across both commits so it cannot launch Grok in the seeding gap.
+        with self.service.lock:
+            task = self.service.store.create('req-' + suffix, dict(
+                agent='grok', prompt=prompt, cwd=str(self.root), mode='delegate',
+                timeout_seconds=1800, delivery='accepted', baseline=240, session_id='12535208'))
+            self.service.store.finish(task['id'], 'interrupted', {
+                'error': '连接中断', 'error_code': 'REMOTE_STATE_UNKNOWN', 'remote_cancelled': False,
+                'path': str(path)})
         return self.service.store.get(task['id'])
 
     def _page(self, cursor='240', entries=None, busy=False):

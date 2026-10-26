@@ -4,6 +4,7 @@ import urllib.request
 import io
 import json
 import re
+import socket
 import tempfile
 import threading
 import unittest
@@ -75,6 +76,87 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertEqual(self.request('/work/example', headers={'Cookie': cookie})[0], 401)
         self.assertEqual(self.request('/health', headers={'Authorization': 'Bearer native-test-secret'})[0], 200)
 
+    def test_conditional_reads_skip_projection_and_notice_verification_only_writes(self):
+        cookie = self.session()
+        task = self.service.submit('etag-task', 'fake', 'hello', str(self.root), 'read_only')
+        self.service.store.finish(task['id'], 'succeeded', {'answer': 'done'})
+        self.service.verification.ensure(self.service.store.get(task['id']))
+        path = '/dashboard/api/v1/tasks/' + task['id']
+        status, headers, body = self.request(path, headers={'Cookie': cookie})
+        self.assertEqual(status, 200, body)
+        self.assertIn('ETag', headers)
+        etag = headers['ETag']
+        conditional = {'Cookie': cookie, 'If-None-Match': etag}
+        with patch('agent_hub.dashboard.Dashboard.detail', side_effect=AssertionError('unchanged projection rebuilt')):
+            status, headers, body = self.request(path, headers=conditional)
+        self.assertEqual((status, body), (304, b''))
+        self.assertEqual(headers['ETag'], etag)
+        self.assertNotIn('Content-Length', headers)
+        self.assertEqual(self.request(path, headers={'If-None-Match': etag})[0], 401)
+        before = self.service.store.get(task['id'])['updated']
+        with self.service.store.connection() as db:
+            db.execute("UPDATE verifications SET state='passed' WHERE task_id=?", (task['id'],))
+        status, headers, body = self.request(path, headers=conditional)
+        self.assertEqual(status, 200, body)
+        self.assertNotEqual(headers['ETag'], etag)
+        self.assertEqual(json.loads(body)['task']['verification_state'], 'passed')
+        self.assertEqual(self.service.store.get(task['id'])['updated'], before)
+
+    def test_event_history_paging_keeps_auth_and_rejects_mixed_cursors(self):
+        task = self.service.submit('history-http', 'fake', 'history', str(self.root), 'read_only')
+        self.service.store.event(task['id'], 'progress', {'message': 'one'})
+        self.service.store.event(task['id'], 'progress', {'message': 'two'})
+        path = '/dashboard/api/v1/tasks/' + task['id'] + '/events'
+        self.assertEqual(self.request(path + '?before_seq=9223372036854775807')[0], 401)
+        headers = {'Cookie': self.session()}
+        status, _, body = self.request(path + '?before_seq=9223372036854775807', headers=headers)
+        self.assertEqual(status, 200, body)
+        page = json.loads(body)
+        self.assertEqual([e['kind'] for e in page['events']], ['state', 'progress', 'progress'])
+        self.assertFalse(page['has_more'])
+        for query in ('before_seq=0', 'before_seq=-1', 'before_seq=2&after_seq=0', 'before_seq=1&before_seq=2'):
+            self.assertEqual(self.request(path + '?' + query, headers=headers)[0], 400)
+
+    def test_conditional_result_reads_notice_file_loss_and_recovery(self):
+        task = self.service.submit('file-http', 'fake', 'file', str(self.root), 'read_only')
+        path = self.root / 'result.json'
+        path.write_text('{"answer":"original"}', encoding='utf-8')
+        self.service.store.finish(task['id'], 'succeeded', {'path': str(path)})
+        headers = {'Cookie': self.session()}
+        for route in ('tasks', 'chains'):
+            url = '/dashboard/api/v1/' + route + '/' + task['id']
+            status, response_headers, _ = self.request(url, headers=headers)
+            self.assertEqual(status, 200)
+            etag = response_headers.get('ETag')
+            self.assertTrue(etag)
+            path.unlink()
+            status, response_headers, body = self.request(url, headers=dict(headers, **{'If-None-Match': etag}))
+            self.assertEqual(status, 200, 'missing result must invalidate the cached conversation')
+            self.assertIn('结果文件不可用', body.decode('utf-8'))
+            missing_etag = response_headers['ETag']
+            path.write_text('{"answer":"restored"}', encoding='utf-8')
+            status, _, body = self.request(url, headers=dict(headers, **{'If-None-Match': missing_etag}))
+            self.assertEqual(status, 200)
+            self.assertIn('restored', body.decode('utf-8'))
+
+    def test_chain_etag_notices_activity_and_remains_scoped_to_its_route(self):
+        cookie = self.session()
+        task = self.service.submit('etag-chain', 'fake', 'hello', str(self.root), 'read_only')
+        path = '/dashboard/api/v1/chains/' + task['id']
+        status, headers, body = self.request(path, headers={'Cookie': cookie})
+        self.assertEqual(status, 200, body)
+        self.assertIn('ETag', headers)
+        etag = headers['ETag']
+        with patch('agent_hub.dashboard_chains.DashboardChains.detail', side_effect=AssertionError('unchanged graph rebuilt')):
+            self.assertEqual(self.request(path, headers={'Cookie': cookie, 'If-None-Match': etag})[0], 304)
+        other = self.request('/dashboard/api/v1/chains/missing', headers={'Cookie': cookie, 'If-None-Match': etag})
+        self.assertEqual(other[0], 404)
+        self.service.store.event(task['id'], 'message', {'text': 'new public message', 'role': 'assistant'})
+        status, headers, body = self.request(path, headers={'Cookie': cookie, 'If-None-Match': etag})
+        self.assertEqual(status, 200, body)
+        self.assertNotEqual(headers['ETag'], etag)
+        self.assertIn('new public message', body.decode())
+
     def test_every_local_module_import_is_served(self):
         from agent_hub.dashboard_http import STATIC_ROOT
         for source in STATIC_ROOT.glob('*.mjs'):
@@ -122,6 +204,51 @@ class DashboardHTTPTests(unittest.TestCase):
             self.assertEqual(self.request('/dashboard/session', 'POST', {'ticket': ticket}, headers)[0], 403)
         self.assertEqual(self.request('/dashboard/session', 'POST', {'ticket': ticket}, {'Origin': self.origin})[0], 200)
         self.assertEqual(self.request('/dashboard/session', 'POST', {'ticket': ticket}, {'Origin': self.origin})[0], 401)
+
+    def test_rejected_origin_discards_body_arriving_after_headers(self):
+        import select
+        ticket = self.ticket()
+        body = json.dumps({'ticket': ticket}).encode()
+        headers = (f'POST /dashboard/session HTTP/1.1\r\nHost: 127.0.0.1:{self.server.server_port}\r\n'
+                   f'Origin: https://evil.example\r\nContent-Type: application/json\r\n'
+                   f'Content-Length: {len(body)}\r\n\r\n').encode()
+        entered = threading.Event()
+        provenance = self.server.dashboard.provenance
+
+        def wait_for_separate_body(handler, **kwargs):
+            entered.set()
+            # Keep the body in the socket, outside the header parser's buffer.
+            if not select.select([handler.connection], [], [], 2)[0]:
+                raise TimeoutError('test body was not delivered')
+            return provenance(handler, **kwargs)
+
+        with patch.object(self.server.dashboard, 'provenance', wait_for_separate_body):
+            with socket.create_connection(('127.0.0.1', self.server.server_port), timeout=2) as connection:
+                connection.sendall(headers)
+                self.assertTrue(entered.wait(2))
+                connection.sendall(body)
+                response = http.client.HTTPResponse(connection)
+                response.begin()
+                self.assertEqual(response.status, 403)
+                response.read()
+                self.assertEqual(connection.recv(1), b'')
+                response.close()
+        self.assertEqual(self.request('/dashboard/session', 'POST', {'ticket': ticket}, {'Origin': self.origin})[0], 200)
+
+    def test_rejected_origin_does_not_wait_for_an_unfinished_body(self):
+        import time
+        headers = (f'POST /dashboard/session HTTP/1.1\r\nHost: 127.0.0.1:{self.server.server_port}\r\n'
+                   'Origin: https://evil.example\r\nContent-Length: 4096\r\n\r\n').encode()
+        with socket.create_connection(('127.0.0.1', self.server.server_port), timeout=2) as connection:
+            start = time.monotonic()
+            connection.sendall(headers)
+            response = http.client.HTTPResponse(connection)
+            response.begin()
+            self.assertEqual(response.status, 403)
+            response.read()
+            self.assertEqual(connection.recv(1), b'')
+            self.assertLess(time.monotonic() - start, 1.5)
+            response.close()
 
     def test_ticket_and_session_expire_on_server(self):
         with patch('agent_hub.dashboard_http.time.monotonic', return_value=100):

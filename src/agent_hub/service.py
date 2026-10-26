@@ -9,7 +9,7 @@ from pathlib import Path
 from .models import HubError, TERMINAL
 from .store import Store
 from .gateway import Gateway, result_fields
-from .workspaces import Workspaces
+from .workspaces import Workspaces, workspace_key
 from .verification import Verification, validate
 
 
@@ -23,7 +23,8 @@ class Service:
         self.store.recover()
         self.gateway = Gateway(self.root, self.store)
         self.stopping = threading.Event()
-        self.verification = Verification(self.store, self.gateway, self.stopping)
+        self.scheduler_wakeup = threading.Event()
+        self.verification = Verification(self.store, self.gateway, self.stopping, notify=self.scheduler_wakeup.set)
         for key, attribute in {'max_files': 'max_files', 'max_bytes': 'max_total_bytes',
                                'max_entries': 'max_entries', 'max_seconds': 'max_scan_seconds'}.items():
             setattr(self.verification, attribute, verification_config[key])
@@ -193,9 +194,7 @@ class Service:
                 if task['state'] not in TERMINAL:
                     return dict(ready=False, state=task['state'], intervention=task.get('intervention'), permissions=self.permissions(task), **self.verification.fields(task),
                                 **result_fields(task['state'], {}))
-                result = dict(task.get('result', {}))
-                if result.get('path'):
-                    result = json.loads(Path(result['path']).read_text(encoding='utf-8'))
+                result = self.store.read_result(task)
                 if task.get('remote_observation') and 'remote_observation' not in result:
                     result['remote_observation'] = task['remote_observation']
                 if task.get('last_reconcile') and 'last_reconcile' not in result:
@@ -442,8 +441,8 @@ class Service:
                            ', '.join(m for m in adapter.capabilities if m != 'continue'))
         if not Path(cwd).is_dir():
             raise HubError('INVALID_WORKSPACE', '目录不存在')
-        resolved = str(Path(cwd).resolve())
-        if any(t.get('workspace', t['cwd']) == resolved for t in self.store.list_quarantined()):
+        resolved = workspace_key(cwd)
+        if any(workspace_key(t.get('workspace') or t['cwd']) == resolved for t in self.store.list_quarantined()):
             raise HubError('WORKSPACE_UNCERTAIN', '此工作区存在未核对的旧执行状态')
         task = self.store.create(request_id, spec)
         policy = adapter.permission_policy(mode) if hasattr(adapter, 'permission_policy') else self.permissions(task)
@@ -452,6 +451,7 @@ class Service:
         self.verification.track(task)
         if task.get('parent_id') and task.get('acceptance'):
             self.store.event(task['parent_id'], 'session', dict(new_attempt_id=task['id'], native_session_shared=bool(task.get('resume_session'))))
+        self.scheduler_wakeup.set()
         return self.public(task)
 
     def continue_task(self, request_id, task_id, prompt, timeout_seconds=1800, acceptance=None,
@@ -493,8 +493,6 @@ class Service:
             current = self.verification.work_item(task_id)['current_task_id']
             if current != task_id or any(t.get('parent_id') == task_id for t in self.store.list()):
                 raise HubError('ATTEMPT_SUPERSEDED', '只能从当前尝试续接返工', {'current_task_id': current})
-        if parent.get('workspace_quarantined'):
-            raise HubError('WORKSPACE_UNCERTAIN', '旧执行状态不确定，工作区已隔离；请人工核对后在新工作区提交')
         if (getattr(self.adapters[parent['agent']], 'cancel_scope', None) in {'remote_session', 'remote_hub_task'}
                 or parent['agent'] == 'muse') and parent['state'] in {'interrupted', 'delivery_unknown'}:
             raise HubError('REMOTE_STATE_UNKNOWN', '原任务远端状态不确定，禁止直接续发')
@@ -502,12 +500,15 @@ class Service:
                 and parent['state'] in {'cancelled', 'timed_out'}
                 and not self.call('get_result', {'task_id': task_id}).get('remote_cancelled')):
             raise HubError('REMOTE_STATE_UNKNOWN', '原任务远端停止未确认，禁止直接续发')
+        if parent.get('workspace_quarantined'):
+            raise HubError('WORKSPACE_UNCERTAIN', '旧执行状态不确定，工作区已隔离；请人工核对后在新工作区提交')
         if parent['state'] not in TERMINAL:
             raise HubError('WORKSPACE_BUSY', '父任务仍在执行')
         if not parent.get('session_id'):
             raise HubError('SESSION_UNAVAILABLE', '没有可续接的原生会话')
         siblings = self.store.list({'queued', 'running', 'waiting_for_user', 'cancelling'})
-        if any(t.get('workspace') == parent.get('workspace') for t in siblings):
+        parent_key = workspace_key(parent.get('workspace') or parent['cwd'])
+        if any(t.get('workspace') and workspace_key(t['workspace']) == parent_key for t in siblings):
             # Idempotent replay of the exact same child is allowed.
             if not any(t['request_id'] == request_id for t in siblings):
                 raise HubError('WORKSPACE_BUSY', '工作区已有另一轮任务')
@@ -533,13 +534,13 @@ class Service:
                 raise HubError('ATTEMPT_SUPERSEDED', '只能更换当前尝试的执行器')
             if parent['state'] not in TERMINAL:
                 raise HubError('WORKSPACE_BUSY', '当前尝试仍在执行，请先取消并确认终止')
-            if parent.get('workspace_quarantined'):
-                raise HubError('WORKSPACE_UNCERTAIN', '工作区已隔离')
             remote_scope = getattr(self.adapters[parent['agent']], 'cancel_scope', None)
             if (remote_scope in {'remote_session', 'remote_hub_task'} or parent['agent'] == 'muse') and parent['state'] in {'interrupted', 'delivery_unknown'}:
                 raise HubError('REMOTE_STATE_UNKNOWN', '旧尝试远端状态不确定，禁止交接重发')
             if remote_scope in {'remote_session', 'remote_hub_task'} and parent['state'] in {'cancelled', 'timed_out'} and not self.call('get_result', {'task_id': task_id}).get('remote_cancelled'):
                 raise HubError('REMOTE_STATE_UNKNOWN', '原尝试远端停止未确认')
+            if parent.get('workspace_quarantined'):
+                raise HubError('WORKSPACE_UNCERTAIN', '工作区已隔离')
             root = self.store.get(item['root_task_id'])
             current = next(a for a in item['attempts'] if a['task_id'] == task_id)
             summary = dict(original_goal=root['prompt'][:2000], criteria=parent.get('acceptance'),
@@ -692,17 +693,22 @@ class Service:
             if review:
                 response['review'] = review
                 response.update(self.verification.fields(self.store.get(task_id)))
+        self.scheduler_wakeup.set()
         return response
 
     def schedule(self):
-        while not self.stopping.wait(.05):
+        while not self.stopping.is_set():
+            # Clear before discovery, never between discovery and waiting: a
+            # notification arriving during a scan must trigger another pass.
+            self.scheduler_wakeup.clear()
             try:
                 try:
                     with self.lock:
                         rework_pending = [i for i in self.auto_rework_pending if time.monotonic() >= self.auto_rework_retry_at.get(i, 0)]
                         review_pending = [i for i in self.review_pending if time.monotonic() >= self.review_retry_at.get(i, 0)]
+                        verification_room = len(self.verification_active) < self.concurrency
                     pending = (self.verification.pending() + review_pending + rework_pending
-                               if time.monotonic() >= self.verification_retry_at else [])
+                               if verification_room and time.monotonic() >= self.verification_retry_at else [])
                     with self.lock:
                         for ident in pending:
                             if self.stopping.is_set() or len(self.verification_active) >= self.concurrency:
@@ -730,34 +736,34 @@ class Service:
                     from collections import Counter
                     used_agents = Counter(a['agent'] for a in self.active.values())
                     used_workspaces = {a['workspace'] for a in self.active.values()}
-                    queued = self.store.list({'queued'})
+                    queued = self.store.list({'queued'}) if len(self.active) < self.concurrency else []
                     # Skip quarantine lookup when idle or concurrency is already full.
                     quarantined = set()
                     if queued and len(self.active) < self.concurrency:
                         quarantined = {
-                            os.path.normcase(str(Path(t.get('workspace') or t['cwd']).resolve()))
+                            workspace_key(t.get('workspace') or t['cwd'])
                             for t in self.store.list_quarantined()}
                     for task in queued:
                         if len(self.active) >= self.concurrency:
                             break
                         actual_workspace = task.get('workspace') or (
                             str(self.workspaces.root / task['id']) if task['mode'] == 'edit_worktree' else task['cwd'])
-                        workspace_key = os.path.normcase(str(Path(actual_workspace).resolve()))
-                        if workspace_key in quarantined:
+                        workspace_id = workspace_key(actual_workspace)
+                        if workspace_id in quarantined:
                             self.store.update(task['id'], workspace=actual_workspace, workspace_quarantined=True)
                             self.store.finish(task['id'], 'interrupted', {
                                 'error_code': 'WORKSPACE_UNCERTAIN',
                                 'error': '工作区旧执行状态不确定，排队任务未启动；请人工核对后使用新工作区'})
                             continue
                         if (used_agents[task['agent']] >= self.per_agent_concurrency.get(task['agent'], 1)
-                                or workspace_key in used_workspaces):
+                                or workspace_id in used_workspaces):
                             continue
                         cancel = threading.Event()
                         worker = threading.Thread(target=self.execute, args=(task, cancel), daemon=True)
-                        self.active[task['id']] = dict(agent=task['agent'], workspace=workspace_key,
+                        self.active[task['id']] = dict(agent=task['agent'], workspace=workspace_id,
                                                        cancel=cancel, thread=worker)
                         used_agents[task['agent']] += 1
-                        used_workspaces.add(workspace_key)
+                        used_workspaces.add(workspace_id)
                         try:
                             self.store.update(task['id'], state='running')
                             worker.start()
@@ -770,6 +776,16 @@ class Service:
             except Exception:
                 logging.getLogger(__name__).exception('任务调度失败，将短暂退避后重试')
                 self.stopping.wait(.2)
+            with self.lock:
+                now = time.monotonic()
+                deadlines = [self.verification_retry_at, *self.review_retry_at.values(), *self.auto_rework_retry_at.values()]
+                delays = [deadline - now for deadline in deadlines if deadline > now]
+                retry_at = self.verification.next_retry_at
+                if retry_at is not None and retry_at > time.time():
+                    delays.append(retry_at - time.time())
+            # Direct DB writes and crash-recovery fixtures still become visible
+            # within one second, without depending on an in-memory notification.
+            self.scheduler_wakeup.wait(min(1.0, *delays) if delays else 1.0)
 
     def verify(self, task_id, rework_only=False, review_only=False):
         reworking = reviewing = False
@@ -829,9 +845,65 @@ class Service:
         finally:
             with self.lock:
                 self.verification_active.pop(task_id, None)
+                self.scheduler_wakeup.set()
 
     def execute(self, task, cancel):
+        outcome = None
+        try:
+            outcome = self._execute_task(task, cancel)
+            if outcome is not None:
+                self._finish_execution(task, *outcome)
+        except Exception as error:
+            logging.getLogger(__name__).exception('任务收尾失败：%s', task['id'])
+            state, evidence = 'failed', {'error_code': 'EXECUTION_ERROR', 'error': '任务收尾失败，请核对任务日志'}
+            if outcome is not None:
+                execution_state, result, _ = outcome
+                if execution_state != 'succeeded':
+                    state, evidence = execution_state, self._failure_evidence(result)
+                evidence['postprocessing_error'] = type(error).__name__
+            try:
+                with self.lock:
+                    try:
+                        self._quarantine_uncertain_workspace(task, state, evidence)
+                        self.store.finish(task['id'], state, evidence)
+                    finally:
+                        self._release_execution_slot(task)
+            except Exception:
+                logging.getLogger(__name__).exception('无法持久化任务失败状态：%s', task['id'])
+        finally:
+            self._release_execution_slot(task)
+
+    def _release_execution_slot(self, task):
+        with self.lock:
+            if self.active.pop(task['id'], None) is not None:
+                if isinstance(task.get('review_of'), dict) and task['review_of'].get('task_id'):
+                    self.review_pending.add(task['review_of']['task_id'])
+                self.scheduler_wakeup.set()
+
+    def _quarantine_uncertain_workspace(self, task, state, result):
+        adapter = self.adapters[task['agent']]
+        remote = (not adapter.remote_cancel or
+                  getattr(adapter, 'cancel_scope', None) in {'remote_session', 'remote_hub_task'})
+        if (state in {'cancelled', 'timed_out', 'interrupted', 'delivery_unknown'}
+                and result.get('cancel_scope') != 'not_started'
+                and (result.get('local_process_stopped') is False
+                     or (remote and result.get('remote_cancelled') is not True))):
+            # Called under Service.lock before terminal publication/slot release.
+            # Persist the reservation so both queued work and new submissions see it.
+            self.store.update(task['id'], workspace=task.get('workspace') or task['cwd'],
+                              workspace_quarantined=True)
+
+    @staticmethod
+    def _failure_evidence(result):
+        return Store.safe({key: result[key] for key in (
+            'error', 'error_code', 'remote_cancelled', 'cancel_scope', 'permissions',
+            'remote_observation', 'warning', 'interrupt_requested', 'interrupt_acknowledged',
+            'local_process_stopped', 'wait_timeout')
+            if key in result})
+
+    def _execute_task(self, task, cancel):
         ident = task['id']
+        executor_started = False
         deadline = time.time() + task['timeout_seconds']
         timed_out = threading.Event()
         task['deadline'] = deadline
@@ -892,6 +964,9 @@ class Service:
                     raise HubError("CANCELLED", "任务已取消")
                 task["deadline"] = time.time() + task["timeout_seconds"]
                 timer.start()
+            if cancel.is_set():
+                raise HubError('CANCELLED', '任务已取消')
+            executor_started = True
             result = self.adapters[task['agent']].run(task, cancel, event)
             if cli:
                 result['session_id'] = cli_session
@@ -905,26 +980,41 @@ class Service:
         except HubError as error:
             if error.code == 'VERIFICATION_STOPPED' and self.stopping.is_set():
                 # 停机时保留在途状态，由 recover 标 interrupted 并隔离工作区。
-                with self.lock:
-                    self.active.pop(ident, None)
                 return
             state = {'CANCELLED': 'cancelled', 'VERIFICATION_STOPPED': 'cancelled', 'TIMED_OUT': 'timed_out',
                      'DELIVERY_UNKNOWN': 'delivery_unknown', 'REMOTE_STATE_UNKNOWN': 'interrupted'}.get(error.code, 'failed')
             if timed_out.is_set() and state == 'cancelled':
                 state = 'timed_out'
             result = dict(error.details, error=str(error), error_code=error.code)
+            adapter = self.adapters[task['agent']]
+            remote = not adapter.remote_cancel or getattr(adapter, 'cancel_scope', None) in {'remote_session', 'remote_hub_task'}
+            if (error.code in {'PROCESS_STREAM_ERROR', 'OUTPUT_TOO_LARGE'}
+                    and (result.get('local_process_stopped') is False
+                         or (remote and result.get('remote_cancelled') is not True))):
+                state = 'interrupted'
+                result.setdefault('remote_cancelled', False)
+                result.setdefault('cancel_scope', getattr(adapter, 'cancel_scope', None)
+                                  or ('remote_session' if remote else 'local_process_tree'))
         except Exception as error:
             state, result = 'failed', {'error': type(error).__name__, 'error_code': 'EXECUTION_ERROR'}
         finally:
             watchdog_stop.set()
             if timer.ident is not None:
                 timer.join(1)
+        if not executor_started and state in {'cancelled', 'timed_out'}:
+            result.update(cancel_scope='not_started', remote_cancelled=False)
+        return state, result, timed_out
+
+    def _finish_execution(self, task, state, result, timed_out):
+        ident = task['id']
         if state != 'succeeded' and task.get('workspace') and task['mode'] == 'edit_worktree':
             try:
                 result['artifacts'] = dict(result.get('artifacts', {}), **self.workspaces.artifacts(task))
             except HubError as error:
                 result['artifact_error'] = str(error)
-        if not self.adapters[task['agent']].remote_cancel and state in {'cancelled', 'timed_out', 'interrupted', 'delivery_unknown'}:
+        if result.get('cancel_scope') == 'not_started':
+            pass
+        elif not self.adapters[task['agent']].remote_cancel and state in {'cancelled', 'timed_out', 'interrupted', 'delivery_unknown'}:
             result.update(remote_cancelled=False, warning='仅停止本地等待；远端可能继续执行')
         elif getattr(self.adapters[task['agent']], 'cancel_scope', None) in {'remote_session', 'remote_hub_task'} and state in {'cancelled', 'timed_out', 'interrupted', 'delivery_unknown'}:
             result.setdefault('remote_cancelled', False)
@@ -933,25 +1023,44 @@ class Service:
         result['permissions'] = self.permissions(task)
         result = self.store.safe(result)
         path = self.root / 'results' / (ident + '.json')
-        path.parent.mkdir(exist_ok=True)
-        path.write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
+        staging = path.with_suffix('.json.tmp')
+        try:
+            path.parent.mkdir(exist_ok=True)
+            staging.write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
+            os.replace(staging, path)
+            stored_result = dict(self._failure_evidence(result), path=str(path))
+        except (OSError, ValueError, TypeError):
+            # Keep the failure readable even when the results directory is full.
+            # Execution uncertainty/cancellation evidence must survive this fallback.
+            stored_result = self._failure_evidence(result)
+            stored_result['result_storage_error'] = 'RESULT_PERSISTENCE_ERROR'
+            if state == 'succeeded':
+                state = 'failed'
+                stored_result.update(error_code='RESULT_PERSISTENCE_ERROR', error='无法保存执行结果，请检查数据目录')
+        finally:
+            try:
+                staging.unlink(missing_ok=True)
+            except OSError:
+                pass
         with self.lock:
             if state == 'succeeded' and self.store.get(ident)['state'] == 'cancelling':
                 state = 'timed_out' if timed_out.is_set() else 'cancelled'
+            self._quarantine_uncertain_workspace(task, state, result)
+            self.store.finish(ident, state, stored_result)
             try:
-                self.store.finish(ident, state, {'path': str(path)})
                 self.verification.track(self.store.get(ident))
                 self.verification.ensure(self.store.get(ident))
             except Exception as error:
                 self.store.event(ident, 'verification_enqueue_error', {'reason': type(error).__name__})
             finally:
-                if isinstance(task.get('review_of'), dict) and task['review_of'].get('task_id'):
-                    self.review_pending.add(task['review_of']['task_id'])
-                self.active.pop(ident, None)
+                # Public RPC reads use this same lock: terminal publication and
+                # slot release must be observed together, before execute returns.
+                self._release_execution_slot(task)
 
     def close(self):
         with self.verification.lock:
             self.stopping.set()
+            self.scheduler_wakeup.set()
         self.thread.join(5)
         with self.lock:
             workers = list(self.active.values())

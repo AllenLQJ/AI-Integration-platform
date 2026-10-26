@@ -125,14 +125,20 @@ class Muse:
         path.write_text(json.dumps({'task': task, 'executable': self.executable,
                        'args': self.args, 'env': self.env, 'session_id': self.session_id}, ensure_ascii=False), encoding='utf-8')
         path.chmod(0o600)
+        cancel_context = {}
+        def observed(kind, data):
+            if kind == 'accepted' and isinstance(data, dict):
+                cancel_context.clear()
+                cancel_context.update(data)
+            event(kind, data)
         try:
             rc, stdout, stderr, logs = run_process(
                 [sys.executable, '-m', 'agent_hub.adapters.muse_worker', str(path)],
-                task['workspace'], environment(), cancel, lambda: task['deadline'], task['log_dir'], event)
+                task['workspace'], environment(), cancel, lambda: task['deadline'], task['log_dir'], observed)
         except HubError as error:
             if error.code not in {'CANCELLED', 'TIMED_OUT'}:
                 raise
-            raise self.cancel_after_local_stop(task, path, error, event) from None
+            raise self.cancel_after_local_stop(task, path, error, event, cancel_context) from None
         result = None
         for line in stdout.splitlines():
             try: data = json.loads(line)
@@ -143,7 +149,7 @@ class Muse:
             details = {key: result[key] for key in ('stage', 'upstream_code', 'rpc_code') if key in result}
             error = HubError(result['error_code'], result['error'], details)
             if error.code in {'CANCELLED', 'TIMED_OUT'}:
-                raise self.cancel_after_local_stop(task, path, error, event) from None
+                raise self.cancel_after_local_stop(task, path, error, event, cancel_context) from None
             raise error
         exports = result.pop('media_exports', [])
         if exports:
@@ -190,19 +196,11 @@ class Muse:
                     'transfer': 'authenticated_noise_original', **dimensions}})
         return artifacts
 
-    def cancel_after_local_stop(self, task, path, error, event):
-        context = {}
+    def cancel_after_local_stop(self, task, path, error, event, context=None):
+        context = dict(context or {})
         # 原等待进程树已终止，再开单独连接清理原会话，避免 Noise 双消费者。
-        output = Path(task['log_dir']) / 'stdout.log'
-        for line in output.read_text(encoding='utf-8').splitlines() if output.exists() else []:
-            try:
-                entry = json.loads(line).get('hub_event', {})
-                if entry.get('kind') == 'accepted':
-                    context = entry['data']
-            except (ValueError, AttributeError, KeyError):
-                pass
         details = {'remote_cancelled': False, 'cancel_scope': self.cancel_scope}
-        if context.get('session_id'):
+        if context.get('session_id') and error.details.get('local_process_stopped') is not False:
             data = json.loads(path.read_text(encoding='utf-8'))
             data['cancel_context'] = context
             cleanup = Path(task['log_dir']) / 'muse-cancel-input.json'
@@ -222,7 +220,9 @@ class Muse:
         if not details['remote_cancelled']:
             details['warning'] = 'Muse 原会话停止未确认；保留会话锁，禁止直接续发'
         event('remote_cancel', details)
-        return HubError(error.code, '本地进程已停止；远端停止见 remote_cancelled',
+        message = ('本地进程停止未确认；保留原会话锁' if error.details.get('local_process_stopped') is False
+                   else '本地进程已停止；远端停止见 remote_cancelled')
+        return HubError(error.code, message,
                        dict(error.details, **details))
 
     def state_file(self, sid):

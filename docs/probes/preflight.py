@@ -6,7 +6,6 @@ ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / 'docs' / 'probes' / 'results'
 OUT.mkdir(exist_ok=True)
 ENV = {k:v for k,v in os.environ.items() if not any(s in k.upper() for s in ('API_KEY','TOKEN','SECRET','PASSWORD'))}
-ENV.update(HTTP_PROXY='http://127.0.0.1:PORT', HTTPS_PROXY='http://127.0.0.1:PORT', ALL_PROXY='http://127.0.0.1:PORT')
 ENV.pop('CLAUDECODE',None)
 
 def run(argv, cwd, timeout=150):
@@ -14,7 +13,10 @@ def run(argv, cwd, timeout=150):
         p = subprocess.Popen(argv, cwd=cwd, env=ENV, stdout=out, stderr=err)
         try: p.wait(timeout)
         except subprocess.TimeoutExpired:
-            subprocess.run(['taskkill','/PID',str(p.pid),'/T','/F'],capture_output=True)
+            if os.name == 'nt':
+                subprocess.run(['taskkill','/PID',str(p.pid),'/T','/F'],capture_output=True)
+            else:
+                p.kill()
             p.wait(10)
             return {'exit':p.returncode,'timeout':True}
         out.seek(0); err.seek(0)
@@ -33,7 +35,7 @@ def main(agent):
     token='HUB_'+uuid.uuid4().hex[:12]
     with tempfile.TemporaryDirectory(prefix='hub 探针 space ') as td:
         if agent=='codex':
-            exe=r'C:\Users\<username>\AppData\Local\OpenAI\Codex\bin\codex.exe'
+            exe=os.environ.get('CODEX_EXECUTABLE') or 'codex'
             base=[exe,'exec','--ignore-user-config','--ignore-rules','--skip-git-repo-check','--json']
             first=run(base+['--sandbox','read-only',f'Remember marker {token}. Reply exactly {token}. Do not use tools.'],td)
             sid=next((e.get('thread_id') for e in first.get('events',[]) if e.get('type')=='thread.started'),None)
@@ -41,7 +43,7 @@ def main(agent):
             follow=run([exe,'exec','resume','--ignore-user-config','--ignore-rules','--skip-git-repo-check','--json',sid,'Reply only the marker I asked you to remember. Do not use tools.'],td) if sid and first['exit']==0 else {}
             replies=[e.get('item',{}).get('text') for e in follow.get('events',[]) if e.get('item',{}).get('type')=='agent_message']
         else:
-            entry=Path(os.environ['APPDATA'])/'npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe'
+            entry=os.environ.get('CLAUDE_EXECUTABLE') or 'claude'
             config=Path(td)/'mcp-empty.json'
             config.write_text('{"mcpServers":{}}',encoding='utf-8')
             base=[str(entry),'-p','--output-format','json','--tools=','--strict-mcp-config',f'--mcp-config={config}']

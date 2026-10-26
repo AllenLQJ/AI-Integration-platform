@@ -1,5 +1,5 @@
 """Scoped real Muse MCP feasibility probe; no credential output."""
-import asyncio,json,os,uuid,time
+import asyncio,json,os,sys,uuid,time
 from pathlib import Path
 from mcp import ClientSession,StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -7,10 +7,9 @@ from mcp.client.stdio import stdio_client
 ROOT=Path(__file__).resolve().parents[2]
 OUT=Path(__file__).parent/'results'/'muse.json'
 async def main():
-    env={k:v for k,v in os.environ.items() if k.upper() in {'PATH','SYSTEMROOT','USERPROFILE','HOME','APPDATA','LOCALAPPDATA','TEMP','TMP'}}
-    env.update(HTTP_PROXY='http://127.0.0.1:PORT',HTTPS_PROXY='http://127.0.0.1:PORT',ALL_PROXY='http://127.0.0.1:PORT')
+    env={k:v for k,v in os.environ.items() if k.upper() in {'PATH','SYSTEMROOT','USERPROFILE','HOME','APPDATA','LOCALAPPDATA','TEMP','TMP','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY'}}
     env['MUSE_MCP_ENABLE_RAW']='1'
-    params=StdioServerParameters(command=str(ROOT/'muse-mcp/.venv/Scripts/python.exe'),args=['-m','muse_mcp'],env=env)
+    params=StdioServerParameters(command=os.environ.get('MUSE_PYTHON') or sys.executable,args=['-m','muse_mcp'],env=env)
     result={}
     async with stdio_client(params) as (r,w):
       async with ClientSession(r,w) as s:
@@ -38,4 +37,5 @@ async def main():
           result['events']=[{k:x.get(k) for k in ('seq','role','message_id','reply_to_message_id','text')} for x in history if x.get('seq',0)>baseline] if isinstance(history,list) else history
         OUT.write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
         print(json.dumps(result,ensure_ascii=False),flush=True)
-asyncio.run(main())
+if __name__ == '__main__':
+    asyncio.run(main())

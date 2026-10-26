@@ -43,6 +43,7 @@ function date(value) {
 let view = 'messages', pageHistory = [], timer, chainTimer, listTimer, searchTimer, stopped = false, listPending = false, agentsPending = false;
 let contentKey = '', contentContext = '', renderedEvents = new Map(), listKey = '';
 let renderedMessages = new Map();
+let historyLoading = false;
 const graph = createGraph($('graph-viewport'),$('graph-stage'),id=>selectNode(id,true),label);
 // These are execution states from the Hub contract; executor names remain dynamic.
 const stateFilter = $('state-filter');
@@ -184,6 +185,11 @@ function renderTimelineCard(record) {
   return entry;
 }
 function renderContent() {
+  $('event-controls').hidden = view !== 'events' || !state.selected;
+  $('events-older').disabled = historyLoading || !state.events.length || !state.eventsTruncated;
+  $('events-latest').disabled = historyLoading || !state.historyMode;
+  $('events-note').textContent = state.historyMode ? '正在查看历史页，点击返回最新恢复实时事件。'
+    : state.eventsTruncated ? '仅保留最近的事件；更早记录可按页读取。' : '已载入全部已记录事件。';
   const content = $('content'), context = view === 'events' ? `${state.selected}:events` : `${state.chainId}:timeline`;
   const records = view === 'messages' ? timelineRecords(state.chain) : null;
   const key = JSON.stringify([context, view === 'events' ? [state.detail, state.events] : records]);
@@ -195,6 +201,8 @@ function renderContent() {
   if (view === 'events') {
     renderCoverage();
     if (!state.detail) { content.replaceChildren(empty('正在读取执行','请稍候…')); return; }
+    const kept = new Set(state.events.map(event=>event.seq));
+    for (const [seq,entry] of renderedEvents) if (!kept.has(seq)) { entry.remove(); renderedEvents.delete(seq); }
     if (!renderedEvents.size) content.replaceChildren(node('p','event-note',`仅显示选中执行 ${state.selected} 的事件。自定义事件仅展示已记录的脱敏内容。`));
     for (const event of state.events) {
       if (renderedEvents.has(event.seq)) continue;
@@ -284,19 +292,22 @@ async function poll(token, id) {
   if (stopped || !state.detailGate.current(token)) return;
   let delay = 2500;
   try {
-    const data = await api.events(id,state.cursor,token.signal);
+    const initial = !state.historyMode && state.cursor === 0;
+    const data = state.historyMode ? null : initial ? await api.eventHistory(id,undefined,token.signal)
+      : await api.events(id,state.cursor,token.signal);
     if (!state.detailGate.current(token)) return;
     // Store updates and verification transitions do not always emit events.
     const detail = await api.detail(id,token.signal);
     if (!state.detailGate.current(token)) return;
-    const changed = JSON.stringify(state.detail && [state.detail.task,state.detail.relations,state.detail.criteria,state.detail.artifacts]) !== JSON.stringify([detail.task,detail.relations,detail.criteria,detail.artifacts]);
+    const detailKey = value => value && [value.task,value.relations,value.criteria,value.artifacts,value.verification_checks,value.acceptance_policy];
+    const changed = JSON.stringify(detailKey(state.detail)) !== JSON.stringify(detailKey(detail));
     state.detail = detail;
-    if (!state.commitEvents(token,data)) return;
+    if (data && !(initial ? state.replaceEvents(token,data,false) : state.commitEvents(token,data))) return;
     if (changed) renderDetail();
     renderContent();
     $('detail-error').hidden = true; $('connection').textContent = '已连接';
     $('sync-time').textContent = `同步于 ${new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`;
-    if (data.events.length >= 200) delay = 0;
+    if (!initial && data?.events.length >= 200) delay = 0;
   } catch (error) {
     if (!state.detailGate.current(token)) return;
     failure(error); $('detail-error').textContent = `${error.message} 将自动重试，也可点击刷新。`; $('detail-error').hidden = false; delay = 5000;
@@ -305,6 +316,24 @@ async function poll(token, id) {
     if (state.detailGate.current(token)) $('content').setAttribute('aria-busy','false');
   }
 }
+async function loadEventPage(historical) {
+  if (stopped || !state.selected || historyLoading) return;
+  const id = state.selected, before = historical ? state.events[0]?.seq : undefined;
+  if (historical && !before) return;
+  clearTimeout(timer);
+  const token = state.detailGate.next(); historyLoading = true; renderContent();
+  try {
+    const data = await api.eventHistory(id,before,token.signal);
+    if (!state.replaceEvents(token,data,historical)) return;
+    contentKey = ''; renderContent();
+  } catch (error) {
+    if (state.detailGate.current(token)) { failure(error); notice(error.message); }
+  } finally {
+    if (state.detailGate.current(token)) { historyLoading = false; renderContent(); await poll(token,id); }
+  }
+}
+$('events-older').addEventListener('click',()=>loadEventPage(true));
+$('events-latest').addEventListener('click',()=>loadEventPage(false));
 async function pollChain(token,id,desiredNode=null) {
   if(stopped||!state.chainGate.current(token))return;
   let delay=2500;
@@ -335,6 +364,7 @@ async function pollChain(token,id,desiredNode=null) {
 async function selectChain(id,desiredNode=null) {
   if(stopped)return;
   clearTimeout(timer);clearTimeout(chainTimer);const token=state.selectChain(id);
+  historyLoading = false;
   contentKey='';contentContext='';renderedEvents=new Map();renderedMessages=new Map();
   graph.clear();$('graph-panel').hidden=true;$('chain-warning').hidden=true;$('chain-error').hidden=true;$('zoom-label').textContent='100%';
   closeDrawers();renderList();$('detail-error').hidden=true;
@@ -345,6 +375,7 @@ async function selectChain(id,desiredNode=null) {
 async function selectNode(id,scroll) {
   if(stopped||!state.chain?.nodes.some(n=>n.id===id))return;
   clearTimeout(timer);const token=state.select(id);graph.select(id);highlightMessages();
+  historyLoading = false;
   $('detail-content').replaceChildren(node('p','muted','正在读取执行…'));$('detail-error').hidden=true;
   if(scroll){
     setView('messages');

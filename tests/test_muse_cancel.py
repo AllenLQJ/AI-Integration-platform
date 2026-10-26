@@ -88,7 +88,12 @@ class MuseCancelTests(unittest.TestCase):
         expired=json.dumps({'hub_result':{'error_code':'TIMED_OUT','error':'expired'}})
         confirmed=json.dumps({'hub_result':{'remote_cancelled':True}})
         from agent_hub.models import HubError
-        with patch('agent_hub.adapters.muse.run_process',side_effect=[(0,expired,'',{}),(0,confirmed,'',{})]) as run:
+        def fake_process(*args, **kwargs):
+            if 'agent_hub.adapters.muse_worker' in args[0]:
+                args[6]('accepted', self.context)
+                return 0,expired,'',{}
+            return 0,confirmed,'',{}
+        with patch('agent_hub.adapters.muse.run_process',side_effect=fake_process) as run:
             with self.assertRaises(HubError) as error:
                 self.bot.run(task,threading.Event(),lambda *args:None)
         self.assertEqual(error.exception.code,'TIMED_OUT')
