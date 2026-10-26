@@ -155,14 +155,6 @@ class ScheduleQuarantineTests(unittest.TestCase):
         fake = FastFake()
         service = Service(root / 'data', {'fake': fake}, concurrency=1)
         try:
-            # Seed one quarantined workspace and several queued tasks.
-            q = service.store.create('q0', dict(agent='fake', prompt='x', cwd=str(root),
-                                                mode='read_only', timeout_seconds=10,
-                                                workspace=str(root), workspace_quarantined=True))
-            service.store.finish(q['id'], 'interrupted', {'error': 'old'})
-            for i in range(5):
-                service.store.create(f'queued{i}', dict(agent='fake', prompt='x', cwd=str(root / 'other'),
-                                                        mode='read_only', timeout_seconds=10))
             calls = []
             pass_observed = threading.Event()
             original_list = service.store.list
@@ -177,8 +169,18 @@ class ScheduleQuarantineTests(unittest.TestCase):
                 pass_observed.set()
                 return original_q()
 
-            service.store.list = counting_list
-            service.store.list_quarantined = counting_q
+            # Seed and instrument atomically: an in-flight pass must not call
+            # the original list() and then the newly installed quarantine spy.
+            with service.lock:
+                q = service.store.create('q0', dict(agent='fake', prompt='x', cwd=str(root),
+                                                    mode='read_only', timeout_seconds=10,
+                                                    workspace=str(root), workspace_quarantined=True))
+                service.store.finish(q['id'], 'interrupted', {'error': 'old'})
+                for i in range(5):
+                    service.store.create(f'queued{i}', dict(agent='fake', prompt='x', cwd=str(root / 'other'),
+                                                            mode='read_only', timeout_seconds=10))
+                service.store.list = counting_list
+                service.store.list_quarantined = counting_q
             # Direct Store writes use the bounded recovery poll, not a fixed
             # 50ms scheduling cadence. Observe a pass instead of sleeping .2s.
             self.assertTrue(pass_observed.wait(2))
