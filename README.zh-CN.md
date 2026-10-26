@@ -104,7 +104,7 @@ Host mac-hub
 
 目标机需能接受该密钥的 SSH 登录，并已安装本项目与执行器。未知或变化的主机密钥会被拒绝。节点声明只记录身份，`remote_connection_verified` 仍为 false。
 
-边界：Tailscale 的安装与登录由用户自己完成。受限或跨境网络环境下 Tailscale 可能偶发不稳定，连通由用户的 tailnet 负责。SSH 密钥、`authorized_keys` 和 Hub 配置留在各自机器的私有目录，不进入 Git。已验证的方向是 Windows 调用 Mac；原生 Windows 目标机支持见下一节；本次没有新增真实 Windows SSH 实测结论。
+边界：Tailscale 的安装与登录由用户自己完成。网络不稳定时 Tailscale 可能偶发不稳定，连通由用户的 tailnet 负责。SSH 密钥、`authorized_keys` 和 Hub 配置留在各自机器的私有目录，不进入 Git。已验证的方向是 Windows 调用 Mac；原生 Windows 目标机支持见下一节；本次没有新增真实 Windows SSH 实测结论。
 
 
 ### 原生 Windows SSH 目标机
