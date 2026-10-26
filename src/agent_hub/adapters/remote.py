@@ -60,6 +60,18 @@ class Remote:
         else:
             if task.get('context') is not None:
                 args['context'] = task['context']
+            # Work-item IDs belong to their Hub. Create an idempotent target
+            # container instead of forwarding the controller's local ID.
+            item = call('create_work_item', {'request_id': binding['request_id'] + '-work-item',
+                                             'title': 'Remote task ' + task['id']})
+            wid = item.get('work_item_id') if isinstance(item, dict) else None
+            if not isinstance(wid, str) or not wid:
+                raise HubError('INVALID_RESPONSE', '目标机未返回工作项 ID；未提交任务')
+            binding['work_item_id'] = wid
+            save()
+            args['work_item_id'] = wid
+            if cancel.is_set() or time.time() >= task['deadline']:
+                raise HubError('CANCELLED', '远端任务尚未提交')
             remote = call('submit_task', dict(args, agent=self.agent, cwd=self.cwd, mode=self.mode))
         rid = remote.get('id') if isinstance(remote, dict) else None
         if not isinstance(rid, str) or not rid:

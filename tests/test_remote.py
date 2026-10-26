@@ -135,6 +135,80 @@ class RemoteTests(unittest.TestCase):
 
     def tearDown(self): self.temp.cleanup()
 
+    def test_fresh_remote_submission_binds_target_work_item_and_replay_reuses_it(self):
+        class Worker:
+            capabilities = ['read_only', 'continue']
+            remote_cancel = True
+            def diagnose(self): return {'available': True}
+            def run(self, task, cancel, event):
+                return {'answer': task['prompt'], 'session_id': 'native-session'}
+
+        service = Service(self.root / 'target', {'worker': Worker()})
+        self.adapter.cwd = str(self.root)
+        self.task.update(work_item_id='controller-only-work-item', deadline=time.time()+10)
+        calls = []
+        def rpc(tool, args, **kwargs):
+            calls.append((tool, dict(args)))
+            return service.call(tool, args)
+        try:
+            with patch.object(self.adapter.client, 'call', side_effect=rpc):
+                first = self.adapter.run(self.task, threading.Event(), lambda *e: None)
+                replay = self.adapter.run(self.task, threading.Event(), lambda *e: None)
+                self.assertEqual(first['answer'], 'reply')
+                self.assertEqual(replay['session_id'], first['session_id'])
+                binding = json.loads((self.root/'remote-task.json').read_text())
+                wid = binding['work_item_id']
+                self.assertNotEqual(wid, self.task['work_item_id'])
+                self.assertEqual(len(service.work_items.members(wid)), 1)
+                submits = [args for tool, args in calls if tool == 'submit_task']
+                self.assertEqual([args['work_item_id'] for args in submits], [wid, wid])
+                self.task.update(id='continued', resume_session=first['session_id'],
+                                 prompt='next', deadline=time.time()+10)
+                continued = self.adapter.run(self.task, threading.Event(), lambda *e: None)
+                self.assertEqual(continued['answer'], 'next')
+                self.assertEqual(service.work_items.membership(continued['session_id'])['work_item_id'], wid)
+                self.assertEqual(sum(tool == 'create_work_item' for tool, _ in calls), 2)
+        finally:
+            service.close()
+
+    def test_cancel_or_deadline_during_work_item_creation_does_not_submit(self):
+        for reason in ('cancel', 'deadline'):
+            with self.subTest(reason=reason):
+                cancel = threading.Event()
+                self.task['deadline'] = time.time()+15
+                def rpc(tool, args, **kwargs):
+                    if reason == 'cancel':
+                        cancel.set()
+                    else:
+                        self.task['deadline'] = time.time()-1
+                    return {'work_item_id': 'target-work-item'}
+                with patch.object(self.adapter.client, 'call', side_effect=rpc) as call:
+                    with self.assertRaises(HubError) as error:
+                        self.adapter.run(self.task, cancel, lambda *e: None)
+                self.assertEqual(error.exception.code, 'CANCELLED')
+                self.assertEqual([c.args[0] for c in call.call_args_list], ['create_work_item'])
+
+    def test_invalid_work_item_response_does_not_submit_or_retry(self):
+        for response in ([], {}, {'work_item_id': ''}, {'work_item_id': 42}):
+            with self.subTest(response=response), patch.object(
+                    self.adapter.client, 'call', return_value=response) as call:
+                with self.assertRaises(HubError) as error:
+                    self.adapter.run(self.task, threading.Event(), lambda *e: None)
+                self.assertEqual(error.exception.code, 'INVALID_RESPONSE')
+                self.assertEqual([c.args[0] for c in call.call_args_list], ['create_work_item'])
+
+    def test_uncertain_submit_preserves_work_item_binding_without_retry(self):
+        with patch.object(self.adapter.client, 'call', side_effect=[
+                {'work_item_id': 'target-work-item'}, HubError('DELIVERY_UNKNOWN', 'gone')]) as call:
+            with self.assertRaises(HubError) as error:
+                self.adapter.run(self.task, threading.Event(), lambda *e: None)
+        self.assertEqual(error.exception.code, 'DELIVERY_UNKNOWN')
+        self.assertEqual([c.args[0] for c in call.call_args_list], ['create_work_item', 'submit_task'])
+        binding = json.loads((self.root/'remote-task.json').read_text())
+        self.assertEqual(binding['work_item_id'], 'target-work-item')
+        self.assertEqual(binding['request_id'], 'hub-remote-task')
+        self.assertNotIn('task_id', binding)
+
     def test_continue_and_result_keep_target_task_binding(self):
         self.task['resume_session']='old-remote-task'
         with patch.object(self.adapter.client,'call',side_effect=[{'id':'new-remote-task'},
@@ -149,6 +223,7 @@ class RemoteTests(unittest.TestCase):
     def test_cancel_targets_original_task_and_confirms_cli_shutdown(self):
         cancel=threading.Event()
         def rpc(tool,args,**kwargs):
+            if tool=='create_work_item':return {'work_item_id':'target-work-item'}
             if tool=='submit_task': cancel.set();return {'id':'original'}
             self.assertEqual(args['task_id'],'original')
             if tool=='cancel_task': return {'cancel_scope':'local_process_tree'}
@@ -166,23 +241,23 @@ class RemoteTests(unittest.TestCase):
         self.assertTrue(result['remote_task_terminal'])
 
     def test_read_disconnect_preserves_id_without_resubmitting(self):
-        with patch.object(self.adapter.client,'call',side_effect=[{'id':'original'},HubError('REMOTE_UNAVAILABLE','gone')]) as call:
+        with patch.object(self.adapter.client,'call',side_effect=[{'work_item_id':'target-work-item'}, {'id':'original'},HubError('REMOTE_UNAVAILABLE','gone')]) as call:
             with self.assertRaises(HubError) as error:
                 self.adapter.run(self.task,threading.Event(),lambda *e:self.events.append(e))
         self.assertEqual(error.exception.code,'REMOTE_STATE_UNKNOWN')
-        self.assertEqual([c.args[0] for c in call.call_args_list],['submit_task','get_result'])
+        self.assertEqual([c.args[0] for c in call.call_args_list],['create_work_item','submit_task','get_result'])
 
     def test_invalid_rpc_response_keeps_remote_task_binding(self):
         with patch.object(self.adapter.client,'call',side_effect=[
-                {'id':'original'},HubError('INVALID_RESPONSE','bad response')]) as call:
+                {'work_item_id':'target-work-item'}, {'id':'original'},HubError('INVALID_RESPONSE','bad response')]) as call:
             with self.assertRaises(HubError) as error:
                 self.adapter.run(self.task,threading.Event(),lambda *e:self.events.append(e))
         self.assertEqual(error.exception.code,'REMOTE_STATE_UNKNOWN')
         self.assertEqual(error.exception.details['remote_task']['task_id'],'original')
-        self.assertEqual([c.args[0] for c in call.call_args_list],['submit_task','get_result'])
+        self.assertEqual([c.args[0] for c in call.call_args_list],['create_work_item','submit_task','get_result'])
 
     def test_malformed_result_keeps_original_remote_task_id(self):
-        with patch.object(self.adapter.client,'call',side_effect=[{'id':'original'},[]]):
+        with patch.object(self.adapter.client,'call',side_effect=[{'work_item_id':'target-work-item'}, {'id':'original'},[]]):
             with self.assertRaises(HubError) as error:
                 self.adapter.run(self.task,threading.Event(),lambda *e:self.events.append(e))
         self.assertEqual(error.exception.code,'REMOTE_STATE_UNKNOWN')
@@ -190,6 +265,7 @@ class RemoteTests(unittest.TestCase):
 
     def test_expired_wait_uses_independent_cancel_deadline(self):
         def rpc(tool,args,**kwargs):
+            if tool=='create_work_item':return {'work_item_id':'target-work-item'}
             if tool=='submit_task':self.task['deadline']=time.time()-1;return {'id':'original'}
             self.assertEqual(args['task_id'],'original')
             self.assertGreater(kwargs['timeout'],0)
@@ -244,7 +320,7 @@ class RemoteTests(unittest.TestCase):
                     result=controller.call('get_result',{'task_id':job['id']})
                     if result['ready']:break
                     time.sleep(.05)
-                self.assertEqual(result['state'],'succeeded')
+                self.assertEqual(result['state'],'succeeded', result)
                 self.assertEqual(result['answer'],'PROXY-MARKER')
                 self.assertIn('REMOTE-EDIT',result['remote_artifacts']['diff'])
                 self.assertEqual((repo/'file.txt').read_text(),'BASE')
@@ -380,11 +456,11 @@ class WindowsSshTests(unittest.TestCase):
             adapter = adapters(directory)['win']
             self.assertEqual((adapter.client.platform, adapter.client.shell, adapter.cwd),
                              ('windows', 'powershell', item['cwd']))
-            with patch.object(adapter.client, 'call', side_effect=[{'id': 'remote'},
+            with patch.object(adapter.client, 'call', side_effect=[{'work_item_id': 'target-work-item'}, {'id': 'remote'},
                     {'ready': True, 'state': 'succeeded', 'answer': 'ok'}]) as call:
                 adapter.run(dict(id='local', prompt='secret', deadline=time.time()+10,
                                  log_dir=directory), threading.Event(), lambda *args: None)
-            self.assertEqual(call.call_args_list[0].args[1]['cwd'], item['cwd'])
+            self.assertEqual(call.call_args_list[1].args[1]['cwd'], item['cwd'])
 
     def test_all_cli_entrypoints_pass_platform_and_shell(self):
         from agent_hub.__main__ import main
@@ -472,7 +548,11 @@ class WindowsSshTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             fixture = Path(directory) / "中文 单'‘’‚‛引号 & $();` %!^ ’; Write-Output INJECTED; #"
             fixture.mkdir()
-            venv.EnvBuilder(with_pip=False).create(fixture / 'venv')
+            # Python 3.12 rejects PATH separators during venv creation. The
+            # launcher still must run from the hostile path under test.
+            staging = Path(directory) / 'venv-staging'
+            venv.EnvBuilder(with_pip=False).create(staging)
+            staging.rename(fixture / 'venv')
             python = str(fixture / 'venv' / 'Scripts' / 'python.exe')
             script = fixture / 'peer.py'
             script.write_text('import sys,json,base64\n'

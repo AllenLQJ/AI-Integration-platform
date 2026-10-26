@@ -88,8 +88,14 @@ def relative_path_display(path, workspace=''):
             return dict(path_display=name[:SCALAR_LIMITS['path_display']], path_scope='outside', path='')
         return dict(path_display=redacted[:SCALAR_LIMITS['path_display']], path_scope='unknown', path='')
     try:
-        root = Path(workspace).resolve()
+        root = Path(workspace)
         candidate = Path(raw)
+        # A foreign drive/UNC/rooted path is not a local relative filename.
+        # In particular, POSIX would otherwise retain a full Windows path.
+        if any(PureWindowsPath(value).anchor and not native.is_absolute()
+               for value, native in ((str(workspace), root), (raw, candidate))):
+            raise ValueError('non-native or drive-relative path')
+        root = root.resolve()
         if not candidate.is_absolute():
             candidate = (root / candidate).resolve()
         else:

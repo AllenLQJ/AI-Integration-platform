@@ -806,13 +806,40 @@ class VerificationTests(unittest.TestCase):
         self.assertEqual(self.service.verification.pending(), [])
 
     def test_snapshot_count_and_byte_budgets(self):
-        for key, value in [('max_files', 1), ('max_total_bytes', 2), ('max_entries', 0), ('max_scan_seconds', 0)]:
+        for key, value in [('max_files', 1), ('max_total_bytes', 2), ('max_entries', 0)]:
             with self.subTest(key=key):
                 (self.workspace / 'a').write_bytes(b'old')
                 (self.workspace / 'b').write_bytes(b'other')
                 with patch.object(self.service.verification, key, value):
                     ident = self.submit([{'id': 'artifact', 'kind': 'artifact_required'}], request_id=key, prompt='write')
                     self.assertEqual(self.wait(ident)['verification']['state'], 'needs_review')
+                (self.workspace / 'output.txt').unlink()
+
+    def test_snapshot_time_budget(self):
+        import json
+        from types import SimpleNamespace
+        original = self.service.verification.snapshot_files
+        for elapsed, expected in [(0, 'passed'), (1, 'passed'), (1.01, 'needs_review')]:
+            with self.subTest(elapsed=elapsed):
+                now = [100.0]
+                # Patch only verification's clock; service deadlines keep real time.
+                clock = SimpleNamespace(monotonic=lambda: now[0], time=time.time)
+                def scan(task):
+                    now[0] += elapsed
+                    return original(task)
+                with patch('agent_hub.verification.time', clock), \
+                        patch.object(self.service.verification, 'max_scan_seconds', 1), \
+                        patch.object(self.service.verification, 'snapshot_files', side_effect=scan):
+                    ident = self.submit([{'id': 'artifact', 'kind': 'artifact_required'}],
+                                        request_id=f'time-budget-{elapsed}', prompt='write')
+                    self.assertEqual(self.wait(ident)['verification']['state'], expected)
+                with self.service.store.connection() as db:
+                    row = db.execute('SELECT data FROM verification_inputs WHERE task_id=?', (ident,)).fetchone()
+                baseline = json.loads(row['data'])
+                if expected == 'needs_review':
+                    self.assertIn('时间预算', baseline['error'])
+                else:
+                    self.assertNotIn('error', baseline)
                 (self.workspace / 'output.txt').unlink()
 
     def test_snapshot_time_excluded_from_execution_deadline(self):

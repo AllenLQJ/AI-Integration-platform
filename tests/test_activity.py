@@ -2,7 +2,8 @@ import json
 import tempfile
 import threading
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from unittest.mock import patch
 
 from agent_hub.activity import (
     OUTPUT_EXCERPT_BUDGET, normalize_activity, relative_path_display,
@@ -13,6 +14,24 @@ from agent_hub.verification import Verification
 
 
 class NormalizeActivityTests(unittest.TestCase):
+    def test_windows_paths_are_not_workspace_relative_on_posix(self):
+        class PosixDisplayPath(PurePosixPath):
+            def resolve(self):
+                return self
+
+        with patch('agent_hub.activity.Path', PosixDisplayPath):
+            for value in (r'C:\Users\private\secret.env', 'C:/Users/private/secret.env',
+                          r'\\server\share\private\secret.env', r'\Users\private\secret.env', r'C:secret.env'):
+                with self.subTest(path=value):
+                    meta = relative_path_display(value, '/workspace')
+                    self.assertEqual(meta['path_scope'], 'outside')
+                    self.assertEqual(meta['path'], '')
+                    self.assertEqual(meta['path_display'], 'secret.env')
+            foreign_workspace = relative_path_display('secret.env', r'C:\private\project')
+            self.assertEqual(foreign_workspace['path_scope'], 'outside')
+            self.assertEqual(foreign_workspace['path'], '')
+            self.assertEqual(relative_path_display('src/file.py', '/workspace')['path'], 'src/file.py')
+
     def test_allowed_kinds_and_rejects_unknown(self):
         for kind in ('message', 'file_read', 'command', 'test', 'file_change', 'system'):
             out = normalize_activity({'kind': kind, 'title': 't'}, force_provenance='controller_reported')
