@@ -41,7 +41,7 @@ uv pip install --python .venv/bin/python -e .
 .venv/bin/python -m agent_hub mcp
 ```
 
-在 `~/.agent-hub/config.json` 填写自己的 Codex、Claude 和 Muse 连接器可执行文件绝对路径。CLI 类执行器（codex / claude / cursor_cli）的 `executable` 也可写成会随升级变化的形式：支持环境变量与 `~`（如 `%LOCALAPPDATA%`）、通配符（匹配多个时取修改时间最新的文件，如 Windows Codex 桌面版 `%LOCALAPPDATA%/OpenAI/Codex/bin/*/codex.exe`，可避免更新后哈希目录变化找不到），以及仅写命令名（按 PATH 查找）；每次检测和启动任务时重新解析，原绝对路径写法不变；`status` 会同时显示 `resolved_executable`。Muse、Remote 与 Cursor IDE 不走该解析逻辑，仍需填写绝对路径（或其自身约定的写法）。Muse 使用独立 Python 环境运行 `-m muse_mcp`，先按 [连接器补丁说明](vendor/muse-mcp/README.md) 安装，再验证认证。MCP 注册的 command 使用本机 `.venv/bin/python` 绝对路径，args 为 `["-m", "agent_hub", "mcp"]`。CLI 登录、Cookie 和模型密钥保留在各执行器的私有用户配置中。详细本机配置历史见 [Mac 配置记录](docs/2026-10-11-macos-setup-validation.md)。
+在 `~/.agent-hub/config.json` 填写自己的 Codex、Claude 和 Muse 连接器可执行文件绝对路径。CLI 类执行器（codex / claude / cursor_cli）的 `executable` 也可写成会随升级变化的形式：支持环境变量与 `~`（如 `%LOCALAPPDATA%`）、通配符（匹配多个时取修改时间最新的文件，如 Windows Codex 桌面版 `%LOCALAPPDATA%/OpenAI/Codex/bin/*/codex.exe`，可避免更新后哈希目录变化找不到），以及仅写命令名（按 PATH 查找）；每次检测和启动任务时重新解析，原绝对路径写法不变；`status` 会同时显示 `resolved_executable`。Muse、Remote 与 Cursor IDE 不走该解析逻辑，仍需填写绝对路径（或其自身约定的写法）。Muse 使用独立 Python 环境运行 `-m muse_mcp`，先按 [连接器补丁说明](vendor/muse-mcp/README.md) 安装，再验证认证。MCP 注册的 command 使用本机 `.venv/bin/python` 绝对路径，args 为 `["-m", "agent_hub", "mcp"]`。CLI 登录、Cookie 和模型密钥保留在各执行器的私有用户配置中。详细本机配置历史见 [Mac 配置记录](docs/validation/2026-10-11-macos-setup-validation.md)。
 
 ## Windows 安装
 
@@ -55,7 +55,7 @@ uv pip install --python .venv/bin/python -e .
 
 在 `%USERPROFILE%\.agent-hub\config.json` 配置实际路径，参见 `config.example.json`。代理按实际环境填写，127.0.0.1:PORT 是网络代理，Claude 的 CCR 3456 保留在 Claude 自己的配置中。无需把 Cookie 或模型密钥写进 Hub 配置。
 
-Windows 新执行器接入与真实问候验收见 [2026-10-12 Windows 记录](docs/2026-10-12-windows-executor-validation.md)。Cursor IDE 可配置 `executable` 为实际桌面程序路径，仍需在线界面 worker。Cursor CLI 可通过原生 Node 的 `executable` 与入口脚本 `args` 启动，并用 `credentials_file` 引用 BDK 的既有私有凭据；`sandbox` 默认 enabled，本轮经用户明确批准仅 Windows CLI 使用 disabled 权限白名单模式，不提供 OS 沙箱。
+Windows 新执行器接入与真实问候验收见 [2026-10-12 Windows 记录](docs/validation/2026-10-12-windows-executor-validation.md)。Cursor IDE 可配置 `executable` 为实际桌面程序路径，仍需在线界面 worker。Cursor CLI 可通过原生 Node 的 `executable` 与入口脚本 `args` 启动，并用 `credentials_file` 引用 BDK 的既有私有凭据；`sandbox` 默认 enabled，本轮经用户明确批准仅 Windows CLI 使用 disabled 权限白名单模式，不提供 OS 沙箱。
 
 并发在 config.json 的 `concurrency` 中设置：`{"global":2,"per_agent":{"codex":1,"claude":1,"muse":1}}`。各额度允许 1–32 的整数；未配置的执行器默认 1。修改后在没有在途任务时停止后台，下次调用自动加载新配置。同一实际工作区始终串行。
 
@@ -178,7 +178,7 @@ request_id 应为稳定且唯一的请求键。相同键和内容只执行一次
 ## 执行器限制
 
 - Cursor CLI：read_only 使用 ask；edit_worktree 仅放行工作区文件工具，原生 resume。执行配置独立于总控 MCP，拒绝项目级 MCP/hooks/权限配置；不使用 force，不开放命令。已完成本机文件、续接、取消及超时探针，未独立审计完整 OS 沙箱。
-- Grok Bot：delegate，通过 Cursor BDK 公布的 session API 接收并回收任务；使用专用 Bot，cwd 不自动同步。续接、远端取消、期限中断和正常后台退出已实测；只有 interrupt 后独立确认回合停止，或本任务已自然完成并确认 idle，才报告 `remote_cancelled=true`，已发生操作不回滚。不确定派发或停止保留跨数据目录的私有锁，先人工核对再续发。两者总控及使用说明见 [双向接入](docs/2026-10-11-cursor-grokbot-validation.md)。
+- Grok Bot：delegate，通过 Cursor BDK 公布的 session API 接收并回收任务；使用专用 Bot，cwd 不自动同步。续接、远端取消、期限中断和正常后台退出已实测；只有 interrupt 后独立确认回合停止，或本任务已自然完成并确认 idle，才报告 `remote_cancelled=true`，已发生操作不回滚。不确定派发或停止保留跨数据目录的私有锁，先人工核对再续发。两者总控及使用说明见 [双向接入](docs/validation/2026-10-11-cursor-grokbot-validation.md)。
 
 - Codex：read_only 使用自身 read-only 沙箱；edit_worktree 使用 workspace-write；不加载用户 MCP 配置。Windows 默认使用已在本机探针通过的 MXC（Codex 0.162.0）；其他设备可明确配置 windows_sandbox，不能通过关闭沙箱解决权限问题。
 - Claude：已验证 Windows CCR/apiKeyHelper 和 Mac DeepSeek Anthropic 兼容 API 配置；Claude 订阅认证尚未验收。text_only 禁用所有工具，适合提供上下文后的文本分析；read_only 仅开放 Read/Glob/Grep；edit_worktree 仅 Read/Glob/Grep/Edit/Write，第一版不允许运行命令。safe-mode 禁用自定义技能/插件，严格空 MCP 配置防止递归。
@@ -189,7 +189,7 @@ request_id 应为稳定且唯一的请求键。相同键和内容只执行一次
   Muse 发送使用 fire_and_forget，只取得派发确认；回复由 Hub 的历史轮询统一回收，不在发送工具内重复等待回复。
   Hub 专用 Muse 子进程启用 `MUSE_MCP_REUSE_GATEWAY=1`，配套 muse-mcp 支持在锁保护下复用连接，减少重复 HTTPS 认证；连接异常会丢弃缓存，不重放业务操作。普通 Muse 工具默认仍使用独立连接。配套兼容性补丁和基线安装步骤见 [vendor/muse-mcp/README.md](vendor/muse-mcp/README.md)，部署时需应用补丁并配置自己的认证与 Python 路径。
 - 后台重启：running/cancelling 标 interrupted，不按旧 PID 杀进程，也不自动重跑。无法确认旧执行已停止的工作区隔离，拒绝直接续接；同工作区此前已排队的任务也转 interrupted，其他工作区 queued 继续。需人工核对，在新工作区提交。正常终态使用已保存的 session_id 续接。Mac 上强制杀死后台不保证旧执行器停止。
-- Mac 已完成本机核心闭环及补充实机验收，详见 [Mac 验收记录](docs/2026-10-11-macos-full-acceptance.md) 与 [补充异常验收](docs/2026-10-11-macos-resilience-validation.md)。严格的睡眠期间到期后恢复处理仍未验证。DeepSeek Harness、Claude 订阅模式未验收。Muse 原会话远端取消和 SSH 跨机器调度已实现；2026-10-11 当时真实双机 SSH 尚未验收，2026-10-13 的跨网络实机见文首与「额外说明」。Mac 不使用 Windows lock 文件：创建环境后 `pip install -e .`，按本机路径配置。
+- Mac 已完成本机核心闭环及补充实机验收，详见 [Mac 验收记录](docs/validation/2026-10-11-macos-full-acceptance.md) 与 [补充异常验收](docs/validation/2026-10-11-macos-resilience-validation.md)。严格的睡眠期间到期后恢复处理仍未验证。DeepSeek Harness、Claude 订阅模式未验收。Muse 原会话远端取消和 SSH 跨机器调度已实现；2026-10-11 当时真实双机 SSH 尚未验收，2026-10-13 的跨网络实机见文首与「额外说明」。Mac 不使用 Windows lock 文件：创建环境后 `pip install -e .`，按本机路径配置。
 
 ## 诊断与验证
 
@@ -203,7 +203,7 @@ request_id 应为稳定且唯一的请求键。相同键和内容只执行一次
 
 开发设计、实施计划、开发进度和验收记录位于 docs。认证和运行数据不进入 Git；完整日志仅在用户私有数据目录保存。
 
-Mac 2026-10-11 的记录分为 [核心验收](docs/2026-10-11-macos-full-acceptance.md) 与 [异常及稳定性验收](docs/2026-10-11-macos-resilience-validation.md)。仍未验证严格的睡眠期间到期后恢复处理、Muse 底层浏览器动作独立审计、数小时持续稳定性、真实登录自然过期后的恢复。Muse 远端取消和 SSH 调度随后已实现。该日记录中的真实双机 SSH 当时尚未验收；2026-10-13 已另有 Tailscale 跨网络实机，见「额外说明」。DeepSeek Harness、Claude 订阅模式按该轮范围排除。
+Mac 2026-10-11 的记录分为 [核心验收](docs/validation/2026-10-11-macos-full-acceptance.md) 与 [异常及稳定性验收](docs/validation/2026-10-11-macos-resilience-validation.md)。仍未验证严格的睡眠期间到期后恢复处理、Muse 底层浏览器动作独立审计、数小时持续稳定性、真实登录自然过期后的恢复。Muse 远端取消和 SSH 调度随后已实现。该日记录中的真实双机 SSH 当时尚未验收；2026-10-13 已另有 Tailscale 跨网络实机，见「额外说明」。DeepSeek Harness、Claude 订阅模式按该轮范围排除。
 
 `scripts/macos_*.py` 是本轮隔离验收及证据复核脚本，使用固定私有目录和请求键，不能把重放旧结果当作新验收。涉及真实账号的脚本会使用账号额度；休眠脚本会让整台 Mac 休眠，须每次明确授权并准备手动唤醒。它们不由普通自动回归执行。
 
@@ -382,9 +382,9 @@ SSH 节点或 Remote 适配器任务的 `file_exists`、`sha256`、`artifact_req
 
 当前进度（2026-10-12）：在 main 基线 `16110f2` 上完成 Claude content_review 自动审核阶段（每任务显式 `acceptance.review` 开启，见下文「Claude 自动内容审核」与 [设计记录](docs/2026-10-12-claude-content-review-design.md)），经 Claude 独立终验通过后合入 main。任务验收第一至第三阶段为 `08f0542`、`b495f73`、`807ed0c`。MCP 仍为 16 个工具，含 `verify_task`、`get_work_item`、`claim_controller`、`switch_executor`、`list_nodes`。`transfer_artifact`、人工裁决和外部验收写入只在本机已认证 RPC。本阶段沙箱外完整回归 287 项通过（208.165 秒，1 项 Windows ACL 检查在 macOS 上跳过），其中自动审核专项 28 项。
 
-真实 Cursor CLI 执行 + Claude CLI 审核闭环已验收：直接通过、审核 fail → 自动返工 → 通过、连续 fail 在 `max_auto_rework=1` 停止三条链路均符合预期，全程没有总控 continue_task 或 record_verification 介入；真实 headless Chrome 打开的工作台最终状态与接口一致。证据汇总在本机私有目录 `~/.agent-hub/auto-review-20261012/real-chain-summary.json`（直接通过链路来自 run-173812，返工与上限链路来自 run-174333）。此前的真实失败保留为历史证据、未被覆盖：run-172722 三条链路因审核登记 TypeError 失败；run-173812 中返工链路因 ECONNRESET 中断后在 run-174333 重跑。这些结果只说明本轮链路通过及非法输出按设计 fail closed，不代表模型总能输出合法结果。Windows 本机核心回归与六入口真实问候已通过，见 [Windows 验收记录](docs/2026-10-12-windows-executor-validation.md)；该记录的 259 项对应整合自动审核阶段之前的基线。新增自动审核闭环在 Windows 上的真实任务、Muse 验收回写、非 headless 的 GUI 浏览器工作台仍未验收。跨网络调用 Mac Hub 的后续实机见下文「额外说明」，该实机不覆盖本段自动审核闭环。用法见下文第二、三阶段；验收总设计见 [验收设计](docs/2026-10-12-verification-phase1-design.md)。
+真实 Cursor CLI 执行 + Claude CLI 审核闭环已验收：直接通过、审核 fail → 自动返工 → 通过、连续 fail 在 `max_auto_rework=1` 停止三条链路均符合预期，全程没有总控 continue_task 或 record_verification 介入；真实 headless Chrome 打开的工作台最终状态与接口一致。证据汇总在本机私有目录 `~/.agent-hub/auto-review-20261012/real-chain-summary.json`（直接通过链路来自 run-173812，返工与上限链路来自 run-174333）。此前的真实失败保留为历史证据、未被覆盖：run-172722 三条链路因审核登记 TypeError 失败；run-173812 中返工链路因 ECONNRESET 中断后在 run-174333 重跑。这些结果只说明本轮链路通过及非法输出按设计 fail closed，不代表模型总能输出合法结果。Windows 本机核心回归与六入口真实问候已通过，见 [Windows 验收记录](docs/validation/2026-10-12-windows-executor-validation.md)；该记录的 259 项对应整合自动审核阶段之前的基线。新增自动审核闭环在 Windows 上的真实任务、Muse 验收回写、非 headless 的 GUI 浏览器工作台仍未验收。跨网络调用 Mac Hub 的后续实机见下文「额外说明」，该实机不覆盖本段自动审核闭环。用法见下文第二、三阶段；验收总设计见 [验收设计](docs/2026-10-12-verification-phase1-design.md)。
 
-截至 2026-10-11 的记录：Windows 第一版与 Mac 本机接入已实现，当时为 11 个 MCP 工具。新增 Cursor CLI / Grok Bot 双向接入，真实总控派发、执行器回复和续接通过，见 [接入记录](docs/2026-10-11-cursor-grokbot-validation.md)。该日完整自动回归 129 项：128 通过、1 项 Windows ACL 检查跳过（49.332 秒）。严格休眠超时恢复等仍未验证。当日状态见 [开发进度](docs/开发进度.md) 和 [第一版验收](docs/第一版验收.md)；该文件保留历史测试数，不代表现在的工具数量。该日 Windows 记录来自 10-09/10-10，后续 Windows 回归与执行器接入见 10-12 验收记录。
+截至 2026-10-11 的记录：Windows 第一版与 Mac 本机接入已实现，当时为 11 个 MCP 工具。新增 Cursor CLI / Grok Bot 双向接入，真实总控派发、执行器回复和续接通过，见 [接入记录](docs/validation/2026-10-11-cursor-grokbot-validation.md)。该日完整自动回归 129 项：128 通过、1 项 Windows ACL 检查跳过（49.332 秒）。严格休眠超时恢复等仍未验证。当日状态见 [开发进度](docs/开发进度.md) 和 [第一版验收](docs/第一版验收.md)；该文件保留历史测试数，不代表现在的工具数量。该日 Windows 记录来自 10-09/10-10，后续 Windows 回归与执行器接入见 10-12 验收记录。
 
 Muse 原会话远端取消、SSH 跨机器 Hub 调度已实现。Muse 取消/期限/正常退出在同一专用会话实测通过；2026-10-11 的 SSH 调度完成两个隔离 Hub 的逻辑验证。跨网络实机已于 2026-10-13 用 Tailscale 加标准 SSH 验证，见下文「额外说明」与 [新增功能记录](docs/2026-10-11-muse-cancel-remote-hub.md)。
 

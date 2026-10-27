@@ -91,6 +91,6 @@ python -m pip wheel . --no-deps
 
 前端不依赖第三方 CDN、字体、构建工具或品牌固定名单。修改展示契约时同步检查 API 与页面测试；打包时确认静态文件（含 `timeline.mjs`）包含在 wheel 内。
 
-首版验证记录见 [初版验收](2026-10-24-dashboard-validation.md)，任务链改版见 [任务链验收](2026-10-24-task-chain-validation.md)，统一时间线见 [协作时间线验收](2026-10-24-collaboration-timeline-validation.md)，可靠性与性能改进见 [优化验证](2026-10-25-reliability-dashboard-performance-validation.md)。
+首版验证记录见 [初版验收](validation/2026-10-24-dashboard-validation.md)，任务链改版见 [任务链验收](validation/2026-10-24-task-chain-validation.md)，统一时间线见 [协作时间线验收](validation/2026-10-24-collaboration-timeline-validation.md)，可靠性与性能改进见 [优化验证](validation/2026-10-25-reliability-dashboard-performance-validation.md)。
 
-工作区隔离、结果读取容错、事件历史分页和验收聚合批量查询见 [第二轮优化验证](2026-10-25-second-optimization-validation.md)。
+工作区隔离、结果读取容错、事件历史分页和验收聚合批量查询见 [第二轮优化验证](validation/2026-10-25-second-optimization-validation.md)。

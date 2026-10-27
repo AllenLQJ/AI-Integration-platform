@@ -1,6 +1,6 @@
 # 主线集成与发布准备
 
-> 2026-10-10 Windows 发布前检查历史记录；本页测试数、路径和未验收项为当时状态。2026-10-11 Mac 增量及权限修订见 [开发进度](开发进度.md)、[核心验收](2026-10-11-macos-full-acceptance.md) 与 [补充验收](2026-10-11-macos-resilience-validation.md)。
+> 2026-10-10 Windows 发布前检查历史记录；本页测试数、路径和未验收项为当时状态。2026-10-11 Mac 增量及权限修订见 [开发进度](../开发进度.md)、[核心验收](2026-10-11-macos-full-acceptance.md) 与 [补充验收](2026-10-11-macos-resilience-validation.md)。
 
 日期：2026-10-10。
 

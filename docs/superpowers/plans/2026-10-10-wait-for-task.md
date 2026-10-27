@@ -1,7 +1,7 @@
 # wait_for_task 实施计划
 
 日期：2026-10-10。执行方式：当前会话 inline；用户已要求完成改动并测试。
-状态：Task 1–3 已完成；最终回归 62/62、真实 Codex/Claude 总控通过、独立审阅无阻断。验收见 `../../2026-10-10-wait-for-task-validation.md`。
+状态：Task 1–3 已完成；最终回归 62/62、真实 Codex/Claude 总控通过、独立审阅无阻断。验收见 `../../validation/2026-10-10-wait-for-task-validation.md`。
 设计依据：../specs/2026-10-10-wait-for-task-addendum.md。
 实施工作区：agent-hub-v1，feature/agent-hub-v1。等待功能完成后已按用户授权重启共享服务并通过真实 Codex 冒烟；文档已同步且已快进合并 main，GitHub 公开上传已获用户明确授权。
 
