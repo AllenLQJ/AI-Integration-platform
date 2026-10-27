@@ -96,6 +96,8 @@ export function renderGantt(host, chain, {agents = [], selected = null, now, wid
   for (const t of layout.ticks) {
     const x = layout.x(t);
     chart.append(svg('line', {x1: x, x2: x, y1: GANTT.axis - 4, y2: layout.height, class: 'grid'}));
+    // The "now" label owns the axis next to its marker.
+    if (layout.now != null && Math.abs(x - layout.now) < 40) continue;
     const text = svg('text', {x, y: 12, class: 'axis', 'text-anchor': 'middle'});
     text.textContent = tickLabel(t, layout.step, previous); previous = t;
     chart.append(text);

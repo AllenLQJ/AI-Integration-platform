@@ -88,6 +88,11 @@ test('renders bars that announce themselves, highlight the selection and open an
   assert.deepEqual(opened, ['x1', 'x1']);
   assert.equal(typeof x1.listeners.pointermove, 'function');
   assert.equal(host.all(node => node.attributes.class === 'now-line').length, 1);
+  // No tick label sits on top of the "now" label.
+  const nowX = Number(host.all(node => node.attributes.class === 'now-line')[0].attributes.x1);
+  const labels = host.all(node => node.attributes.class === 'axis').map(node => Number(node.attributes.x));
+  assert.ok(labels.length > 0);
+  assert.ok(labels.every(x => Math.abs(x - nowX) >= 40), `tick label within 40px of now: ${labels} vs ${nowX}`);
   assert.match(host.text, /只显示部分执行/);
   const rows = host.byClass('viz-data')[0].all(node => node.tagName === 'tr');
   assert.equal(rows.length, 6);
