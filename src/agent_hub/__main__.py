@@ -101,6 +101,7 @@ def main():
         private_dir(root)
         log = (root / 'daemon.log').open('a', encoding='utf-8', buffering=1)
         sys.stdout = sys.stderr = log
+        import faulthandler; faulthandler.dump_traceback_later(8, file=log)  # TEMP-DEBUG
         from .daemon import run
         run(root)
     elif args.command == 'mcp':
