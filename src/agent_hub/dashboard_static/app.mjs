@@ -511,7 +511,8 @@ addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setT
 function drawGantt() {
   if (chainView !== 'gantt' || !state.chain || $('graph-panel').classList.contains('collapsed')) return;
   renderGantt($('gantt'), state.chain, {agents: configuredAgents, selected: state.selected,
-    width: Math.max(320, ($('gantt').clientWidth || $('graph-panel').clientWidth || 700) - 32),
+    // Laid out for the panel's inner width (padding 16px each side); it scrolls only below 240px.
+    width: Math.max(240, ($('gantt').clientWidth || $('graph-panel').clientWidth || 700) - 32),
     onSelect: id => selectNode(id, true)});
 }
 function setChainView(next) {
