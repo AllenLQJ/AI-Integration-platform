@@ -323,5 +323,3 @@ def workbench_snapshot(item):
                 current_task_id=item['current_task_id'], work_status=item['work_status'],
                 verification=current['verification'] if current else None,
                 pending_actions=item.get('pending_actions') or [], attempts=attempts)
-
-
