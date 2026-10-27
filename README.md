@@ -374,3 +374,19 @@ These records describe specific dates, platforms, and source baselines. Editing 
 - **Windows validation scope:** the [Windows record](docs/2026-10-12-windows-executor-validation.md) covers core regression and greetings through six entry points; its 259-test baseline predates automatic review integration. Windows live automatic-review chains, Muse verification writeback, and a non-headless GUI workbench were not covered there. The later cross-network test does not validate those features.
 - **2026-10-11:** Windows v1/macOS integration and bidirectional Cursor CLI/Grok Bot tasks/continuation were recorded in the [integration report](docs/2026-10-11-cursor-grokbot-validation.md). The 129-test run had 128 passes and one Windows ACL skip (49.332 seconds), with 11 MCP tools at that stage. Windows entries from 10-09/10-10 were later supplemented by the 10-12 record. [Progress](docs/开发进度.md) and [v1 acceptance](docs/第一版验收.md) retain historical counts, not the current tool count.
 - **Muse cancellation and SSH scheduling:** original-session cancellation, deadline interruption, and normal daemon exit were exercised in a dedicated session. The 10-11 SSH test used two isolated Hubs; actual cross-network validation followed on 10-13. See the [implementation record](docs/2026-10-11-muse-cancel-remote-hub.md) and [verification design](docs/2026-10-12-verification-phase1-design.md). Strict physical-sleep deadline recovery remains outside the recorded validation.
+
+## Pruning old task data
+
+Events, result files, logs and task worktrees only grow. `agent-hub prune` is a manual command; by default it only lists what it would do:
+
+```bash
+agent-hub prune --older-than 30                    # preview groups finished more than 30 days ago
+agent-hub prune --older-than 30 --apply            # delete
+agent-hub prune --older-than 30 --apply --vacuum   # delete, then compact tasks.db
+```
+
+- **Unit**: related tasks (continuations, reworks, reviews, one work item) form a group, and the whole group must qualify.
+- **Skipped**: any unfinished task, activity newer than `--older-than` days, verification not settled (awaiting, verifying, needs review, rework required), or an `edit_worktree` worktree with uncommitted or untracked changes. Each skipped group is listed with its reason under `skipped`.
+- **Removed**: every event except `state`, result files under `results/`, log directories under `logs/`, and clean task worktrees with their `hub/<task id>` branch (a branch with unmerged commits is kept and reported as a warning).
+- **Kept**: task records, all `state` events, verification records and idempotency receipts, so history lookups and replayed requests still work. After pruning, `get_result` reports the result file as unavailable and the timeline no longer shows message or tool events.
+- It reads and writes `tasks.db` directly (WAL mode), so it may run while the daemon is up; `--vacuum` can fail while the database is busy and then reports a warning.
