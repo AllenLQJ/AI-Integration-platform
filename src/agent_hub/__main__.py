@@ -45,10 +45,13 @@ def open_dashboard(client):
 
 def main():
     parser = argparse.ArgumentParser(description='Local Agent Hub')
-    parser.add_argument('command', choices=['mcp', 'daemon', 'status', 'stop', 'rpc', 'show', 'plugins', 'check-config', 'dashboard'])
+    parser.add_argument('command', choices=['mcp', 'daemon', 'status', 'stop', 'rpc', 'show', 'plugins', 'check-config', 'dashboard', 'prune'])
     parser.add_argument('tool', nargs='?')
     parser.add_argument('--arguments', default='{}', help='rpc 参数 JSON 对象；用 - 从 stdin 读取')
     parser.add_argument('--data-dir')
+    parser.add_argument('--older-than', type=int, metavar='DAYS', help='prune：只处理最后活动早于 DAYS 天的已结束任务组')
+    parser.add_argument('--apply', action='store_true', help='prune：真正删除；默认只列出将处理的内容')
+    parser.add_argument('--vacuum', action='store_true', help='prune --apply：删除后压缩数据库文件')
     parser.add_argument('--ssh-host', help='已有 SSH 主机别名；调用目标机 Hub')
     parser.add_argument('--remote-python', help='目标机虚拟环境 Python 绝对路径')
     parser.add_argument('--remote-data-dir', help='目标机 Hub 私有数据目录绝对路径')
@@ -61,6 +64,12 @@ def main():
         parser.error('未知 RPC 工具')
     if args.command == 'show' and not args.tool:
         parser.error('show 需要 task_id')
+    if args.command == 'prune' and args.older_than is None:
+        parser.error('prune 需要 --older-than 天数')
+    if args.command != 'prune' and (args.older_than is not None or args.apply or args.vacuum):
+        parser.error('--older-than/--apply/--vacuum 只用于 prune')
+    if args.vacuum and not args.apply:
+        parser.error('--vacuum 需要 --apply')
     if args.command not in {'rpc', 'show'} and args.tool:
         parser.error('只有 rpc 接受工具名称')
     if args.ssh_host and (args.command not in {'mcp', 'status', 'rpc', 'show'} or not args.remote_python or not args.remote_data_dir):
@@ -75,6 +84,16 @@ def main():
         parser.error('--arguments 需要 JSON 对象')
     if args.data_dir: os.environ['AGENT_HUB_DATA_DIR'] = args.data_dir
     from .config import data_dir
+    if args.command == 'prune':
+        from .models import HubError
+        from .prune import run as prune
+        try:
+            result = prune(data_dir(), args.older_than, apply_changes=args.apply, compact=args.vacuum)
+        except HubError as error:
+            print(json.dumps({'error': error.payload()}, ensure_ascii=False))
+            raise SystemExit(1) from None
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
     if args.command in {'plugins', 'check-config'}:
         from .models import HubError
         from .plugins import installed_plugins
