@@ -77,7 +77,7 @@ test('real app safely renders and recovers initialization while polling preserve
     assert.equal(strip.attributes['aria-label'],'最近 4 次执行：成功 1，失败 1，其他结束 1，进行中 1；另有 2 次更早的执行');
     // Executor colours follow the configured order, the same as the overview.
     assert.deepEqual(descendants(listed,'agent-dot').map(d=>d.style.background),['var(--viz-agent-2)','var(--viz-agent-1)']);
-    assert.match(descendants(listed,'task-time')[0].textContent,/天前/);
+    assert.match(descendants(listed,'task-time')[0].textContent,/^1 次 · \d+ 天前$/);
     // A chain without the new fields still renders an empty strip.
     assert.equal(descendants(nodes.get('task-list').children[1],'state-cell').length,0);
     taskItems = [task]; await tick(5000);

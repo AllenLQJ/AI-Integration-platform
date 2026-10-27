@@ -98,7 +98,6 @@ function renderList() {
     button.setAttribute('aria-pressed', String(state.chainId === task.id));
     const meta = node('div','task-sub');
     const who = node('span','task-agents');
-    who.append(node('span','',`${task.task_count} 次执行 · `));
     const colors = agentColors(configuredAgents, task.agents || []);
     for (const [index, agent] of (task.agents || []).entries()) {
       const dot = node('span','agent-dot'); dot.style.background = colors.get(agent); dot.setAttribute('aria-hidden','true');
@@ -132,7 +131,7 @@ function stateStrip(task) {
   cells.setAttribute('role','img');
   cells.setAttribute('aria-label', `最近 ${(task.member_states || []).length} 次执行：${summary || '无记录'}`
     + (task.member_states_omitted ? `；另有 ${task.member_states_omitted} 次更早的执行` : ''));
-  const time = node('time','task-time',task.updated ? relativeTime(task.updated) : '');
+  const time = node('time','task-time',`${task.task_count} 次${task.updated ? ' · ' + relativeTime(task.updated) : ''}`);
   if (task.updated) time.setAttribute('title', date(task.updated));
   row.append(cells,time);
   return row;
