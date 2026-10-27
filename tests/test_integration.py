@@ -37,6 +37,7 @@ def stop_and_wait(client):
 
 
 class IntegrationTests(unittest.TestCase):
+    @unittest.skipIf(os.name == 'nt', 'Windows starts the daemon through WMI')
     def test_detach_spawned_daemon_leaves_the_parent_session_and_fds(self):
         read_fd, write_fd = os.pipe()
         script = (
@@ -64,6 +65,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(completed.stdout.splitlines()[-1], b'1 0')
 
+    @unittest.skipIf(os.name == 'nt', 'Windows starts the daemon through WMI')
     def test_darwin_daemon_spawn_avoids_fork(self):
         from unittest.mock import patch
         from agent_hub.client import Client
@@ -79,6 +81,7 @@ class IntegrationTests(unittest.TestCase):
             self.assertFalse(kwargs['close_fds'])
             self.assertEqual(kwargs['env']['AGENT_HUB_DETACH'], '1')
 
+    @unittest.skipIf(os.name == 'nt', 'Windows starts the daemon through WMI')
     def test_other_posix_daemon_spawn_starts_a_new_session(self):
         from unittest.mock import patch
         from agent_hub.client import Client
