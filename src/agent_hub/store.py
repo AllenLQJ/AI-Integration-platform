@@ -197,6 +197,12 @@ class Store:
                     wanted).fetchall()
             return [self.decode(r) for r in rows]
 
+    def has_children(self, task_id):
+        """Whether any task names task_id as its parent, via the tasks_parent index."""
+        with self.connection() as db:
+            return db.execute("SELECT 1 FROM tasks WHERE json_extract(data, '$.parent_id') = ? LIMIT 1",
+                              (task_id,)).fetchone() is not None
+
     def list_with_acceptance(self, states):
         """Tasks in states that carry acceptance criteria, filtered in SQL instead of decoding all rows."""
         wanted = tuple(states)
