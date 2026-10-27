@@ -45,6 +45,8 @@ class InstanceLock:
 
 
 WORK_SESSION_LIMIT = 1024
+WORKBENCH_PAGE = 200
+LATEST_SEQ = 9223372036854775807
 
 
 def work_cookie_name(server):
@@ -110,8 +112,15 @@ def make_server(service, token):
                         attempt_id = query.get('attempt_id', [task_id])[0]
                         if attempt_id != task_id and service.verification.root_id(attempt_id) != service.verification.root_id(task_id):
                             return self.respond(401, {'error': 'UNAUTHORIZED'})
+                        if 'before_seq' in query:
+                            if 'after_seq' in query:
+                                raise ValueError()
+                            before = int(query['before_seq'][0])
+                            if not 1 <= before <= LATEST_SEQ:
+                                raise ValueError()
+                            return self.respond(200, service.store.events_before(attempt_id, before, WORKBENCH_PAGE))
                         after = int(query.get('after_seq', ['0'])[0])
-                        if not 0 <= after <= 9223372036854775807:
+                        if not 0 <= after <= LATEST_SEQ:
                             raise ValueError()
                         deadline = time.monotonic() + 10
                         while True:
@@ -128,14 +137,9 @@ def make_server(service, token):
                     item = service.call('get_work_item', dict(task_id=task_id))
                     item['view_task_id'] = task_id
                     for attempt in item['attempts']:
-                        cursor, events = 0, []
-                        while True:
-                            batch = service.call('get_events', dict(task_id=attempt['task_id'], after_seq=cursor, limit=200))
-                            events.extend(batch['events'])
-                            cursor = batch['next_seq']
-                            if len(batch['events']) < 200:
-                                break
-                        attempt['events'] = events
+                        # Long attempts render their latest page; older pages load on demand.
+                        page = service.store.events_before(attempt['task_id'], LATEST_SEQ, WORKBENCH_PAGE)
+                        attempt['events'], attempt['events_more'] = page['events'], page['has_more']
                     content = render_workbench(item).encode('utf-8')
                     self.send_response(200)
                     self.send_header('Content-Type', 'text/html; charset=utf-8')
@@ -232,21 +236,24 @@ def render_workbench(item):
     for attempt in item['attempts']:
         ident = escape(attempt['task_id'])
         flag = 'true' if attempt['task_id'] == item['current_task_id'] else 'false'
-        events = ''.join('<pre data-seq="' + escape(str(event['seq'])) + '">' + dump(event) + '</pre>' for event in attempt['events'])
+        # The summary is CSS-generated content, so each <pre> stays the event's exact JSON.
+        events = ''.join('<pre tabindex="0" data-seq="' + escape(str(event['seq'])) + '" data-kind="' + escape(str(event.get('kind', '')))
+                         + '" data-summary="' + escape(event_summary(event)) + '">' + dump(event) + '</pre>' for event in attempt['events'])
+        more = bool(attempt.get('events_more'))
+        older = ('<button type="button" class="older"' + ('' if more else ' hidden') + '>加载更早事件</button>')
         left.append(f'<section data-task="{ident}" data-current="{flag}"><h3>尝试 {attempt["attempt"]} {ident}</h3>'
                     f'<p>执行状态：<span class="exec-state">{escape(attempt["state"])}</span></p>'
-                    '<p class="note">执行器未提供的字段标为缺失；进度文字不构成验收证据。</p>'
-                    '<div class="events">' + events + '</div></section>')
+                    '<p class="note">执行器未提供的字段标为缺失；进度文字不构成验收证据。点击事件展开原始记录。' + older + '</p>'
+                    '<div class="events" data-more="' + ('true' if more else 'false') + '">' + events + '</div></section>')
         right.append(f'<section data-verification="{ident}" data-current="{flag}"><h3>尝试 {attempt["attempt"]}</h3>'
                      f'<p>验收状态：<span class="verification-state">{escape(attempt["verification"]["state"])}</span></p>'
                      '<h4>验收条件</h4><pre>' + dump(attempt['criteria']) + '</pre>'
                      '<h4>当前结论与原因</h4><pre class="verdict">' + dump(attempt['verification']) + '</pre>'
                      '<h4>产物逻辑 ID 与哈希</h4><pre class="artifacts">' + dump(unique_artifacts(attempt['artifacts'])) + '</pre></section>')
     actions = '；'.join(item.get('pending_actions') or []) or '无'
-    return ('<!doctype html><html lang="zh"><meta charset="utf-8"><title>Agent Hub 工作台</title>'
-            '<style>main{display:grid;grid-template-columns:1fr 1fr;gap:24px}pre{white-space:pre-wrap;overflow-wrap:anywhere}body{font-family:system-ui;padding:24px}'
-            '#status{display:grid;grid-template-columns:max-content 1fr;gap:4px 12px}#status dd{margin:0}.note{color:#555}'
-            '#connection[data-state=down],#connection[data-state=unauthorized]{color:#b00020;font-weight:bold}</style>'
+    return ('<!doctype html><html lang="zh"><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1"><title>Agent Hub 工作台</title>'
+            '<style>' + WORKBENCH_STYLE + '</style>'
             '<body data-work="' + escape(item.get('view_task_id', item['root_task_id'])) + '" data-current="' + escape(item['current_task_id']) + '">'
             '<h1>工作项 ' + escape(item['root_task_id']) + '</h1><dl id="status">'
             '<dt>工作状态</dt><dd id="work-status">' + escape(item['work_status']) + '</dd>'
@@ -258,6 +265,47 @@ def render_workbench(item):
             '<p class="note">工作状态取当前尝试的综合状态。执行状态 succeeded 只表示执行结束，不等于验收通过；验收结论以验收状态为准，执行成功结束前验收状态为 not_requested。</p>'
             '<main><div id="timeline"><h2>执行时间线</h2>' + ''.join(left) + '</div><div id="verification"><h2>验收</h2>' + ''.join(right) + '</div></main>'
             '<script>' + WORKBENCH_SCRIPT + '</script></html>')
+
+
+WORKBENCH_STYLE = (
+    ':root{color-scheme:light dark;--ink:#1d1d1f;--muted:#5f5f66;--line:#d9d9de;--soft:#f5f5f7;--bad:#b00020;--accent:#0071e3}'
+    '@media(prefers-color-scheme:dark){:root{--ink:#f2f2f5;--muted:#a1a1aa;--line:#3a3a40;--soft:#1f1f23;--bad:#ff6b81;--accent:#4ea1ff}}'
+    'body{margin:0;padding:24px;font:14px/1.55 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:var(--ink);background:Canvas}'
+    'main{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px}'
+    'pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}'
+    '#status{display:grid;grid-template-columns:max-content 1fr;gap:4px 12px}#status dd{margin:0}.note{color:var(--muted)}'
+    '#connection[data-state=down],#connection[data-state=unauthorized]{color:var(--bad);font-weight:bold}'
+    '.events{display:grid;gap:6px}'
+    '.events pre{margin:0;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--soft);'
+    'max-height:2.9em;overflow:hidden;cursor:pointer;color:var(--muted)}'
+    '.events pre::before{content:attr(data-summary);display:block;margin-bottom:6px;color:var(--ink);'
+    'font:600 13px/1.4 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;white-space:normal}'
+    '.events pre:focus{max-height:none;overflow:auto;outline:2px solid var(--accent);outline-offset:1px}'
+    '.events pre[data-kind=state]{border-left:3px solid var(--accent)}'
+    '.older{margin-left:8px;font:inherit;padding:2px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit;cursor:pointer}'
+    '@media(max-width:800px){body{padding:16px}main{grid-template-columns:minmax(0,1fr)}#status{grid-template-columns:1fr}#status dt{font-weight:600}}'
+)
+
+
+def event_summary(event):
+    """One-line, human-readable label for an event; mirrors summary() in WORKBENCH_SCRIPT."""
+    kind = str(event.get('kind') or '事件')
+    data = event.get('data') if isinstance(event.get('data'), dict) else {}
+    detail = ''
+    for field in ('message', 'text', 'state', 'name', 'reason', 'status'):
+        value = data.get(field)
+        if isinstance(value, str) and value:
+            detail = value
+            break
+    if kind == 'tool' and isinstance(data.get('name'), str):
+        detail = data['name'] + (' · ' + data['status'] if isinstance(data.get('status'), str) else '')
+    label = '#' + str(event.get('seq')) + ' ' + WORKBENCH_KINDS.get(kind, kind)
+    detail = ' '.join(detail.split())
+    return label + ('：' + (detail[:117] + '…' if len(detail) > 120 else detail) if detail else '')
+
+
+WORKBENCH_KINDS = {'state': '状态', 'message': '消息', 'tool': '工具', 'progress': '进度', 'artifact': '产物',
+                   'verification': '验收', 'review': '审核', 'session': '会话', 'activity': '操作', 'process': '进程'}
 
 
 def unique_artifacts(artifacts):
@@ -300,6 +348,39 @@ function failed(state){return state==="down"||state==="unauthorized"}
 function backoff(failures,status){return status===401?5000:Math.min(30000,1000*Math.pow(2,Math.min(failures-1,5)))}
 function settled(a){return !ACTIVE.has(a.state)&&!VERIFYING.has(a.verification)}
 function renderArtifacts(a){put(".artifacts",pretty(Array.from(a.artifacts.values())),a.panel)}
+const KINDS={state:"状态",message:"消息",tool:"工具",progress:"进度",artifact:"产物",verification:"验收",review:"审核",session:"会话",activity:"操作",process:"进程"};
+function summary(e){
+  const kind=String(e.kind||"事件"),data=e.data&&typeof e.data==="object"?e.data:{};
+  let detail="";
+  for(const field of ["message","text","state","name","reason","status"]){const value=data[field];if(typeof value==="string"&&value){detail=value;break}}
+  if(kind==="tool"&&typeof data.name==="string")detail=data.name+(typeof data.status==="string"?" · "+data.status:"");
+  const chars=Array.from(Array.from(detail).map(function(c){return c.trim()?c:" "}).join("").split(" ").filter(Boolean).join(" "));
+  detail=chars.length>120?chars.slice(0,117).join("")+"…":chars.join("");
+  return "#"+e.seq+" "+(KINDS[kind]||kind)+(detail?"："+detail:"");
+}
+function eventNode(e){
+  const node=document.createElement("pre");
+  node.tabIndex=0;node.dataset.seq=String(e.seq);node.dataset.kind=String(e.kind||"");node.dataset.summary=summary(e);
+  node.textContent=pretty(e);
+  return node;
+}
+function earliest(a){
+  let low=0;
+  for(const node of one(".events",a.section).children){const seq=Number(node.dataset.seq)||0;if(seq&&(!low||seq<low))low=seq}
+  return low;
+}
+async function older(a,button){
+  if(a.loadingOlder)return;
+  a.loadingOlder=true;button.disabled=true;
+  const low=earliest(a);
+  const result=low?await load(base+"/events?attempt_id="+encodeURIComponent(a.id)+"&before_seq="+low):{data:{events:[],has_more:false}};
+  a.loadingOlder=false;button.disabled=false;
+  if(result.error!==undefined){button.textContent="加载失败，点击重试";return}
+  const box=one(".events",a.section),first=box.firstElementChild;
+  for(const e of result.data.events)if(e.seq<low)box.insertBefore(eventNode(e),first);
+  box.dataset.more=String(Boolean(result.data.has_more));
+  button.textContent="加载更早事件";button.hidden=!result.data.has_more;
+}
 for(const section of document.querySelectorAll("[data-task]")){
   let panel=null;
   for(const candidate of document.querySelectorAll("[data-verification]"))if(candidate.dataset.verification===section.dataset.task)panel=candidate;
@@ -311,6 +392,8 @@ for(const section of document.querySelectorAll("[data-task]")){
   for(const artifact of initial)a.artifacts.set(key(artifact),artifact);
   renderArtifacts(a);
   attempts.set(a.id,a);
+  const button=one(".older",section);
+  if(button)button.addEventListener("click",function(){older(a,button)});
 }
 function eventsChannel(){
   const channel={state:"ok",detail:"",failures:0};
@@ -372,9 +455,7 @@ async function poll(a){
     for(const e of result.data.events){
       if(e.seq<=a.after)continue;
       a.after=e.seq;
-      const node=document.createElement("pre");
-      node.dataset.seq=String(e.seq);node.textContent=pretty(e);
-      one(".events",a.section).append(node);
+      one(".events",a.section).append(eventNode(e));
       if(e.kind==="state"&&e.data&&typeof e.data.state==="string")setState(a,e.data.state);
       if(e.kind==="artifact"&&e.data){a.artifacts.set(key(e.data),e.data);renderArtifacts(a)}
       if(REFRESH.has(e.kind))refresh=true;

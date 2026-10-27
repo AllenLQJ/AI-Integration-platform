@@ -182,6 +182,41 @@ class DashboardHTTPTests(unittest.TestCase):
                 self.assertEqual(status, 200, body)
                 self.assertNotEqual(changed['ETag'], headers['ETag'])
 
+    def test_workbench_renders_latest_page_and_pages_older_events(self):
+        from hub_fixtures import with_work_item
+        task = self.service.call('submit_task', with_work_item(self.service, dict(request_id='work-paging', agent='fake',
+            prompt='paging', cwd=str(self.root), mode='read_only')))
+        for index in range(250):
+            self.service.store.event(task['id'], 'message', {'message': f'line {index}\nnext', 'role': 'assistant'})
+        bearer = {'Authorization': 'Bearer native-test-secret'}
+        status, headers, body = self.request('/work/' + task['id'], headers=bearer)
+        self.assertEqual(status, 200, body)
+        self.assertIn('width=device-width', headers.get('Content-Type', '') + body.decode())
+        html = body.decode('utf-8')
+        seqs = [int(value) for value in re.findall(r'<pre tabindex="0" data-seq="(\d+)"', html)]
+        everything = self.service.store.events(task['id'], 0, 200)['events'] + self.service.store.events(task['id'], 200, 200)['events']
+        newest = [event['seq'] for event in everything][-200:]
+        self.assertEqual(seqs, newest)
+        self.assertIn('data-more="true"', html)
+        self.assertRegex(html, r'<button type="button" class="older">加载更早事件</button></p>')
+        # The summary is an attribute; the element text stays the event's exact JSON.
+        self.assertIn('data-summary="#' + str(newest[-1]) + ' 消息：line 249 next"', html)
+        events = '/work/' + task['id'] + '/events'
+        status, _, body = self.request(events + '?before_seq=' + str(newest[0]), headers=bearer)
+        self.assertEqual(status, 200, body)
+        older = json.loads(body)
+        self.assertEqual([e['seq'] for e in older['events']], [e['seq'] for e in everything if e['seq'] < newest[0]][-200:])
+        self.assertFalse(older['has_more'])
+        for query in ('before_seq=0', 'before_seq=x', 'before_seq=5&after_seq=0'):
+            self.assertEqual(self.request(events + '?' + query, headers=bearer)[0], 400, query)
+        self.assertEqual(self.request(events + '?before_seq=5')[0], 401)
+        # A short attempt hides the button.
+        short = self.service.call('submit_task', with_work_item(self.service, dict(request_id='work-short', agent='fake',
+            prompt='short', cwd=str(self.root), mode='read_only'), 'short'))
+        html = self.request('/work/' + short['id'], headers=bearer)[2].decode('utf-8')
+        self.assertIn('data-more="false"', html)
+        self.assertIn('class="older" hidden', html)
+
     def test_every_local_module_import_is_served(self):
         from agent_hub.dashboard_http import STATIC_ROOT
         for source in STATIC_ROOT.glob('*.mjs'):
