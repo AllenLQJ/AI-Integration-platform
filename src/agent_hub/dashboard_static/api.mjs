@@ -77,6 +77,11 @@ export function createAPI(fetcher = globalThis.fetch.bind(globalThis)) {
       const data = await request(`api/v1/chains/${encodeURIComponent(id)}`, {signal});
       return valid(data, typeof data?.chain?.id === 'string' && ['nodes','edges','messages','warnings'].every(key=>Array.isArray(data[key])) && typeof data.truncated === 'boolean');
     },
+    async overview(signal) {
+      const data = await request('api/v1/overview', {signal});
+      return valid(data, typeof data?.totals === 'object' && data.totals !== null
+        && ['daily','agents','attention'].every(key=>Array.isArray(data[key])) && typeof data.work_status === 'object');
+    },
     async agents(signal) {
       const data = await request('api/v1/agents', {signal}); return valid(data, Array.isArray(data?.items));
     },
