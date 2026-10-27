@@ -173,10 +173,11 @@ class ReviewTests(unittest.TestCase):
         self.service.max_auto_rework = 1
         self.exec.rework = b'BAD again'
         second = self.submit()
+        # Wait on one snapshot: pending_actions and the stored reason are written together, but a
+        # separate summary() read could observe the reason before this item snapshot did.
         item = self.until(lambda: (lambda i: i if len(i['attempts']) == 2 and i['work_status'] == 'rework_required'
-                                   and self.summary(i['current_task_id']).get('auto_rework_reason') else None)(self.item(second)))
+                                   and any('上限' in a for a in i['pending_actions']) else None)(self.item(second)))
         self.assertIn('上限', self.summary(item['current_task_id'])['auto_rework_reason'])
-        self.assertTrue(any('上限' in a for a in item['pending_actions']))
         time.sleep(.3)
         self.assertEqual(len(self.item(second)['attempts']), 2)
 
