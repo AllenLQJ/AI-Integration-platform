@@ -336,9 +336,14 @@ class DashboardHTTPTests(unittest.TestCase):
         header = self.work_session(task['id'])
         for flag in ['HttpOnly', 'Path=/work', 'SameSite=Strict', 'Max-Age=' + str(SESSION_TTL)]:
             self.assertIn(flag, header)
-        cookie = {'Cookie': header.split(';')[0]}
+        name, value = header.split(';')[0].split('=', 1)
+        # Port-scoped so two local Hubs on 127.0.0.1 never overwrite each other's session.
+        self.assertEqual(name, 'hub_work_' + str(self.server.server_port))
+        cookie = {'Cookie': name + '=' + value}
         snapshot = '/work/' + task['id'] + '/snapshot'
         self.assertEqual(self.request(snapshot, headers=cookie)[0], 200)
+        self.assertEqual(self.request(snapshot, headers={'Cookie': 'hub_work=' + value})[0], 200, 'legacy name')
+        self.assertEqual(self.request(snapshot, headers={'Cookie': 'hub_work_1=' + value})[0], 401, 'other port')
         self.assertEqual(self.request('/work/' + other['id'] + '/snapshot', headers=cookie)[0], 401)
         # Expired sessions are rejected and pruned instead of accumulating.
         with patch('agent_hub.daemon.time') as clock:

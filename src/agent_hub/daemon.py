@@ -47,6 +47,11 @@ class InstanceLock:
 WORK_SESSION_LIMIT = 1024
 
 
+def work_cookie_name(server):
+    # Browsers scope cookies by host/path, not port; isolate local daemons.
+    return 'hub_work_' + str(server.server_port)
+
+
 def make_server(service, token):
     from .dashboard_http import DashboardHTTP, SESSION_TTL
     dashboard = DashboardHTTP(service)
@@ -80,7 +85,8 @@ def make_server(service, token):
                 return False
             try:
                 cookies = SimpleCookie(self.headers.get('Cookie', ''))
-                cookie = cookies.get('hub_work')
+                # Port-scoped name first; legacy 'hub_work' keeps older clients working.
+                cookie = cookies.get(work_cookie_name(self.server)) or cookies.get('hub_work')
             except Exception:
                 return False
             if not cookie:
@@ -163,7 +169,8 @@ def make_server(service, token):
                         return self.respond(429, {'error': 'TOO_MANY_SESSIONS'})
                     sessions[cookie] = (parts[1], time.monotonic() + SESSION_TTL)
                 self.send_response(204)
-                self.send_header('Set-Cookie', 'hub_work=' + cookie + '; HttpOnly; Path=/work; SameSite=Strict; Max-Age='
+                self.send_header('Set-Cookie', work_cookie_name(self.server) + '=' + cookie
+                                 + '; HttpOnly; Path=/work; SameSite=Strict; Max-Age='
                                  + str(SESSION_TTL))
                 self.send_header('Cache-Control', 'no-store')
                 self.send_header('Content-Length', '0')

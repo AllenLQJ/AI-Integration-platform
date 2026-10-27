@@ -226,12 +226,13 @@ class WorkbenchBrowserTests(unittest.TestCase):
         request = urllib.request.Request(self.origin + '/work/' + ident + '/session', method='POST',
                                          headers={'Authorization': 'Bearer ' + self.token})
         with urllib.request.urlopen(request) as response:
-            cookie = response.headers['Set-Cookie'].split(';')[0].split('=', 1)[1]
+            name, cookie = response.headers['Set-Cookie'].split(';')[0].split('=', 1)
+            self.assertEqual(name, 'hub_work_' + self.origin.rsplit(':', 1)[1])
         target = self.chrome.send('Target.createTarget', {'url': 'about:blank'})['targetId']
         session = self.chrome.send('Target.attachToTarget', {'targetId': target, 'flatten': True})['sessionId']
         self.chrome.send('Network.enable', session=session)
         def grant():
-            self.assertTrue(self.chrome.send('Network.setCookie', dict(name='hub_work', value=cookie, url=self.origin + '/work/',
+            self.assertTrue(self.chrome.send('Network.setCookie', dict(name=name, value=cookie, url=self.origin + '/work/',
                                                                        path='/work', httpOnly=True, sameSite='Strict'), session)['success'])
         grant()
         self.chrome.send('Page.navigate', {'url': self.origin + '/work/' + ident}, session)
@@ -347,7 +348,7 @@ class WorkbenchBrowserTests(unittest.TestCase):
             self.assertIn('连接中断', dom['connectionText'])
         dom = self.wait_dom(session, lambda d: d['connection'] == 'live' and self.matches_service(ident)(d), '服务恢复后未自动恢复同步', timeout=45)
 
-        self.chrome.send('Network.deleteCookies', dict(name='hub_work', url=self.origin + '/work/'), session)
+        self.chrome.send('Network.deleteCookies', dict(name='hub_work_' + self.origin.rsplit(':', 1)[1], url=self.origin + '/work/'), session)
         dom = self.wait_dom(session, lambda d: d['connection'] == 'unauthorized', 'Cookie 失效后未提示未授权', timeout=40)
         self.assertIn('未授权', dom['connectionText']); self.assertIn('/session', dom['connectionText'])
         grant()

@@ -406,6 +406,8 @@ class VerificationTests(unittest.TestCase):
         with patch('agent_hub.daemon.HubHTTPServer', side_effect=lambda address, handler, dashboard: handler):
             Handler = make_server(self.service, token)
         handler = Handler.__new__(Handler)
+        from types import SimpleNamespace
+        handler.server = SimpleNamespace(server_port=12346)  # names the port-scoped cookie
         handler.client_address = ('127.0.0.1', 12345)
         handler.request_version = 'HTTP/1.1'
         handler.requestline = 'GET /work HTTP/1.1'
