@@ -5,6 +5,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from agent_hub.processes import environment, run_process
 from agent_hub.models import HubError
 
@@ -49,6 +50,41 @@ class ProcessTests(unittest.TestCase):
         finally:
             if old is None: os.environ.pop('ANTHROPIC_API_KEY', None)
             else: os.environ['ANTHROPIC_API_KEY'] = old
+
+    def test_proxy_bypass_merges_user_entries_and_covers_lowercase(self):
+        with patch.dict(os.environ, {'NO_PROXY': 'corp.example, localhost'}, clear=False):
+            if os.name != 'nt':
+                os.environ['no_proxy'] = 'internal.example'
+            env = environment()
+        entries = env['NO_PROXY'].split(',')
+        for host in ('127.0.0.1', 'localhost', '::1', 'corp.example'):
+            self.assertIn(host, entries)
+        self.assertEqual(len(entries), len(set(entries)))
+        if os.name != 'nt':
+            self.assertIn('internal.example', entries)
+            self.assertEqual(env['no_proxy'], env['NO_PROXY'])
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX 后代追踪')
+    def test_missing_ps_degrades_to_process_group_cleanup(self):
+        from agent_hub import processes
+        real = processes.subprocess.check_output
+        def no_ps(args, *rest, **kwargs):
+            if args[0] == 'ps':
+                raise PermissionError(1, 'Operation not permitted', 'ps')
+            return real(args, *rest, **kwargs)
+        with patch.object(processes.subprocess, 'check_output', no_ps), tempfile.TemporaryDirectory() as td:
+            self.assertIsNone(processes.posix_processes())
+            tracked = {}
+            processes.track_descendants(os.getpid(), tracked)
+            self.assertEqual(tracked, {})
+            processes.stop_descendants({os.getpid(): 'unverifiable'})
+            rc, out, _, _ = run_process([sys.executable, '-c', 'print("ok")'], td, environment(),
+                                        threading.Event(), time.time() + 5, td, lambda *a: None)
+            self.assertEqual((rc, out.strip()), (0, 'ok'))
+            with self.assertRaises(HubError) as error:
+                run_process([sys.executable, '-c', 'import time;time.sleep(30)'], td, environment(),
+                            threading.Event(), time.time() + .3, td, lambda *a: None)
+            self.assertEqual(error.exception.code, 'TIMED_OUT')
 
     def test_timeout_and_unicode_output(self):
         with tempfile.TemporaryDirectory(prefix='执行 中文 ') as td:

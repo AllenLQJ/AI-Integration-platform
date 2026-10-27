@@ -1,5 +1,5 @@
-import {createAPI, consumeTicket} from './api.mjs';
-import {DashboardState} from './state.mjs';
+import {createAPI, consumeTicket, isUnchanged} from './api.mjs';
+import {DashboardState, chainIdle, POLL_ACTIVE, POLL_IDLE} from './state.mjs';
 import {createGraph} from './graph.mjs';
 import {
   TimelineExpansion, timelineRecords, coverageNotes, kindLabel, provenanceLabel, statusLabel,
@@ -44,6 +44,23 @@ let view = 'messages', pageHistory = [], timer, chainTimer, listTimer, searchTim
 let contentKey = '', contentContext = '', renderedEvents = new Map(), listKey = '';
 let renderedMessages = new Map();
 let historyLoading = false;
+// True while the execution poll waits on the idle cadence and can be pulled forward.
+let detailIdleWait = false;
+// Anchor of the chain response held in state.chain; a 304 for the same anchor repeats it.
+let chainAnchor = null;
+// Hidden tabs schedule nothing; each skipped loop resumes once the tab is visible.
+// Resumed loops re-check their request gate, so stale selections stay inert.
+const hidden = () => document.visibilityState === 'hidden';
+const resume = new Map();
+function later(key, run, delay) {
+  if (hidden()) { resume.set(key, run); return null; }
+  return setTimeout(run, delay);
+}
+document.addEventListener('visibilitychange', () => {
+  if (hidden() || stopped) return;
+  const pending = [...resume.values()]; resume.clear();
+  for (const run of pending) run();
+});
 const graph = createGraph($('graph-viewport'),$('graph-stage'),id=>selectNode(id,true),label);
 // These are execution states from the Hub contract; executor names remain dynamic.
 const stateFilter = $('state-filter');
@@ -87,7 +104,7 @@ function renderList() {
 }
 function scheduleList() {
   clearTimeout(listTimer);
-  if (!stopped) listTimer = setTimeout(()=>loadList(state.offset,true),5000);
+  if (!stopped) listTimer = later('list',()=>loadList(state.offset,true),5000);
 }
 async function loadList(offset = 0, background = false) {
   if (stopped) return;
@@ -290,29 +307,37 @@ function renderDetail() {
 }
 async function poll(token, id) {
   if (stopped || !state.detailGate.current(token)) return;
-  let delay = 2500;
+  detailIdleWait = false;
+  let delay = POLL_ACTIVE;
   try {
     const initial = !state.historyMode && state.cursor === 0;
-    const data = state.historyMode ? null : initial ? await api.eventHistory(id,undefined,token.signal)
-      : await api.events(id,state.cursor,token.signal);
-    if (!state.detailGate.current(token)) return;
-    // Store updates and verification transitions do not always emit events.
-    const detail = await api.detail(id,token.signal);
+    // Store updates and verification transitions do not always emit events, so the
+    // detail is read every tick. Live ticks fetch it together with new events.
+    let data = null, detail;
+    if (initial) {
+      data = await api.eventHistory(id,undefined,token.signal);
+      if (!state.detailGate.current(token)) return;
+      detail = await api.detail(id,token.signal);
+    } else if (state.historyMode) detail = await api.detail(id,token.signal);
+    else { detail = await api.detail(id,token.signal,state.cursor); data = detail.live_events; }
     if (!state.detailGate.current(token)) return;
     const detailKey = value => value && [value.task,value.relations,value.criteria,value.artifacts,value.verification_checks,value.acceptance_policy];
-    const changed = JSON.stringify(detailKey(state.detail)) !== JSON.stringify(detailKey(detail));
+    // A revalidated (304) response repeats the last body for this execution.
+    const changed = !state.detail || (!isUnchanged(detail) && JSON.stringify(detailKey(state.detail)) !== JSON.stringify(detailKey(detail)));
+    if (detail.live_events) { const {live_events: _events, ...rest} = detail; detail = rest; }
     state.detail = detail;
     if (data && !(initial ? state.replaceEvents(token,data,false) : state.commitEvents(token,data))) return;
     if (changed) renderDetail();
     renderContent();
     $('detail-error').hidden = true; $('connection').textContent = '已连接';
     $('sync-time').textContent = `同步于 ${new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`;
+    if (chainIdle(state.chain, state.detail)) delay = POLL_IDLE;
     if (!initial && data?.events.length >= 200) delay = 0;
   } catch (error) {
     if (!state.detailGate.current(token)) return;
     failure(error); $('detail-error').textContent = `${error.message} 将自动重试，也可点击刷新。`; $('detail-error').hidden = false; delay = 5000;
   } finally {
-    if (!stopped && state.detailGate.current(token)) timer = setTimeout(()=>poll(token,id),delay);
+    if (!stopped && state.detailGate.current(token)) { detailIdleWait = delay === POLL_IDLE; timer = later('detail',()=>poll(token,id),delay); }
     if (state.detailGate.current(token)) $('content').setAttribute('aria-busy','false');
   }
 }
@@ -336,7 +361,7 @@ $('events-older').addEventListener('click',()=>loadEventPage(true));
 $('events-latest').addEventListener('click',()=>loadEventPage(false));
 async function pollChain(token,id,desiredNode=null) {
   if(stopped||!state.chainGate.current(token))return;
-  let delay=2500;
+  let delay=POLL_ACTIVE;
   try {
     // The API pins the requested member inside bounded graphs. Keep the inspected
     // execution as the anchor as new members arrive beyond the node limit.
@@ -346,19 +371,29 @@ async function pollChain(token,id,desiredNode=null) {
     // A click during this request may choose a node outside its capped response.
     // Retry with that newer selection instead of replacing the inspected node.
     if(state.selected&&state.selected!==anchor&&!data.nodes.some(n=>n.id===state.selected)){delay=0;return;}
-    state.chain=data;state.chainId=data.chain.id;
-    renderList();renderChain();$('chain-error').hidden=true;
+    if(!(isUnchanged(data)&&state.chain&&chainAnchor===anchor)){
+      state.chain=data;state.chainId=data.chain.id;chainAnchor=anchor;
+      renderList();renderChain();
+    }
+    $('chain-error').hidden=true;
     if(!state.selected||!data.nodes.some(n=>n.id===state.selected)) {
       const selected=data.nodes.some(n=>n.id===desiredNode) ? desiredNode : data.nodes.some(n=>n.id===data.chain.latest_task_id) ? data.chain.latest_task_id : data.nodes[0]?.id;
       if(selected)selectNode(selected,false);
     }
     $('connection').textContent='已连接';
+    if(chainIdle(state.chain,state.detail))delay=POLL_IDLE;
+    else if(detailIdleWait&&state.selected&&state.detailGate.token){
+      // New work arrived while the execution poll slept on the idle cadence.
+      clearTimeout(timer);detailIdleWait=false;
+      const detailToken=state.detailGate.token,selected=state.selected;
+      timer=later('detail',()=>poll(detailToken,selected),0);
+    }
   } catch(error) {
     if(!state.chainGate.current(token))return;
     failure(error);$('chain-error').textContent=`${error.message} 将自动重试，也可点击刷新。`;$('chain-error').hidden=false;delay=5000;
     if(!state.chain){$('graph-panel').hidden=true;graph.clear();$('content').replaceChildren(empty('任务链暂时无法读取','请等待重试，或点击刷新。'));contentKey='';}
   } finally {
-    if(!stopped&&state.chainGate.current(token))chainTimer=setTimeout(()=>pollChain(token,id,desiredNode),delay);
+    if(!stopped&&state.chainGate.current(token))chainTimer=later('chain',()=>pollChain(token,id,desiredNode),delay);
   }
 }
 async function selectChain(id,desiredNode=null) {

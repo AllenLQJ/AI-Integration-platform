@@ -20,6 +20,7 @@ class Service:
         from .config import verification_options
         verification_config = verification_options(self.root)
         self.store = Store(self.root / 'tasks.db')
+        self.store.reuse_connections()
         self.store.recover()
         self.gateway = Gateway(self.root, self.store)
         self.stopping = threading.Event()
@@ -341,7 +342,8 @@ class Service:
                     self.verification.track(self.store.get(prepared['task_id']))
                     self.verification.ensure(self.store.get(prepared['task_id']))
                 except Exception:
-                    pass
+                    # The scheduler's verification discovery retries; keep the cause visible.
+                    logging.getLogger(__name__).warning('核对完成后登记验收失败：%s', prepared['task_id'], exc_info=True)
             elif result_path:
                 # Evidence/lease rejected after file write — do not leave an orphan result.
                 try:
@@ -702,90 +704,102 @@ class Service:
             # notification arriving during a scan must trigger another pass.
             self.scheduler_wakeup.clear()
             try:
-                try:
-                    with self.lock:
-                        rework_pending = [i for i in self.auto_rework_pending if time.monotonic() >= self.auto_rework_retry_at.get(i, 0)]
-                        review_pending = [i for i in self.review_pending if time.monotonic() >= self.review_retry_at.get(i, 0)]
-                        verification_room = len(self.verification_active) < self.concurrency
-                    pending = (self.verification.pending() + review_pending + rework_pending
-                               if verification_room and time.monotonic() >= self.verification_retry_at else [])
-                    with self.lock:
-                        for ident in pending:
-                            if self.stopping.is_set() or len(self.verification_active) >= self.concurrency:
-                                break
-                            if ident not in self.verification_active:
-                                review_only = ident in self.review_pending
-                                worker = threading.Thread(target=self.verify, args=(
-                                    ident, not review_only and ident in self.auto_rework_pending, review_only), daemon=True)
-                                self.verification_active[ident] = worker
-                                try:
-                                    worker.start()
-                                except Exception:
-                                    self.verification_active.pop(ident, None)
-                                    raise
-                except Exception as error:
-                    # 全局发现失败退避，执行调度仍继续；可用时记录受影响任务。
-                    self.verification_retry_at = time.monotonic() + 1
-                    try:
-                        for task in self.store.list({'succeeded'}):
-                            if task.get('acceptance') and self.verification.summary(task)['state'] == 'awaiting_verification':
-                                self.store.event(task['id'], 'verification_dispatch_error', {'reason': type(error).__name__})
-                    except Exception:
-                        pass
-                with self.lock:
-                    from collections import Counter
-                    used_agents = Counter(a['agent'] for a in self.active.values())
-                    used_workspaces = {a['workspace'] for a in self.active.values()}
-                    queued = self.store.list({'queued'}) if len(self.active) < self.concurrency else []
-                    # Skip quarantine lookup when idle or concurrency is already full.
-                    quarantined = set()
-                    if queued and len(self.active) < self.concurrency:
-                        quarantined = {
-                            workspace_key(t.get('workspace') or t['cwd'])
-                            for t in self.store.list_quarantined()}
-                    for task in queued:
-                        if len(self.active) >= self.concurrency:
-                            break
-                        actual_workspace = task.get('workspace') or (
-                            str(self.workspaces.root / task['id']) if task['mode'] == 'edit_worktree' else task['cwd'])
-                        workspace_id = workspace_key(actual_workspace)
-                        if workspace_id in quarantined:
-                            self.store.update(task['id'], workspace=actual_workspace, workspace_quarantined=True)
-                            self.store.finish(task['id'], 'interrupted', {
-                                'error_code': 'WORKSPACE_UNCERTAIN',
-                                'error': '工作区旧执行状态不确定，排队任务未启动；请人工核对后使用新工作区'})
-                            continue
-                        if (used_agents[task['agent']] >= self.per_agent_concurrency.get(task['agent'], 1)
-                                or workspace_id in used_workspaces):
-                            continue
-                        cancel = threading.Event()
-                        worker = threading.Thread(target=self.execute, args=(task, cancel), daemon=True)
-                        self.active[task['id']] = dict(agent=task['agent'], workspace=workspace_id,
-                                                       cancel=cancel, thread=worker)
-                        used_agents[task['agent']] += 1
-                        used_workspaces.add(workspace_id)
-                        try:
-                            self.store.update(task['id'], state='running')
-                            worker.start()
-                        except Exception:
-                            if worker.ident is None:
-                                self.active.pop(task['id'], None)
-                                if self.store.get(task['id'])['state'] == 'running':
-                                    self.store.update(task['id'], state='queued')
-                            raise
+                self._dispatch_verification()
+                self._dispatch_tasks()
             except Exception:
                 logging.getLogger(__name__).exception('任务调度失败，将短暂退避后重试')
                 self.stopping.wait(.2)
-            with self.lock:
-                now = time.monotonic()
-                deadlines = [self.verification_retry_at, *self.review_retry_at.values(), *self.auto_rework_retry_at.values()]
-                delays = [deadline - now for deadline in deadlines if deadline > now]
-                retry_at = self.verification.next_retry_at
-                if retry_at is not None and retry_at > time.time():
-                    delays.append(retry_at - time.time())
             # Direct DB writes and crash-recovery fixtures still become visible
             # within one second, without depending on an in-memory notification.
-            self.scheduler_wakeup.wait(min(1.0, *delays) if delays else 1.0)
+            self.scheduler_wakeup.wait(self._scheduler_delay())
+
+    def _dispatch_verification(self):
+        """Start verification/review/rework workers; discovery failures back off without blocking execution."""
+        try:
+            with self.lock:
+                rework_pending = [i for i in self.auto_rework_pending if time.monotonic() >= self.auto_rework_retry_at.get(i, 0)]
+                review_pending = [i for i in self.review_pending if time.monotonic() >= self.review_retry_at.get(i, 0)]
+                verification_room = len(self.verification_active) < self.concurrency
+            pending = (self.verification.pending() + review_pending + rework_pending
+                       if verification_room and time.monotonic() >= self.verification_retry_at else [])
+            with self.lock:
+                for ident in pending:
+                    if self.stopping.is_set() or len(self.verification_active) >= self.concurrency:
+                        break
+                    if ident not in self.verification_active:
+                        review_only = ident in self.review_pending
+                        worker = threading.Thread(target=self.verify, args=(
+                            ident, not review_only and ident in self.auto_rework_pending, review_only), daemon=True)
+                        self.verification_active[ident] = worker
+                        try:
+                            worker.start()
+                        except Exception:
+                            self.verification_active.pop(ident, None)
+                            raise
+        except Exception as error:
+            # 全局发现失败退避，执行调度仍继续；可用时记录受影响任务。
+            self.verification_retry_at = time.monotonic() + 1
+            logging.getLogger(__name__).warning('验收任务发现失败，1 秒后重试', exc_info=True)
+            try:
+                for task in self.store.list_with_acceptance({'succeeded'}):
+                    if self.verification.summary(task)['state'] == 'awaiting_verification':
+                        self.store.event(task['id'], 'verification_dispatch_error', {'reason': type(error).__name__})
+            except Exception:
+                logging.getLogger(__name__).debug('无法记录验收发现失败事件', exc_info=True)
+
+    def _dispatch_tasks(self):
+        """Start queued tasks within global, per-agent and per-workspace limits."""
+        with self.lock:
+            from collections import Counter
+            used_agents = Counter(a['agent'] for a in self.active.values())
+            used_workspaces = {a['workspace'] for a in self.active.values()}
+            queued = self.store.list({'queued'}) if len(self.active) < self.concurrency else []
+            # Skip quarantine lookup when idle or concurrency is already full.
+            quarantined = set()
+            if queued and len(self.active) < self.concurrency:
+                quarantined = {
+                    workspace_key(t.get('workspace') or t['cwd'])
+                    for t in self.store.list_quarantined()}
+            for task in queued:
+                if len(self.active) >= self.concurrency:
+                    break
+                actual_workspace = task.get('workspace') or (
+                    str(self.workspaces.root / task['id']) if task['mode'] == 'edit_worktree' else task['cwd'])
+                workspace_id = workspace_key(actual_workspace)
+                if workspace_id in quarantined:
+                    self.store.update(task['id'], workspace=actual_workspace, workspace_quarantined=True)
+                    self.store.finish(task['id'], 'interrupted', {
+                        'error_code': 'WORKSPACE_UNCERTAIN',
+                        'error': '工作区旧执行状态不确定，排队任务未启动；请人工核对后使用新工作区'})
+                    continue
+                if (used_agents[task['agent']] >= self.per_agent_concurrency.get(task['agent'], 1)
+                        or workspace_id in used_workspaces):
+                    continue
+                cancel = threading.Event()
+                worker = threading.Thread(target=self.execute, args=(task, cancel), daemon=True)
+                self.active[task['id']] = dict(agent=task['agent'], workspace=workspace_id,
+                                               cancel=cancel, thread=worker)
+                used_agents[task['agent']] += 1
+                used_workspaces.add(workspace_id)
+                try:
+                    self.store.update(task['id'], state='running')
+                    worker.start()
+                except Exception:
+                    if worker.ident is None:
+                        self.active.pop(task['id'], None)
+                        if self.store.get(task['id'])['state'] == 'running':
+                            self.store.update(task['id'], state='queued')
+                    raise
+
+    def _scheduler_delay(self):
+        with self.lock:
+            now = time.monotonic()
+            deadlines = [self.verification_retry_at, *self.review_retry_at.values(), *self.auto_rework_retry_at.values()]
+            delays = [deadline - now for deadline in deadlines if deadline > now]
+            retry_at = self.verification.next_retry_at
+            if retry_at is not None and retry_at > time.time():
+                delays.append(retry_at - time.time())
+        return min(1.0, *delays) if delays else 1.0
 
     def verify(self, task_id, rework_only=False, review_only=False):
         reworking = reviewing = False
@@ -841,7 +855,7 @@ class Service:
             try:
                 self.store.event(task_id, 'verification_error', {'reason': type(error).__name__})
             except Exception:
-                pass
+                logging.getLogger(__name__).debug('无法记录验收失败事件：%s', task_id, exc_info=True)
         finally:
             with self.lock:
                 self.verification_active.pop(task_id, None)
@@ -1074,3 +1088,5 @@ class Service:
         end = time.monotonic() + getattr(self, "verification_join_seconds", 20)
         for worker in verifiers:
             worker.join(max(0, end - time.monotonic()))
+        # Release pooled SQLite handles so the data directory can be removed (Windows).
+        self.store.close()

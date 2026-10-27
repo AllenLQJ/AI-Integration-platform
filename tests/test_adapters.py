@@ -84,7 +84,9 @@ class AdapterTests(unittest.TestCase):
             with self.subTest(changes=changes):
                 self.assertIsNone(Muse.find_reply([dict(reply, **changes)], 6186, marker))
     def test_muse_unwrap_preserves_uncertain_delivery(self):
-        from exceptiongroup import ExceptionGroup
+        import builtins
+        # Built in since 3.11; on 3.10 anyio already depends on the backport.
+        ExceptionGroup = getattr(builtins, 'ExceptionGroup', None) or __import__('exceptiongroup').ExceptionGroup
         wrapped = ExceptionGroup('outer', [ExceptionGroup('inner', [HubError('DELIVERY_UNKNOWN', 'unknown')])])
         self.assertEqual(Muse.unwrap(wrapped).code, 'DELIVERY_UNKNOWN')
 

@@ -3,6 +3,10 @@ export class APIError extends Error {
   constructor(message, status = 0) { super(message); this.name = 'APIError'; this.status = status; }
 }
 
+// Responses served from the revalidated cache (HTTP 304); callers may skip diffing them.
+const revalidated = new WeakSet();
+export const isUnchanged = value => value != null && typeof value === 'object' && revalidated.has(value);
+
 export function createAPI(fetcher = globalThis.fetch.bind(globalThis)) {
   // Memory only: never persist conversation payloads or credentials to storage.
   const responses = new Map();
@@ -28,7 +32,7 @@ export function createAPI(fetcher = globalThis.fetch.bind(globalThis)) {
           ...(cached ? {'If-None-Match': cached.etag} : {}) },
         signal: controller.signal, ...(body ? {body: JSON.stringify(body)} : {}),
       });
-      if (response.status === 304 && cached) return JSON.parse(cached.text);
+      if (response.status === 304 && cached) { const value = JSON.parse(cached.text); revalidated.add(value); return value; }
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) clear();
         throw new APIError(response.status === 401 || response.status === 403
@@ -76,9 +80,12 @@ export function createAPI(fetcher = globalThis.fetch.bind(globalThis)) {
     async agents(signal) {
       const data = await request('api/v1/agents', {signal}); return valid(data, Array.isArray(data?.items));
     },
-    async detail(id, signal) {
-      const data = await request(`api/v1/tasks/${encodeURIComponent(id)}`, {signal});
-      return valid(data, data?.task?.id === id && ['messages','relations','criteria','artifacts'].every(key=>Array.isArray(data[key])));
+    // With `after`, the response also carries the live event page (`live_events`) after that cursor.
+    async detail(id, signal, after = null) {
+      const query = after == null ? '' : `?after_seq=${after}`;
+      const data = await request(`api/v1/tasks/${encodeURIComponent(id)}${query}`, {signal});
+      return valid(data, data?.task?.id === id && ['messages','relations','criteria','artifacts'].every(key=>Array.isArray(data[key]))
+        && (after == null || (Array.isArray(data.live_events?.events) && Number.isInteger(data.live_events.next_seq))));
     },
     async events(id, after, signal) {
       const data = await request(`api/v1/tasks/${encodeURIComponent(id)}/events?after_seq=${after}`, {signal});

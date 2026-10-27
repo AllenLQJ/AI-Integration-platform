@@ -1,7 +1,10 @@
+import logging
 import subprocess
 import os
 from pathlib import Path
 from .models import HubError
+
+_log = logging.getLogger(__name__)
 
 
 def workspace_key(path):
@@ -109,7 +112,7 @@ class Workspaces:
                     if remain > 0:
                         stderr_buf.extend(block[:remain])
             except Exception:
-                pass
+                _log.debug('diff stderr 读取中断', exc_info=True)
 
         watch = threading.Thread(target=_watchdog, name='hub-diff-watchdog', daemon=True)
         stderr_thread = threading.Thread(target=_drain_stderr, name='hub-diff-stderr', daemon=True)
@@ -140,7 +143,7 @@ class Workspaces:
                         if _time.monotonic() > deadline + 2:
                             break
                 except Exception:
-                    pass
+                    _log.debug('截断后排空 diff 输出失败', exc_info=True)
                 try:
                     code = process.wait(timeout=5)
                 except Exception:
@@ -163,13 +166,13 @@ class Workspaces:
                     try:
                         stream.close()
                     except Exception:
-                        pass
+                        _log.debug('关闭 diff 输出流失败', exc_info=True)
             if process.poll() is None:
                 _kill_child()
                 try:
                     process.wait(timeout=5)
                 except Exception:
-                    pass
+                    _log.debug('等待 diff 进程退出失败', exc_info=True)
             stderr_thread.join(timeout=2)
             watch.join(timeout=1)
 

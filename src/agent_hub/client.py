@@ -64,7 +64,11 @@ class Client:
             try:
                 if self.request('/health').get('ok'): return
             except (OSError, ValueError): pass
-        raise HubError('DAEMON_UNAVAILABLE', '后台服务未启动，请检查私有目录中的 daemon.log')
+        message = '后台服务未启动，请检查私有目录中的 daemon.log'
+        try: tail = (self.root / 'daemon.log').read_bytes()[-2000:].decode('utf-8', 'replace').strip()
+        except OSError: tail = ''
+        if tail: message += '\n--- daemon.log (末尾) ---\n' + tail
+        raise HubError('DAEMON_UNAVAILABLE', message)
     def call(self, tool, arguments=None):
         self.ensure()
         # Mutating calls are never automatically retried after uncertain transport errors.

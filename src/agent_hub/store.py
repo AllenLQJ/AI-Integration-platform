@@ -2,6 +2,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -47,15 +48,75 @@ class Store:
                 'CREATE INDEX IF NOT EXISTS tasks_quarantined ON tasks(workspace_quarantined) '
                 'WHERE workspace_quarantined = 1')
 
+    def reuse_connections(self):
+        """Keep one connection per thread for this Store; close() releases them.
+
+        Opening a connection costs hundreds of microseconds, which dominates
+        small reads. Nested use within a thread still opens a separate
+        connection so each `with connection()` remains its own transaction.
+
+        The sqlite statement cache keeps a finished thread's connection alive
+        until cyclic GC. close() holds those connections and closes them
+        itself, so a data directory can be removed without waiting for GC
+        (Windows refuses to delete an open tasks.db).
+        """
+        self._local = threading.local()
+        self._pooled = []
+        self._pooled_lock = threading.Lock()
+
+    def close(self):
+        if getattr(self, '_local', None) is None and not getattr(self, '_pooled', None):
+            return
+        with self._pooled_lock:
+            pooled = list(self._pooled)
+            self._pooled.clear()
+        self._local = None
+        for db in pooled:
+            try:
+                db.close()
+            except sqlite3.Error:
+                pass
+
     @contextmanager
     def connection(self):
-        db = sqlite3.connect(self.path, timeout=30)
-        db.row_factory = sqlite3.Row
+        local = getattr(self, '_local', None)
+        cached = local is not None and not getattr(local, 'busy', False)
+        db = getattr(local, 'holder', None) if cached else None
+        if db is None:
+            # Cached connections are only used by their owning thread; close()
+            # may run elsewhere, hence check_same_thread=False.
+            db = sqlite3.connect(self.path, timeout=30, check_same_thread=not cached)
+            db.row_factory = sqlite3.Row
+            if cached:
+                local.holder = db
+                with self._pooled_lock:
+                    self._pooled.append(db)
+        if cached:
+            local.busy = True
+        broken = False
         try:
             with db:
                 yield db
+        except sqlite3.Error:
+            broken = True
+            raise
         finally:
-            db.close()
+            if not cached:
+                db.close()
+            else:
+                local.busy = False
+                if broken or db.in_transaction:
+                    # Never hand a connection with an unknown transaction state to the next caller.
+                    local.holder = None
+                    with self._pooled_lock:
+                        try:
+                            self._pooled.remove(db)
+                        except ValueError:
+                            pass
+                    try:
+                        db.close()
+                    except sqlite3.Error:
+                        pass
 
     @staticmethod
     def decode(row):
@@ -134,6 +195,18 @@ class Store:
                 rows = db.execute(
                     f'SELECT * FROM tasks WHERE state IN ({placeholders}) ORDER BY created',
                     wanted).fetchall()
+            return [self.decode(r) for r in rows]
+
+    def list_with_acceptance(self, states):
+        """Tasks in states that carry acceptance criteria, filtered in SQL instead of decoding all rows."""
+        wanted = tuple(states)
+        if not wanted:
+            return []
+        placeholders = ','.join('?' * len(wanted))
+        with self.connection() as db:
+            rows = db.execute(
+                f"SELECT * FROM tasks WHERE state IN ({placeholders}) "
+                "AND json_type(data, '$.acceptance') = 'object' ORDER BY created", wanted).fetchall()
             return [self.decode(r) for r in rows]
 
     def list_quarantined(self):

@@ -2,6 +2,7 @@ import os
 import signal
 import subprocess
 import json
+import logging
 import queue
 import threading
 import time
@@ -16,9 +17,24 @@ ENV_KEYS = {'PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'USERPROFILE',
             'NUMBER_OF_PROCESSORS', 'SYSTEMDRIVE'}
 
 
+LOCAL_NO_PROXY = ('127.0.0.1', 'localhost', '::1')
+_ps_warned = False
+
+
 def posix_processes():
     # 独立 session 的 CLI 工具不会收到根进程组的信号，按父子关系追踪。
-    output = subprocess.check_output(['ps', '-axo', 'pid=,ppid=,lstart='], text=True)
+    # ps 不可用（受限沙箱、精简容器）时返回 None：仍由进程组信号终止根进程组，
+    # 只是无法追踪脱离进程组的后代；不能因此让任务失败。
+    global _ps_warned
+    try:
+        output = subprocess.check_output(['ps', '-axo', 'pid=,ppid=,lstart='], text=True,
+                                         stderr=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.SubprocessError) as error:
+        if not _ps_warned:
+            _ps_warned = True
+            logging.getLogger(__name__).warning(
+                'ps 不可用（%s），无法追踪脱离进程组的子进程', type(error).__name__)
+        return None
     rows = {}
     for line in output.splitlines():
         fields = line.split(None, 2)
@@ -29,6 +45,8 @@ def posix_processes():
 
 def track_descendants(root_pid, tracked):
     rows = posix_processes()
+    if rows is None:
+        return
     parents = {root_pid} | {pid for pid, birth in tracked.items()
                              if pid in rows and rows[pid][1] == birth}
     for _ in range(100):
@@ -41,8 +59,17 @@ def track_descendants(root_pid, tracked):
             tracked[pid] = rows[pid][1]
 
 
-def stop_descendants(tracked):
+def stop_descendants(tracked, root_group=None):
     rows = posix_processes()
+    if rows is None:
+        # 无法确认启动时间时不按 PID 发信号，避免误杀复用了 PID 的无关进程；
+        # 根进程组仍有成员时其 ID 不会被复用，可安全回收留在组内的子进程。
+        if root_group is not None:
+            try:
+                os.killpg(root_group, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        return
     for pid, birth in tracked.items():
         # 已退出或 PID 已复用时不能终止新的无关进程。
         if pid in rows and rows[pid][1] == birth:
@@ -54,7 +81,15 @@ def stop_descendants(tracked):
 
 def environment(extra=None):
     env = {k: v for k, v in os.environ.items() if k.upper() in ENV_KEYS}
-    env.update(PYTHONIOENCODING='utf-8', PYTHONUTF8='1', NO_PROXY='127.0.0.1,localhost,::1')
+    # 合并用户已有的排除项；小写 no_proxy 在 urllib/httpx 中优先，必须一并覆盖。
+    bypass = []
+    for key in [k for k in env if k.upper() == 'NO_PROXY']:
+        bypass.extend(item.strip() for item in env.pop(key).split(','))
+    bypass = list(dict.fromkeys(item for item in (*LOCAL_NO_PROXY, *bypass) if item))
+    env.update(PYTHONIOENCODING='utf-8', PYTHONUTF8='1', NO_PROXY=','.join(bypass))
+    if os.name != 'nt':
+        # Windows 环境变量不区分大小写，重复键会互相覆盖。
+        env['no_proxy'] = env['NO_PROXY']
     env.update(extra or {})
     return env
 
@@ -231,7 +266,7 @@ def run_process(argv, cwd, env, cancel, deadline, log_dir, event, allow_hub_even
     finally:
         if os.name == 'nt': process.close_tree()
         else:
-            stop_descendants(tracked)
+            stop_descendants(tracked, process.pid)
         for reader in readers: reader.join(15)
         if os.name == 'nt': process.close()
         else:

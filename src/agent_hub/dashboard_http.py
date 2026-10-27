@@ -5,6 +5,7 @@ separate credentials and are never consulted by RPC or the legacy workbench.
 """
 import json
 import hashlib
+import logging
 import re
 import secrets
 import sqlite3
@@ -40,8 +41,10 @@ class DashboardHTTP:
         self.result_files = {}
         self.monitor = None
         self.cache_epoch = secrets.token_hex(12)
+        from .dashboard_chains import SnapshotCache
+        self.snapshots = SnapshotCache(self.data_version)
 
-    def revision(self, route, files=None):
+    def data_version(self):
         # data_version is meaningful across commits only on the SAME connection.
         # A read-only, autocommit observer notices every DB writer, including
         # verification changes that do not touch tasks.updated or append events.
@@ -49,22 +52,36 @@ class DashboardHTTP:
             if self.monitor is None:
                 self.monitor = sqlite3.connect(Path(self.service.store.path).resolve().as_uri() + '?mode=ro',
                                                uri=True, check_same_thread=False)
-            version = self.monitor.execute('PRAGMA data_version').fetchone()[0]
-            paths = tuple(self.result_files.get(route, ())) if files is None else tuple(files)
-        key = hashlib.sha256(route.encode('utf-8')).hexdigest()[:24]
+            return self.monitor.execute('PRAGMA data_version').fetchone()[0]
+
+    @staticmethod
+    def file_key(paths):
         from .store import Store
         signatures = [(path, Store.result_file_signature(path)) for path in paths]
-        file_key = hashlib.sha256(json.dumps(signatures, ensure_ascii=False).encode('utf-8')).hexdigest()[:16]
-        return f'"{self.cache_epoch}-{version}-{key}-{file_key}"'
+        return hashlib.sha256(json.dumps(signatures, ensure_ascii=False).encode('utf-8')).hexdigest()[:16]
 
-    def unchanged(self, route, etag):
-        with self.lock:
-            return self.revalidated.get(route) == etag
+    def content_etag(self, route, content):
+        # Content-addressed: writes to unrelated tasks bump data_version but leave
+        # this projection, and therefore its ETag, unchanged.
+        digest = hashlib.sha256(route.encode('utf-8') + b'\0' + content).hexdigest()[:32]
+        return f'"{self.cache_epoch}-{digest}"'
 
-    def remember(self, route, etag, files=()):
+    def fresh_etag(self, route):
+        """The remembered ETag if nothing it depends on can have changed, else None."""
+        version = self.data_version()
         with self.lock:
-            self.revalidated[route] = etag
-            self.result_files[route] = tuple(files)
+            entry = self.revalidated.get(route)
+            paths = self.result_files.get(route, ())
+        if not entry or entry[0] != version or entry[2] != self.file_key(paths):
+            return version, None
+        return version, entry[1]
+
+    def remember(self, route, version, etag, files=()):
+        files = tuple(files)
+        file_key = self.file_key(files)
+        with self.lock:
+            self.revalidated[route] = (version, etag, file_key)
+            self.result_files[route] = files
             self.revalidated.move_to_end(route)
             while len(self.revalidated) > 128:
                 removed, _ = self.revalidated.popitem(last=False)
@@ -77,6 +94,7 @@ class DashboardHTTP:
                 self.monitor = None
             self.revalidated.clear()
             self.result_files.clear()
+        self.snapshots.clear()
 
     @staticmethod
     def send(handler, status, body, content_type='application/json', cookie=None, etag=None):
@@ -242,6 +260,7 @@ class DashboardHTTP:
             status = 404 if error.code in {'NOT_FOUND', 'TASK_NOT_FOUND'} else 400
             self.error(handler, status, error.code)
         except Exception:
+            logging.getLogger(__name__).exception('看板请求内部错误')
             self.error(handler, 500, 'INTERNAL_ERROR')
         return True
 
@@ -307,14 +326,14 @@ class DashboardHTTP:
             if not self.authenticated(handler):
                 return self.error(handler, 401, 'UNAUTHORIZED')
             conditional = bool(re.fullmatch(r'/dashboard/api/v1/(?:chains|tasks)(?:/[A-Za-z0-9_-]{1,128})?', path))
-            revision = self.revision(handler.path) if conditional else None
-            if (revision and handler.headers.get('If-None-Match') == revision
-                    and self.unchanged(handler.path, revision)):
-                return self.send(handler, 304, b'', etag=revision)
+            requested = handler.headers.get('If-None-Match')
+            version, fresh = self.fresh_etag(handler.path) if conditional else (None, None)
+            if fresh and requested == fresh:
+                return self.send(handler, 304, b'', etag=fresh)
             from .dashboard import Dashboard
             from .dashboard_chains import DashboardChains
             dashboard = Dashboard(self.service)
-            chains = DashboardChains(dashboard)
+            chains = DashboardChains(dashboard, snapshots=self.snapshots)
             if path in {'/dashboard/api/v1/tasks', '/dashboard/api/v1/chains'}:
                 args = self.query(query, {'limit', 'offset', 'q', 'state', 'agent'})
                 limit = self.integer(args.get('limit', '30'), 1, 100)
@@ -345,17 +364,23 @@ class DashboardHTTP:
                         after = self.integer(args.get('after_seq', '0'), 0, 9223372036854775807)
                         result = dashboard.events(match[1], after_seq=after)
                 else:
-                    self.query(query, set())
+                    # after_seq folds the live event page into the detail poll (one request per tick).
+                    args = self.query(query, {'after_seq'})
                     result = dashboard.detail(match[1])
-            # Never associate a projection with a newer revision if a writer
-            # committed while it was being read. The next poll will rebuild it.
-            candidate = self.revision(handler.path, files=dashboard.result_files) if revision else None
-            if revision and revision == self.revision(handler.path) and dashboard.results_unchanged():
-                revision = candidate
-                self.remember(handler.path, revision, dashboard.result_files)
-            else:
-                revision = None
-            return self.send(handler, 200, result, etag=revision)
+                    if 'after_seq' in args:
+                        after = self.integer(args['after_seq'], 0, 9223372036854775807)
+                        result['live_events'] = dashboard.events(match[1], after_seq=after)
+            if not conditional:
+                return self.send(handler, 200, result)
+            content = json.dumps(result, ensure_ascii=False).encode('utf-8')
+            etag = self.content_etag(handler.path, content)
+            # Only skip future projections at this version when no writer committed
+            # while it was read; the content ETag itself is always accurate.
+            if version == self.data_version() and dashboard.results_unchanged():
+                self.remember(handler.path, version, etag, dashboard.result_files)
+            if requested == etag:
+                return self.send(handler, 304, b'', etag=etag)
+            return self.send(handler, 200, content, etag=etag)
         name = 'index.html' if path in {'/dashboard', '/dashboard/'} else path.removeprefix('/dashboard/')
         if name not in ASSETS:
             return self.error(handler, 404, 'NOT_FOUND')

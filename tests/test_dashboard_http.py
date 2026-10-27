@@ -7,6 +7,7 @@ import re
 import socket
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -157,6 +158,87 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertNotEqual(headers['ETag'], etag)
         self.assertIn('new public message', body.decode())
 
+    def test_unrelated_writes_keep_chain_and_task_etags_valid(self):
+        cookie = self.session()
+        watched = self.service.submit('etag-watched', 'fake', 'watched', str(self.root), 'read_only')
+        busy = self.service.submit('etag-busy', 'fake', 'busy', str(self.root), 'read_only')
+        for route in ('chains', 'tasks'):
+            with self.subTest(route=route):
+                path = f'/dashboard/api/v1/{route}/' + watched['id']
+                status, headers, body = self.request(path, headers={'Cookie': cookie})
+                self.assertEqual(status, 200, body)
+                conditional = {'Cookie': cookie, 'If-None-Match': headers['ETag']}
+                # Another chain's progress bumps data_version but not this projection.
+                self.service.store.event(busy['id'], 'progress', {'message': 'elsewhere'})
+                status, again, body = self.request(path, headers=conditional)
+                self.assertEqual((status, body), (304, b''))
+                self.assertEqual(again['ETag'], headers['ETag'])
+                # After revalidating at the new version the projection is skipped again.
+                with patch('agent_hub.dashboard.Dashboard.detail', side_effect=AssertionError('rebuilt')), \
+                        patch('agent_hub.dashboard_chains.DashboardChains.detail', side_effect=AssertionError('rebuilt')):
+                    self.assertEqual(self.request(path, headers=conditional)[0], 304)
+                self.service.store.event(watched['id'], 'message', {'text': route + ' update', 'role': 'assistant'})
+                status, changed, body = self.request(path, headers=conditional)
+                self.assertEqual(status, 200, body)
+                self.assertNotEqual(changed['ETag'], headers['ETag'])
+
+    def test_task_detail_folds_live_events_into_one_conditional_read(self):
+        cookie = self.session()
+        task = self.service.submit('live-detail', 'fake', 'live', str(self.root), 'read_only')
+        self.service.store.event(task['id'], 'progress', {'message': 'one'})
+        cursor = self.service.store.events(task['id'], 0, 200)['next_seq']
+        path = '/dashboard/api/v1/tasks/' + task['id']
+        status, headers, body = self.request(path + '?after_seq=' + str(cursor), headers={'Cookie': cookie})
+        self.assertEqual(status, 200, body)
+        live = json.loads(body)
+        self.assertEqual(live['task']['id'], task['id'])
+        self.assertEqual(live['live_events'], {'events': [], 'next_seq': cursor})
+        conditional = {'Cookie': cookie, 'If-None-Match': headers['ETag']}
+        self.assertEqual(self.request(path + '?after_seq=' + str(cursor), headers=conditional)[0], 304)
+        self.service.store.event(task['id'], 'progress', {'message': 'two'})
+        status, _, body = self.request(path + '?after_seq=' + str(cursor), headers=conditional)
+        self.assertEqual(status, 200, body)
+        self.assertEqual([e['data']['message'] for e in json.loads(body)['live_events']['events']], ['two'])
+        # Without the cursor the detail keeps its previous shape.
+        self.assertNotIn('live_events', json.loads(self.request(path, headers={'Cookie': cookie})[2]))
+        for query in ('after_seq=-1', 'after_seq=x', 'after_seq=1&after_seq=2', 'before_seq=1'):
+            self.assertEqual(self.request(path + '?' + query, headers={'Cookie': cookie})[0], 400, query)
+
+    def test_workbench_renders_latest_page_and_pages_older_events(self):
+        from hub_fixtures import with_work_item
+        task = self.service.call('submit_task', with_work_item(self.service, dict(request_id='work-paging', agent='fake',
+            prompt='paging', cwd=str(self.root), mode='read_only')))
+        for index in range(250):
+            self.service.store.event(task['id'], 'message', {'message': f'line {index}\nnext', 'role': 'assistant'})
+        bearer = {'Authorization': 'Bearer native-test-secret'}
+        status, headers, body = self.request('/work/' + task['id'], headers=bearer)
+        self.assertEqual(status, 200, body)
+        self.assertIn('width=device-width', headers.get('Content-Type', '') + body.decode())
+        html = body.decode('utf-8')
+        seqs = [int(value) for value in re.findall(r'<pre tabindex="0" data-seq="(\d+)"', html)]
+        everything = self.service.store.events(task['id'], 0, 200)['events'] + self.service.store.events(task['id'], 200, 200)['events']
+        newest = [event['seq'] for event in everything][-200:]
+        self.assertEqual(seqs, newest)
+        self.assertIn('data-more="true"', html)
+        self.assertRegex(html, r'<button type="button" class="older">加载更早事件</button></p>')
+        # The summary is an attribute; the element text stays the event's exact JSON.
+        self.assertIn('data-summary="#' + str(newest[-1]) + ' 消息：line 249 next"', html)
+        events = '/work/' + task['id'] + '/events'
+        status, _, body = self.request(events + '?before_seq=' + str(newest[0]), headers=bearer)
+        self.assertEqual(status, 200, body)
+        older = json.loads(body)
+        self.assertEqual([e['seq'] for e in older['events']], [e['seq'] for e in everything if e['seq'] < newest[0]][-200:])
+        self.assertFalse(older['has_more'])
+        for query in ('before_seq=0', 'before_seq=x', 'before_seq=5&after_seq=0'):
+            self.assertEqual(self.request(events + '?' + query, headers=bearer)[0], 400, query)
+        self.assertEqual(self.request(events + '?before_seq=5')[0], 401)
+        # A short attempt hides the button.
+        short = self.service.call('submit_task', with_work_item(self.service, dict(request_id='work-short', agent='fake',
+            prompt='short', cwd=str(self.root), mode='read_only'), 'short'))
+        html = self.request('/work/' + short['id'], headers=bearer)[2].decode('utf-8')
+        self.assertIn('data-more="false"', html)
+        self.assertIn('class="older" hidden', html)
+
     def test_every_local_module_import_is_served(self):
         from agent_hub.dashboard_http import STATIC_ROOT
         for source in STATIC_ROOT.glob('*.mjs'):
@@ -290,6 +372,71 @@ class DashboardHTTPTests(unittest.TestCase):
         for body, extra in [(b'not-json', {'Content-Type': 'application/json'}), (b'{}', {'Content-Type': 'text/plain'}),
                             (b'[]', {'Content-Type': 'application/json'}), (b'x' * 4097, {'Content-Type': 'application/json'})]:
             self.assertEqual(self.request('/dashboard/session', 'POST', body, {'Origin': self.origin, **extra})[0], 400)
+
+    def test_chain_snapshot_is_shared_per_data_version_and_rebuilt_after_writes(self):
+        from agent_hub.dashboard_chains import DashboardChains
+        cookie = self.session()
+        headers = {'Cookie': cookie, 'Origin': self.origin}
+        first = self.service.submit('snapshot-one', 'fake', 'first chain', str(self.root), 'read_only')
+        scan = DashboardChains._scan
+        with patch.object(DashboardChains, '_scan', autospec=True, side_effect=scan) as spy:
+            # List, detail and a repeated unconditional read share one scan.
+            for path in ['/dashboard/api/v1/chains', '/dashboard/api/v1/chains/' + first['id'],
+                         '/dashboard/api/v1/chains']:
+                self.assertEqual(self.request(path, headers=headers)[0], 200, path)
+            self.assertEqual(spy.call_count, 1)
+            # Different filters are separate cache entries.
+            self.assertEqual(self.request('/dashboard/api/v1/chains?q=first', headers=headers)[0], 200)
+            self.assertEqual(spy.call_count, 2)
+            # Any committed write invalidates the shared snapshot.
+            second = self.service.submit('snapshot-two', 'fake', 'second chain', str(self.root), 'read_only')
+            status, _, body = self.request('/dashboard/api/v1/chains', headers=headers)
+            self.assertEqual(status, 200, body)
+            self.assertEqual(spy.call_count, 3)
+            self.assertEqual({item['id'] for item in json.loads(body)['items']}, {first['id'], second['id']})
+            self.service.store.event(first['id'], 'progress', {'message': 'tick'})
+            self.assertEqual(self.request('/dashboard/api/v1/chains/' + first['id'], headers=headers)[0], 200)
+            self.assertEqual(spy.call_count, 4)
+        # Older versions are dropped instead of accumulating.
+        self.assertTrue(all(key[0] == max(k[0] for k in self.server.dashboard.snapshots.entries)
+                            for key in self.server.dashboard.snapshots.entries))
+
+    def work_session(self, task_id):
+        status, headers, body = self.request('/work/' + task_id + '/session', 'POST', None,
+                                             {'Authorization': 'Bearer native-test-secret'})
+        self.assertEqual(status, 204, body)
+        return headers['Set-Cookie']
+
+    def test_workbench_sessions_are_task_bound_expire_and_are_bounded(self):
+        from agent_hub.dashboard_http import SESSION_TTL
+        from hub_fixtures import with_work_item
+        task = self.service.call('submit_task', with_work_item(self.service, dict(request_id='work-session', agent='fake',
+            prompt='workbench session', cwd=str(self.root), mode='read_only')))
+        other = self.service.call('submit_task', with_work_item(self.service, dict(request_id='work-session-other',
+            agent='fake', prompt='other', cwd=str(self.root), mode='read_only'), 'other'))
+        header = self.work_session(task['id'])
+        for flag in ['HttpOnly', 'Path=/work', 'SameSite=Strict', 'Max-Age=' + str(SESSION_TTL)]:
+            self.assertIn(flag, header)
+        name, value = header.split(';')[0].split('=', 1)
+        # Port-scoped so two local Hubs on 127.0.0.1 never overwrite each other's session.
+        self.assertEqual(name, 'hub_work_' + str(self.server.server_port))
+        cookie = {'Cookie': name + '=' + value}
+        snapshot = '/work/' + task['id'] + '/snapshot'
+        self.assertEqual(self.request(snapshot, headers=cookie)[0], 200)
+        self.assertEqual(self.request(snapshot, headers={'Cookie': 'hub_work=' + value})[0], 200, 'legacy name')
+        self.assertEqual(self.request(snapshot, headers={'Cookie': 'hub_work_1=' + value})[0], 401, 'other port')
+        self.assertEqual(self.request('/work/' + other['id'] + '/snapshot', headers=cookie)[0], 401)
+        # Expired sessions are rejected and pruned instead of accumulating.
+        with patch('agent_hub.daemon.time') as clock:
+            clock.monotonic.return_value = time.monotonic() + SESSION_TTL + 1
+            self.assertEqual(self.request(snapshot, headers=cookie)[0], 401)
+        self.assertEqual(self.request(snapshot, headers=cookie)[0], 401)
+        with patch('agent_hub.daemon.WORK_SESSION_LIMIT', 2):
+            self.work_session(task['id'])
+            self.work_session(task['id'])
+            status, _, body = self.request('/work/' + task['id'] + '/session', 'POST', None,
+                                           {'Authorization': 'Bearer native-test-secret'})
+            self.assertEqual(status, 429, body)
 
     def test_data_routes_read_current_service_without_controller_mutation(self):
         from hub_fixtures import with_work_item

@@ -37,8 +37,6 @@
 ```zsh
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -e .
-# 当前测试显式导入 exceptiongroup，运行回归前安装
-uv pip install --python .venv/bin/python exceptiongroup
 .venv/bin/python -m agent_hub status
 .venv/bin/python -m agent_hub mcp
 ```
@@ -283,7 +281,7 @@ MediaFlow 以 context + acceptance 提交，通过 get_work_item / get_result.ve
 
 三个 CLI（Codex、Claude、Cursor CLI）使用结构化输出映射实际过程事件；缺失工具/审批信息明确标示，进度自述不算验收证据。第二阶段当时只核实了 CLI help；之后 Cursor CLI 与 Claude CLI 的结构化输出已在自动审核阶段的真实闭环中使用并验收，但这不等于各类工具/审批事件语义都已实测。
 
-本机工作台地址为当前独立后台的 `http://127.0.0.1:PORT/work/TASK_ID`。先由受信本机客户端向 `POST /work/TASK_ID/session` 发送 `Authorization: Bearer TOKEN`，接收绑定 TASK_ID 的 cookie 并交给同一浏览器会话；随后 GET 页面及 `/events?after_seq=N` 使用 HttpOnly cookie，访问其他任务路径返回 401。页面通过该任务的 events 接口及受归属校验的 attempt_id 参数读取同一尝试链，不扩大 cookie 的任务路径权限。也可直接用 Bearer 获取页面。不要把令牌加进 URL、HTML 或命令行参数。`show TASK_ID --data-dir DATA_DIR` 保留文本查看方式。
+本机工作台地址为当前独立后台的 `http://127.0.0.1:PORT/work/TASK_ID`。先由受信本机客户端向 `POST /work/TASK_ID/session` 发送 `Authorization: Bearer TOKEN`，接收绑定 TASK_ID 的 cookie（名称为 `hub_work_PORT`，按端口区分，8 小时有效；仍接受旧名称 `hub_work`）并交给同一浏览器会话；随后 GET 页面及 `/events?after_seq=N` 使用 HttpOnly cookie（页面每次尝试先渲染最近 200 条事件并显示一行摘要，点击事件展开原始 JSON，更早的事件通过 `/events?before_seq=N` 按页加载；标签页隐藏时暂停轮询，每次尝试最多保留 1000 条实时事件节点），访问其他任务路径返回 401。页面通过该任务的 events 接口及受归属校验的 attempt_id 参数读取同一尝试链，不扩大 cookie 的任务路径权限。也可直接用 Bearer 获取页面。不要把令牌加进 URL、HTML 或命令行参数。`show TASK_ID --data-dir DATA_DIR` 保留文本查看方式。
 
 页面顶部分别显示工作状态（当前尝试的综合 `work_status`）、当前尝试、当前尝试执行状态与当前尝试验收状态；执行 `succeeded` 只表示执行结束，不等于验收通过。每次尝试单独显示执行状态、执行时间线、验收条件、当前结论与原因，以及按 `artifact_id` 去重的产物列表；新结论整体替换旧结论。
 

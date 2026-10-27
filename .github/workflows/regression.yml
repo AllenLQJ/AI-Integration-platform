@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
@@ -38,7 +38,7 @@ jobs:
           "TEMP=$hubTestTemp" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "TMP=$hubTestTemp" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Install Hub and test/build requirements
-        run: python -m pip install . setuptools wheel exceptiongroup
+        run: python -m pip install . setuptools wheel
       - name: Full Python regression
         run: python -m unittest discover -s tests -v
       - name: Dashboard frontend regression

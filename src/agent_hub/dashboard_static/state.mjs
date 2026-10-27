@@ -10,15 +10,34 @@ export class RequestGate {
   current(token) { return Boolean(token && this.token === token && !token.signal.aborted); }
 }
 
+export const POLL_ACTIVE = 2500, POLL_IDLE = 15000;
+const TERMINAL = new Set(['succeeded','failed','timed_out','cancelled','interrupted','delivery_unknown']);
+const VERIFYING = new Set(['pending','awaiting_verification','verifying']);
+const settled = task => !VERIFYING.has(task?.verification_state);
+/** A chain is idle once no member runs and neither the chain nor the inspected execution awaits verification. */
+export function chainIdle(chain, detail) {
+  const summary = chain?.chain;
+  if (!summary || summary.active_count || !settled(summary)) return false;
+  const task = detail?.task;
+  return !task || (TERMINAL.has(task.state) && settled(task));
+}
+
 const MAX_EVENTS = 1000, MAX_EVENT_BYTES = 2 * 1024 * 1024;
 const eventEncoder = new TextEncoder();
+// Retained events keep their identity across polls, so each is measured once.
+const eventSizes = new WeakMap();
+function eventSize(event) {
+  let size = eventSizes.get(event);
+  if (size === undefined) { size = eventEncoder.encode(JSON.stringify(event)).length + 1; eventSizes.set(event, size); }
+  return size;
+}
 function eventWindow(previous, incoming) {
   const events = new Map(previous.map(event=>[event.seq,event]));
   for (const event of incoming) if (Number.isInteger(event.seq)) events.set(event.seq,event);
   const ordered = [...events.values()].sort((a,b)=>b.seq-a.seq), retained = [];
   let bytes = 2, trimmed = false;
   for (let event of ordered) {
-    let size = eventEncoder.encode(JSON.stringify(event)).length + 1;
+    let size = eventSize(event);
     if (size > MAX_EVENT_BYTES - 2) {
       event = {seq:event.seq,kind:event.kind,timestamp:event.timestamp,
         data:{truncated:true,message:'此事件过大，仅显示摘要；完整记录可通过 Hub get_events 读取。'}};

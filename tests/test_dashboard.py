@@ -12,6 +12,21 @@ from agent_hub.verification import Verification
 
 
 class DashboardTests(unittest.TestCase):
+    def test_local_file_uris_are_redacted_from_dashboard_messages(self):
+        for uri in ('file:///Users/private-person/private-folder/report.txt',
+                    'FILE:///C:/Users/private-person/report.txt',
+                    'file://private-host/private-share/report.txt',
+                    'file:///Users/private%20person/private%20folder/report.txt'):
+            with self.subTest(uri=uri):
+                task = self.create('Read ' + uri)
+                self.store.finish(task['id'], 'succeeded', {'answer': 'Saved to ' + uri})
+                detail = json.dumps(self.dashboard.detail(task['id']))
+                self.assertNotIn(uri, detail)
+                self.assertNotIn('private-person', detail)
+                self.assertNotIn('private-host', detail)
+                self.assertNotIn('private%20person', detail)
+                self.assertIn('[PATH]', detail)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = Store(Path(self.tmp.name) / 'tasks.db')
