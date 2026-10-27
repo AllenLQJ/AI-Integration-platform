@@ -43,10 +43,22 @@ class InstanceLock:
         self.file.close()
 
 
+WORK_SESSION_LIMIT = 1024
+
+
 def make_server(service, token):
-    from .dashboard_http import DashboardHTTP
+    from .dashboard_http import DashboardHTTP, SESSION_TTL
     dashboard = DashboardHTTP(service)
+    # cookie -> (task_id, monotonic expiry); bounded like dashboard sessions.
     sessions = {}
+    sessions_lock = threading.Lock()
+
+    def prune_sessions():
+        now = time.monotonic()
+        for value, (_, expiry) in list(sessions.items()):
+            if expiry <= now:
+                del sessions[value]
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args): pass
         def respond(self, status, body, no_store=False):
@@ -68,9 +80,14 @@ def make_server(service, token):
             try:
                 cookies = SimpleCookie(self.headers.get('Cookie', ''))
                 cookie = cookies.get('hub_work')
-                return bool(cookie and sessions.get(cookie.value) == task_id)
             except Exception:
                 return False
+            if not cookie:
+                return False
+            with sessions_lock:
+                prune_sessions()
+                entry = sessions.get(cookie.value)
+            return bool(entry and entry[0] == task_id)
         def do_GET(self):
             if dashboard.handle(self, 'GET'):
                 return
@@ -139,9 +156,14 @@ def make_server(service, token):
                 except HubError as error:
                     return self.respond(404, {'error': error.payload()})
                 cookie = secrets.token_urlsafe(32)
-                sessions[cookie] = parts[1]
+                with sessions_lock:
+                    prune_sessions()
+                    if len(sessions) >= WORK_SESSION_LIMIT:
+                        return self.respond(429, {'error': 'TOO_MANY_SESSIONS'})
+                    sessions[cookie] = (parts[1], time.monotonic() + SESSION_TTL)
                 self.send_response(204)
-                self.send_header('Set-Cookie', 'hub_work=' + cookie + '; HttpOnly; Path=/work; SameSite=Strict')
+                self.send_header('Set-Cookie', 'hub_work=' + cookie + '; HttpOnly; Path=/work; SameSite=Strict; Max-Age='
+                                 + str(SESSION_TTL))
                 self.send_header('Cache-Control', 'no-store')
                 self.send_header('Content-Length', '0')
                 self.end_headers()

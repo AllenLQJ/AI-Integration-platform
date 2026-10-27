@@ -7,6 +7,7 @@ import re
 import socket
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -290,6 +291,38 @@ class DashboardHTTPTests(unittest.TestCase):
         for body, extra in [(b'not-json', {'Content-Type': 'application/json'}), (b'{}', {'Content-Type': 'text/plain'}),
                             (b'[]', {'Content-Type': 'application/json'}), (b'x' * 4097, {'Content-Type': 'application/json'})]:
             self.assertEqual(self.request('/dashboard/session', 'POST', body, {'Origin': self.origin, **extra})[0], 400)
+
+    def work_session(self, task_id):
+        status, headers, body = self.request('/work/' + task_id + '/session', 'POST', None,
+                                             {'Authorization': 'Bearer native-test-secret'})
+        self.assertEqual(status, 204, body)
+        return headers['Set-Cookie']
+
+    def test_workbench_sessions_are_task_bound_expire_and_are_bounded(self):
+        from agent_hub.dashboard_http import SESSION_TTL
+        from hub_fixtures import with_work_item
+        task = self.service.call('submit_task', with_work_item(self.service, dict(request_id='work-session', agent='fake',
+            prompt='workbench session', cwd=str(self.root), mode='read_only')))
+        other = self.service.call('submit_task', with_work_item(self.service, dict(request_id='work-session-other',
+            agent='fake', prompt='other', cwd=str(self.root), mode='read_only'), 'other'))
+        header = self.work_session(task['id'])
+        for flag in ['HttpOnly', 'Path=/work', 'SameSite=Strict', 'Max-Age=' + str(SESSION_TTL)]:
+            self.assertIn(flag, header)
+        cookie = {'Cookie': header.split(';')[0]}
+        snapshot = '/work/' + task['id'] + '/snapshot'
+        self.assertEqual(self.request(snapshot, headers=cookie)[0], 200)
+        self.assertEqual(self.request('/work/' + other['id'] + '/snapshot', headers=cookie)[0], 401)
+        # Expired sessions are rejected and pruned instead of accumulating.
+        with patch('agent_hub.daemon.time') as clock:
+            clock.monotonic.return_value = time.monotonic() + SESSION_TTL + 1
+            self.assertEqual(self.request(snapshot, headers=cookie)[0], 401)
+        self.assertEqual(self.request(snapshot, headers=cookie)[0], 401)
+        with patch('agent_hub.daemon.WORK_SESSION_LIMIT', 2):
+            self.work_session(task['id'])
+            self.work_session(task['id'])
+            status, _, body = self.request('/work/' + task['id'] + '/session', 'POST', None,
+                                           {'Authorization': 'Bearer native-test-secret'})
+            self.assertEqual(status, 429, body)
 
     def test_data_routes_read_current_service_without_controller_mutation(self):
         from hub_fixtures import with_work_item
