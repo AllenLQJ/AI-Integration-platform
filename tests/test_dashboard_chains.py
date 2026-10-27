@@ -46,10 +46,16 @@ class DashboardChainsTests(unittest.TestCase):
                 self.store.finish(child['id'], 'succeeded' if index % 3 else 'timed_out', {})
             self.dates(child, 200 + index)
             previous = child
+        # Linked at the end of the chain (so graph traversal reaches it last) but created second:
+        # the strip follows creation time, not traversal or insertion order.
+        late = self.create(parent_id=previous['id'])
+        self.store.finish(late['id'], 'cancelled', {})
+        self.dates(late, 150)
         summary = self.chains.chains()['items'][0]
-        self.assertEqual(summary['task_count'], MEMBER_STATES + 3)
+        self.assertEqual(summary['task_count'], MEMBER_STATES + 4)
         self.assertEqual(len(summary['member_states']), MEMBER_STATES)
-        self.assertEqual(summary['member_states_omitted'], 3)
+        self.assertEqual(summary['member_states_omitted'], 4)
+        self.assertNotIn('cancelled', summary['member_states'])
         # The newest executions are kept and stay in creation order; the last two are still queued.
         self.assertEqual(summary['member_states'][-2:], ['queued', 'queued'])
         self.assertEqual(summary['member_states'][0], 'succeeded')
