@@ -94,14 +94,11 @@ def main():
             raise SystemExit(1) from None
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command == 'daemon':
-        from .client import detach_spawned_daemon
-        detach_spawned_daemon()
         root = data_dir()
         from .config import private_dir
         private_dir(root)
         log = (root / 'daemon.log').open('a', encoding='utf-8', buffering=1)
         sys.stdout = sys.stderr = log
-        import faulthandler; faulthandler.dump_traceback_later(8, file=log)  # TEMP-DEBUG
         from .daemon import run
         run(root)
     elif args.command == 'mcp':

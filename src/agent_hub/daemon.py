@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import secrets
+import socketserver
 import threading
 import time
 from http.cookies import SimpleCookie
@@ -18,6 +19,13 @@ class HubHTTPServer(ThreadingHTTPServer):
     def __init__(self, address, handler, dashboard):
         self.dashboard = dashboard
         super().__init__(address, handler)
+
+    def server_bind(self):
+        # HTTPServer.server_bind resolves the host's FQDN with a reverse DNS lookup,
+        # which can block for a long time on macOS hosts without working DNS. The
+        # daemon only listens on loopback and never uses server_name.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = 'localhost', self.server_address[1]
 
     def server_close(self):
         try:

@@ -2,6 +2,7 @@ import json
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -11,6 +12,18 @@ from test_service import Fake
 
 
 class DaemonTests(unittest.TestCase):
+    def test_binding_does_not_resolve_the_host_name(self):
+        # A reverse DNS lookup during bind hung the daemon on macOS CI runners.
+        with tempfile.TemporaryDirectory() as td:
+            service = Service(td, {'fake': Fake()})
+            with patch('socket.getfqdn', side_effect=AssertionError('reverse DNS lookup')):
+                server = make_server(service, 'private-test-value')
+            try:
+                self.assertGreater(server.server_port, 0)
+            finally:
+                server.server_close()
+                service.close()
+
     def test_authenticated_short_rpc_and_shutdown(self):
         with tempfile.TemporaryDirectory() as td:
             service = Service(td, {'fake': Fake()})
