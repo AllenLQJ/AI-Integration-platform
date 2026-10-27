@@ -1,4 +1,4 @@
-import {createAPI, consumeTicket} from './api.mjs';
+import {createAPI, consumeTicket, isUnchanged} from './api.mjs';
 import {DashboardState, chainIdle, POLL_ACTIVE, POLL_IDLE} from './state.mjs';
 import {createGraph} from './graph.mjs';
 import {
@@ -44,6 +44,8 @@ let view = 'messages', pageHistory = [], timer, chainTimer, listTimer, searchTim
 let contentKey = '', contentContext = '', renderedEvents = new Map(), listKey = '';
 let renderedMessages = new Map();
 let historyLoading = false;
+// True while the execution poll waits on the idle cadence and can be pulled forward.
+let detailIdleWait = false;
 // Hidden tabs schedule nothing; each skipped loop resumes once the tab is visible.
 // Resumed loops re-check their request gate, so stale selections stay inert.
 const hidden = () => document.visibilityState === 'hidden';
@@ -303,6 +305,7 @@ function renderDetail() {
 }
 async function poll(token, id) {
   if (stopped || !state.detailGate.current(token)) return;
+  detailIdleWait = false;
   let delay = POLL_ACTIVE;
   try {
     const initial = !state.historyMode && state.cursor === 0;
@@ -313,7 +316,8 @@ async function poll(token, id) {
     const detail = await api.detail(id,token.signal);
     if (!state.detailGate.current(token)) return;
     const detailKey = value => value && [value.task,value.relations,value.criteria,value.artifacts,value.verification_checks,value.acceptance_policy];
-    const changed = JSON.stringify(detailKey(state.detail)) !== JSON.stringify(detailKey(detail));
+    // A revalidated (304) response repeats the last body for this execution.
+    const changed = !state.detail || (!isUnchanged(detail) && JSON.stringify(detailKey(state.detail)) !== JSON.stringify(detailKey(detail)));
     state.detail = detail;
     if (data && !(initial ? state.replaceEvents(token,data,false) : state.commitEvents(token,data))) return;
     if (changed) renderDetail();
@@ -326,7 +330,7 @@ async function poll(token, id) {
     if (!state.detailGate.current(token)) return;
     failure(error); $('detail-error').textContent = `${error.message} 将自动重试，也可点击刷新。`; $('detail-error').hidden = false; delay = 5000;
   } finally {
-    if (!stopped && state.detailGate.current(token)) timer = later('detail',()=>poll(token,id),delay);
+    if (!stopped && state.detailGate.current(token)) { detailIdleWait = delay === POLL_IDLE; timer = later('detail',()=>poll(token,id),delay); }
     if (state.detailGate.current(token)) $('content').setAttribute('aria-busy','false');
   }
 }
@@ -368,6 +372,12 @@ async function pollChain(token,id,desiredNode=null) {
     }
     $('connection').textContent='已连接';
     if(chainIdle(state.chain,state.detail))delay=POLL_IDLE;
+    else if(detailIdleWait&&state.selected&&state.detailGate.token){
+      // New work arrived while the execution poll slept on the idle cadence.
+      clearTimeout(timer);detailIdleWait=false;
+      const detailToken=state.detailGate.token,selected=state.selected;
+      timer=later('detail',()=>poll(detailToken,selected),0);
+    }
   } catch(error) {
     if(!state.chainGate.current(token))return;
     failure(error);$('chain-error').textContent=`${error.message} 将自动重试，也可点击刷新。`;$('chain-error').hidden=false;delay=5000;

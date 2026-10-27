@@ -3,6 +3,10 @@ export class APIError extends Error {
   constructor(message, status = 0) { super(message); this.name = 'APIError'; this.status = status; }
 }
 
+// Responses served from the revalidated cache (HTTP 304); callers may skip diffing them.
+const revalidated = new WeakSet();
+export const isUnchanged = value => value != null && typeof value === 'object' && revalidated.has(value);
+
 export function createAPI(fetcher = globalThis.fetch.bind(globalThis)) {
   // Memory only: never persist conversation payloads or credentials to storage.
   const responses = new Map();
@@ -28,7 +32,7 @@ export function createAPI(fetcher = globalThis.fetch.bind(globalThis)) {
           ...(cached ? {'If-None-Match': cached.etag} : {}) },
         signal: controller.signal, ...(body ? {body: JSON.stringify(body)} : {}),
       });
-      if (response.status === 304 && cached) return JSON.parse(cached.text);
+      if (response.status === 304 && cached) { const value = JSON.parse(cached.text); revalidated.add(value); return value; }
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) clear();
         throw new APIError(response.status === 401 || response.status === 403

@@ -158,6 +158,30 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertNotEqual(headers['ETag'], etag)
         self.assertIn('new public message', body.decode())
 
+    def test_unrelated_writes_keep_chain_and_task_etags_valid(self):
+        cookie = self.session()
+        watched = self.service.submit('etag-watched', 'fake', 'watched', str(self.root), 'read_only')
+        busy = self.service.submit('etag-busy', 'fake', 'busy', str(self.root), 'read_only')
+        for route in ('chains', 'tasks'):
+            with self.subTest(route=route):
+                path = f'/dashboard/api/v1/{route}/' + watched['id']
+                status, headers, body = self.request(path, headers={'Cookie': cookie})
+                self.assertEqual(status, 200, body)
+                conditional = {'Cookie': cookie, 'If-None-Match': headers['ETag']}
+                # Another chain's progress bumps data_version but not this projection.
+                self.service.store.event(busy['id'], 'progress', {'message': 'elsewhere'})
+                status, again, body = self.request(path, headers=conditional)
+                self.assertEqual((status, body), (304, b''))
+                self.assertEqual(again['ETag'], headers['ETag'])
+                # After revalidating at the new version the projection is skipped again.
+                with patch('agent_hub.dashboard.Dashboard.detail', side_effect=AssertionError('rebuilt')), \
+                        patch('agent_hub.dashboard_chains.DashboardChains.detail', side_effect=AssertionError('rebuilt')):
+                    self.assertEqual(self.request(path, headers=conditional)[0], 304)
+                self.service.store.event(watched['id'], 'message', {'text': route + ' update', 'role': 'assistant'})
+                status, changed, body = self.request(path, headers=conditional)
+                self.assertEqual(status, 200, body)
+                self.assertNotEqual(changed['ETag'], headers['ETag'])
+
     def test_every_local_module_import_is_served(self):
         from agent_hub.dashboard_http import STATIC_ROOT
         for source in STATIC_ROOT.glob('*.mjs'):

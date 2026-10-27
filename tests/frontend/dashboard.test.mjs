@@ -3,6 +3,21 @@ import assert from 'node:assert/strict';
 import { createAPI, consumeTicket, APIError } from '../../src/agent_hub/dashboard_static/api.mjs';
 import { RequestGate, mergeEvents, DashboardState, chainIdle } from '../../src/agent_hub/dashboard_static/state.mjs';
 
+test('revalidated responses are flagged so callers can skip diffing them', async () => {
+  const { isUnchanged } = await import('../../src/agent_hub/dashboard_static/api.mjs');
+  let status = 200;
+  const api = createAPI(async () => status === 304
+    ? new Response(null, {status: 304})
+    : new Response(JSON.stringify({task:{id:'t'},messages:[],relations:[],criteria:[],artifacts:[]}), {headers:{ETag:'"v1"'}}));
+  const first = await api.detail('t');
+  assert.equal(isUnchanged(first), false);
+  status = 304;
+  const again = await api.detail('t');
+  assert.equal(isUnchanged(again), true);
+  assert.deepEqual(again, first);
+  assert.equal(isUnchanged(null), false);
+});
+
 test('chains are idle only when nothing runs or awaits verification', () => {
   const chain = (summary) => ({chain:{active_count:0,verification_state:'passed',...summary}});
   const detail = (task) => ({task:{state:'succeeded',verification_state:'passed',...task}});

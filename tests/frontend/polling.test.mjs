@@ -60,10 +60,17 @@ test('settled chains back off, hidden tabs stop polling and visible tabs resume 
     assert.equal(pending(15000).length, 2);
     assert.equal(pending(5000).length, 1, 'list keeps its cadence so new chains appear');
 
-    // New work in the chain restores the fast cadence.
+    // New work seen by the chain poll restores the fast cadence and pulls the
+    // sleeping execution poll forward instead of leaving it on the 15s timer.
     activeCount = 1; taskState = 'running';
-    await run(15000);
-    assert.ok(pending(2500).length >= 1);
+    const chainTimer = pending(15000).find(item=>String(item.fn).includes('pollChain'));
+    const detailTimer = pending(15000).find(item=>item !== chainTimer);
+    chainTimer.used = true; await chainTimer.fn(); await settle();
+    assert.ok(detailTimer.cancelled, 'idle execution poll is pulled forward');
+    assert.equal(pending(0).length, 1);
+    await run(0);
+    assert.equal(pending(2500).length, 2);
+    assert.equal(pending(15000).length, 0);
 
     // Verification that is still pending also keeps the fast cadence.
     activeCount = 0; taskState = 'succeeded'; verification = 'verifying';
