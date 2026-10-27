@@ -429,10 +429,31 @@ async function load(url){
   if(!response.ok)return {error:response.status,reason:"HTTP "+response.status};
   try{return {data:await response.json()}}catch(error){return {error:0,reason:"响应不完整"}}
 }
+// Hidden tabs schedule nothing; each skipped poll runs as soon as the tab is visible again.
+const deferred=new Map();
+function later(key,fn,delay){
+  if(document.visibilityState==="hidden"){deferred.set(key,fn);return -1}
+  return setTimeout(fn,delay);
+}
+document.addEventListener("visibilitychange",function(){
+  if(document.visibilityState==="hidden"||reloading)return;
+  const run=Array.from(deferred.values());deferred.clear();
+  for(const fn of run)fn();
+});
 function schedule(a,delay){
   if(reloading||a.timer||a.busy)return;
   if(delay===undefined)delay=a.id===current||!settled(a)?0:30000;
-  a.timer=setTimeout(function(){a.timer=null;poll(a)},delay);
+  a.timer=later(a,function(){a.timer=null;poll(a)},delay);
+}
+// Live events append without bound on long sessions; keep the newest and let "older" reload the rest.
+const MAX_EVENT_NODES=1000;
+function trim(a){
+  const box=one(".events",a.section);
+  if(box.children.length<=MAX_EVENT_NODES)return;
+  while(box.children.length>MAX_EVENT_NODES)box.firstElementChild.remove();
+  box.dataset.more="true";
+  const button=one(".older",a.section);
+  if(button)button.hidden=false;
 }
 function setState(a,state){
   a.state=state;put(".exec-state",state,a.section);
@@ -456,6 +477,7 @@ async function poll(a){
       if(e.seq<=a.after)continue;
       a.after=e.seq;
       one(".events",a.section).append(eventNode(e));
+      trim(a);
       if(e.kind==="state"&&e.data&&typeof e.data.state==="string")setState(a,e.data.state);
       if(e.kind==="artifact"&&e.data){a.artifacts.set(key(e.data),e.data);renderArtifacts(a)}
       if(REFRESH.has(e.kind))refresh=true;
@@ -487,8 +509,8 @@ function apply(data){
 }
 function scheduleSnapshot(delay){
   if(reloading)return;
-  if(snap.timer)clearTimeout(snap.timer);
-  snap.timer=setTimeout(function(){snap.timer=null;snapshot()},delay);
+  if(snap.timer&&snap.timer!==-1)clearTimeout(snap.timer);
+  snap.timer=later("snapshot",function(){snap.timer=null;snapshot()},delay);
 }
 function requestSnapshot(){
   if(failed(snap.state))return;
