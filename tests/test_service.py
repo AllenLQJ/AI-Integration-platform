@@ -133,10 +133,13 @@ class ServiceTests(unittest.TestCase):
         release.set()
         self.assertEqual(self.wait(task['id'])['state'], 'cancelled')
     def test_interrupted_workspace_cannot_be_resumed(self):
-        parent = self.service.store.create('a', dict(agent='fake', prompt='x', cwd=str(self.root),
-            workspace=str(self.root), mode='read_only', timeout_seconds=10, session_id='sid'))
-        self.service.store.update(parent['id'], state='running')
-        self.service.store.recover()
+        # The scheduler takes queued tasks under this lock; without it, a task can start running
+        # between create and update, finish normally, and leave recover() nothing to interrupt.
+        with self.service.lock:
+            parent = self.service.store.create('a', dict(agent='fake', prompt='x', cwd=str(self.root),
+                workspace=str(self.root), mode='read_only', timeout_seconds=10, session_id='sid'))
+            self.service.store.update(parent['id'], state='running')
+            self.service.store.recover()
         with self.assertRaises(HubError) as error:
             self.service.call('continue_task', dict(request_id='b', task_id=parent['id'], prompt='next'))
         self.assertEqual(error.exception.code, 'WORKSPACE_UNCERTAIN')
