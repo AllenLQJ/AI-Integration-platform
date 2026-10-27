@@ -16,6 +16,13 @@ class StoreTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_has_children_uses_the_parent_link(self):
+        parent = self.store.create('parent', self.spec)
+        self.assertFalse(self.store.has_children(parent['id']))
+        child = self.store.create('child', dict(self.spec, parent_id=parent['id']))
+        self.assertTrue(self.store.has_children(parent['id']))
+        self.assertFalse(self.store.has_children(child['id']))
+
     def test_pooled_connections_reuse_per_thread_and_keep_transactions_separate(self):
         import sqlite3
         import threading

@@ -890,6 +890,41 @@ class VerificationTests(unittest.TestCase):
         gc.collect()
         self.assertNotIn('transient', self.service.verification.request_locks)
 
+    def test_root_id_rejects_cyclic_ancestry(self):
+        first = self.submit(request_id='cycle-a'); self.wait(first)
+        second = self.submit(request_id='cycle-b'); self.wait(second)
+        with self.service.store.connection() as db:
+            for ident, parent in ((first, second), (second, first)):
+                db.execute("UPDATE tasks SET data=json_set(data,'$.parent_id',?) WHERE id=?", (parent, ident))
+        result = []
+        worker = threading.Thread(target=lambda: result.append(self.attempt(self.service.verification.root_id, first)), daemon=True)
+        worker.start(); worker.join(3)
+        self.assertFalse(worker.is_alive(), 'root_id 在循环祖先上没有终止')
+        self.assertEqual(result, ['INVALID_TASK_GRAPH'])
+
+    @staticmethod
+    def attempt(function, *args):
+        try:
+            function(*args)
+        except HubError as error:
+            return error.code
+
+    def test_work_item_and_event_reads_do_not_wait_for_the_service_lock(self):
+        ident = self.submit(request_id='lock-free'); self.wait(ident)
+        results = {}
+        def read(name, tool, arguments):
+            results[name] = self.service.call(tool, arguments)
+        with self.service.lock:
+            workers = [threading.Thread(target=read, args=item, daemon=True) for item in (
+                ('item', 'get_work_item', {'task_id': ident}),
+                ('events', 'get_events', {'task_id': ident}))]
+            for worker in workers: worker.start()
+            for worker in workers: worker.join(3)
+            stuck = [worker.is_alive() for worker in workers]
+        self.assertEqual(stuck, [False, False])
+        self.assertEqual(results['item']['current_task_id'], ident)
+        self.assertEqual(results['events']['contract_version'], '1.0')
+
     def test_snapshot_responds_to_cancellation(self):
         original = self.service.verification.snapshot
         def cancelled(task, cancel=None):

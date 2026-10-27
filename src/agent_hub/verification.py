@@ -822,8 +822,12 @@ class Verification:
 
     def root_id(self, task_id):
         task = self.store.get(task_id)
+        seen = {task['id']}
         while task.get('parent_id'):
             task = self.store.get(task['parent_id'])
+            if task['id'] in seen:
+                raise HubError('INVALID_TASK_GRAPH', '任务祖先缺失或存在循环，请核对历史数据')
+            seen.add(task['id'])
         return task['id']
 
     def controller(self, root):

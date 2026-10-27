@@ -133,9 +133,12 @@ class Service:
             with self.lock:
                 adapters = list(self.adapters.items())
             return {name: adapter.diagnose() for name, adapter in adapters}
+        # Pure SQLite snapshot reads: they do not need the scheduler/submit lock.
+        if tool == 'get_work_item':
+            return self.verification.work_item(**arguments)
+        if tool == 'get_events':
+            return dict(self.store.events(**arguments), contract_version='1.0')
         with self.lock:
-            if tool == 'get_work_item':
-                return self.verification.work_item(**arguments)
             if tool in {'ide_next_task', 'ide_task_update', 'ide_task_status'}:
                 from .adapters.cursor_ide import CursorIDE
                 adapter = self.adapters.get('cursor')
@@ -186,8 +189,6 @@ class Service:
                 return self.resume_task(**arguments)
             if tool == 'continue_task':
                 return self.continue_task(**arguments)
-            if tool == 'get_events':
-                return dict(self.store.events(**arguments), contract_version='1.0')
             if tool == 'get_task':
                 return self.public(self.store.get(arguments['task_id']))
             if tool == 'get_result':
@@ -493,7 +494,7 @@ class Service:
             raise HubError('UNSUPPORTED_MODE', '执行器未声明会话续接能力')
         if parent.get('acceptance'):
             current = self.verification.work_item(task_id)['current_task_id']
-            if current != task_id or any(t.get('parent_id') == task_id for t in self.store.list()):
+            if current != task_id or self.store.has_children(task_id):
                 raise HubError('ATTEMPT_SUPERSEDED', '只能从当前尝试续接返工', {'current_task_id': current})
         if (getattr(self.adapters[parent['agent']], 'cancel_scope', None) in {'remote_session', 'remote_hub_task'}
                 or parent['agent'] == 'muse') and parent['state'] in {'interrupted', 'delivery_unknown'}:
