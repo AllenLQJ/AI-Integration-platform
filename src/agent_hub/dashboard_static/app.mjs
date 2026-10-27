@@ -1,5 +1,5 @@
 import {createAPI, consumeTicket} from './api.mjs';
-import {DashboardState} from './state.mjs';
+import {DashboardState, chainIdle, POLL_ACTIVE, POLL_IDLE} from './state.mjs';
 import {createGraph} from './graph.mjs';
 import {
   TimelineExpansion, timelineRecords, coverageNotes, kindLabel, provenanceLabel, statusLabel,
@@ -44,6 +44,19 @@ let view = 'messages', pageHistory = [], timer, chainTimer, listTimer, searchTim
 let contentKey = '', contentContext = '', renderedEvents = new Map(), listKey = '';
 let renderedMessages = new Map();
 let historyLoading = false;
+// Hidden tabs schedule nothing; each skipped loop resumes once the tab is visible.
+// Resumed loops re-check their request gate, so stale selections stay inert.
+const hidden = () => document.visibilityState === 'hidden';
+const resume = new Map();
+function later(key, run, delay) {
+  if (hidden()) { resume.set(key, run); return null; }
+  return setTimeout(run, delay);
+}
+document.addEventListener('visibilitychange', () => {
+  if (hidden() || stopped) return;
+  const pending = [...resume.values()]; resume.clear();
+  for (const run of pending) run();
+});
 const graph = createGraph($('graph-viewport'),$('graph-stage'),id=>selectNode(id,true),label);
 // These are execution states from the Hub contract; executor names remain dynamic.
 const stateFilter = $('state-filter');
@@ -87,7 +100,7 @@ function renderList() {
 }
 function scheduleList() {
   clearTimeout(listTimer);
-  if (!stopped) listTimer = setTimeout(()=>loadList(state.offset,true),5000);
+  if (!stopped) listTimer = later('list',()=>loadList(state.offset,true),5000);
 }
 async function loadList(offset = 0, background = false) {
   if (stopped) return;
@@ -290,7 +303,7 @@ function renderDetail() {
 }
 async function poll(token, id) {
   if (stopped || !state.detailGate.current(token)) return;
-  let delay = 2500;
+  let delay = POLL_ACTIVE;
   try {
     const initial = !state.historyMode && state.cursor === 0;
     const data = state.historyMode ? null : initial ? await api.eventHistory(id,undefined,token.signal)
@@ -307,12 +320,13 @@ async function poll(token, id) {
     renderContent();
     $('detail-error').hidden = true; $('connection').textContent = '已连接';
     $('sync-time').textContent = `同步于 ${new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`;
+    if (chainIdle(state.chain, state.detail)) delay = POLL_IDLE;
     if (!initial && data?.events.length >= 200) delay = 0;
   } catch (error) {
     if (!state.detailGate.current(token)) return;
     failure(error); $('detail-error').textContent = `${error.message} 将自动重试，也可点击刷新。`; $('detail-error').hidden = false; delay = 5000;
   } finally {
-    if (!stopped && state.detailGate.current(token)) timer = setTimeout(()=>poll(token,id),delay);
+    if (!stopped && state.detailGate.current(token)) timer = later('detail',()=>poll(token,id),delay);
     if (state.detailGate.current(token)) $('content').setAttribute('aria-busy','false');
   }
 }
@@ -336,7 +350,7 @@ $('events-older').addEventListener('click',()=>loadEventPage(true));
 $('events-latest').addEventListener('click',()=>loadEventPage(false));
 async function pollChain(token,id,desiredNode=null) {
   if(stopped||!state.chainGate.current(token))return;
-  let delay=2500;
+  let delay=POLL_ACTIVE;
   try {
     // The API pins the requested member inside bounded graphs. Keep the inspected
     // execution as the anchor as new members arrive beyond the node limit.
@@ -353,12 +367,13 @@ async function pollChain(token,id,desiredNode=null) {
       if(selected)selectNode(selected,false);
     }
     $('connection').textContent='已连接';
+    if(chainIdle(state.chain,state.detail))delay=POLL_IDLE;
   } catch(error) {
     if(!state.chainGate.current(token))return;
     failure(error);$('chain-error').textContent=`${error.message} 将自动重试，也可点击刷新。`;$('chain-error').hidden=false;delay=5000;
     if(!state.chain){$('graph-panel').hidden=true;graph.clear();$('content').replaceChildren(empty('任务链暂时无法读取','请等待重试，或点击刷新。'));contentKey='';}
   } finally {
-    if(!stopped&&state.chainGate.current(token))chainTimer=setTimeout(()=>pollChain(token,id,desiredNode),delay);
+    if(!stopped&&state.chainGate.current(token))chainTimer=later('chain',()=>pollChain(token,id,desiredNode),delay);
   }
 }
 async function selectChain(id,desiredNode=null) {

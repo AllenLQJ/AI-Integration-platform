@@ -10,6 +10,18 @@ export class RequestGate {
   current(token) { return Boolean(token && this.token === token && !token.signal.aborted); }
 }
 
+export const POLL_ACTIVE = 2500, POLL_IDLE = 15000;
+const TERMINAL = new Set(['succeeded','failed','timed_out','cancelled','interrupted','delivery_unknown']);
+const VERIFYING = new Set(['pending','awaiting_verification','verifying']);
+const settled = task => !VERIFYING.has(task?.verification_state);
+/** A chain is idle once no member runs and neither the chain nor the inspected execution awaits verification. */
+export function chainIdle(chain, detail) {
+  const summary = chain?.chain;
+  if (!summary || summary.active_count || !settled(summary)) return false;
+  const task = detail?.task;
+  return !task || (TERMINAL.has(task.state) && settled(task));
+}
+
 const MAX_EVENTS = 1000, MAX_EVENT_BYTES = 2 * 1024 * 1024;
 const eventEncoder = new TextEncoder();
 function eventWindow(previous, incoming) {

@@ -1,7 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createAPI, consumeTicket, APIError } from '../../src/agent_hub/dashboard_static/api.mjs';
-import { RequestGate, mergeEvents, DashboardState } from '../../src/agent_hub/dashboard_static/state.mjs';
+import { RequestGate, mergeEvents, DashboardState, chainIdle } from '../../src/agent_hub/dashboard_static/state.mjs';
+
+test('chains are idle only when nothing runs or awaits verification', () => {
+  const chain = (summary) => ({chain:{active_count:0,verification_state:'passed',...summary}});
+  const detail = (task) => ({task:{state:'succeeded',verification_state:'passed',...task}});
+  assert.equal(chainIdle(null, null), false);
+  assert.equal(chainIdle(chain(), null), true);
+  assert.equal(chainIdle(chain(), detail()), true);
+  assert.equal(chainIdle(chain({active_count:1}), detail()), false);
+  for (const verification of ['pending','awaiting_verification','verifying']) {
+    assert.equal(chainIdle(chain({verification_state:verification}), detail()), false, verification);
+    assert.equal(chainIdle(chain(), detail({verification_state:verification})), false, verification);
+  }
+  for (const running of ['queued','running','waiting_for_user']) assert.equal(chainIdle(chain(), detail({state:running})), false, running);
+  for (const done of ['failed','cancelled','interrupted','delivery_unknown']) assert.equal(chainIdle(chain(), detail({state:done})), true, done);
+});
 
 test('ticket removed before exchange and never persisted', async () => {
   const calls = [];

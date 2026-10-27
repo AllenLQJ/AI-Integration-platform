@@ -4,7 +4,8 @@ A request scans only graph metadata once. Conversation/result reads are limited
 by the displayed-node cap; no adapters, scheduler or controller writes are used.
 """
 import heapq
-from collections import defaultdict, deque
+import threading
+from collections import OrderedDict, defaultdict, deque
 
 from .dashboard import _integer, _string, _text
 from .models import HubError, TERMINAL
@@ -16,12 +17,52 @@ MAX_TEXT = 1000000
 MAX_TIMELINE = 500
 
 
+class SnapshotCache:
+    """Share one graph scan per (data_version, filters) across routes and tabs.
+
+    The version is read before scanning, so a cached snapshot is never older
+    than its key. Entries are read-only; callers must not mutate them.
+    """
+
+    def __init__(self, version, limit=8):
+        self.version = version
+        self.limit = limit
+        self.entries = OrderedDict()
+        self.lock = threading.Lock()
+
+    def get(self, filters, build):
+        version = self.version()
+        key = (version, filters)
+        with self.lock:
+            if key in self.entries:
+                self.entries.move_to_end(key)
+                return self.entries[key]
+        value = build()
+        with self.lock:
+            for stale in [entry for entry in self.entries if entry[0] < version]:
+                del self.entries[stale]
+            self.entries[key] = value
+            while len(self.entries) > self.limit:
+                self.entries.popitem(last=False)
+        return value
+
+    def clear(self):
+        with self.lock:
+            self.entries.clear()
+
+
 class DashboardChains:
-    def __init__(self, dashboard):
+    def __init__(self, dashboard, snapshots=None):
         self.dashboard = dashboard
         self.store = dashboard.store
+        self.snapshots = snapshots
 
     def _snapshot(self, q='', state='', agent=''):
+        if self.snapshots is None:
+            return self._scan(q, state, agent)
+        return self.snapshots.get((q, state, agent), lambda: self._scan(q, state, agent))
+
+    def _scan(self, q='', state='', agent=''):
         # Keep large prompts/results/artifacts out of the all-task graph scan.
         pattern = '%' + q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
         with self.store.connection() as db:

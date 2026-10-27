@@ -40,8 +40,10 @@ class DashboardHTTP:
         self.result_files = {}
         self.monitor = None
         self.cache_epoch = secrets.token_hex(12)
+        from .dashboard_chains import SnapshotCache
+        self.snapshots = SnapshotCache(self.data_version)
 
-    def revision(self, route, files=None):
+    def data_version(self):
         # data_version is meaningful across commits only on the SAME connection.
         # A read-only, autocommit observer notices every DB writer, including
         # verification changes that do not touch tasks.updated or append events.
@@ -49,7 +51,11 @@ class DashboardHTTP:
             if self.monitor is None:
                 self.monitor = sqlite3.connect(Path(self.service.store.path).resolve().as_uri() + '?mode=ro',
                                                uri=True, check_same_thread=False)
-            version = self.monitor.execute('PRAGMA data_version').fetchone()[0]
+            return self.monitor.execute('PRAGMA data_version').fetchone()[0]
+
+    def revision(self, route, files=None):
+        version = self.data_version()
+        with self.lock:
             paths = tuple(self.result_files.get(route, ())) if files is None else tuple(files)
         key = hashlib.sha256(route.encode('utf-8')).hexdigest()[:24]
         from .store import Store
@@ -77,6 +83,7 @@ class DashboardHTTP:
                 self.monitor = None
             self.revalidated.clear()
             self.result_files.clear()
+        self.snapshots.clear()
 
     @staticmethod
     def send(handler, status, body, content_type='application/json', cookie=None, etag=None):
@@ -314,7 +321,7 @@ class DashboardHTTP:
             from .dashboard import Dashboard
             from .dashboard_chains import DashboardChains
             dashboard = Dashboard(self.service)
-            chains = DashboardChains(dashboard)
+            chains = DashboardChains(dashboard, snapshots=self.snapshots)
             if path in {'/dashboard/api/v1/tasks', '/dashboard/api/v1/chains'}:
                 args = self.query(query, {'limit', 'offset', 'q', 'state', 'agent'})
                 limit = self.integer(args.get('limit', '30'), 1, 100)

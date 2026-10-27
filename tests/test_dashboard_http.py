@@ -292,6 +292,34 @@ class DashboardHTTPTests(unittest.TestCase):
                             (b'[]', {'Content-Type': 'application/json'}), (b'x' * 4097, {'Content-Type': 'application/json'})]:
             self.assertEqual(self.request('/dashboard/session', 'POST', body, {'Origin': self.origin, **extra})[0], 400)
 
+    def test_chain_snapshot_is_shared_per_data_version_and_rebuilt_after_writes(self):
+        from agent_hub.dashboard_chains import DashboardChains
+        cookie = self.session()
+        headers = {'Cookie': cookie, 'Origin': self.origin}
+        first = self.service.submit('snapshot-one', 'fake', 'first chain', str(self.root), 'read_only')
+        scan = DashboardChains._scan
+        with patch.object(DashboardChains, '_scan', autospec=True, side_effect=scan) as spy:
+            # List, detail and a repeated unconditional read share one scan.
+            for path in ['/dashboard/api/v1/chains', '/dashboard/api/v1/chains/' + first['id'],
+                         '/dashboard/api/v1/chains']:
+                self.assertEqual(self.request(path, headers=headers)[0], 200, path)
+            self.assertEqual(spy.call_count, 1)
+            # Different filters are separate cache entries.
+            self.assertEqual(self.request('/dashboard/api/v1/chains?q=first', headers=headers)[0], 200)
+            self.assertEqual(spy.call_count, 2)
+            # Any committed write invalidates the shared snapshot.
+            second = self.service.submit('snapshot-two', 'fake', 'second chain', str(self.root), 'read_only')
+            status, _, body = self.request('/dashboard/api/v1/chains', headers=headers)
+            self.assertEqual(status, 200, body)
+            self.assertEqual(spy.call_count, 3)
+            self.assertEqual({item['id'] for item in json.loads(body)['items']}, {first['id'], second['id']})
+            self.service.store.event(first['id'], 'progress', {'message': 'tick'})
+            self.assertEqual(self.request('/dashboard/api/v1/chains/' + first['id'], headers=headers)[0], 200)
+            self.assertEqual(spy.call_count, 4)
+        # Older versions are dropped instead of accumulating.
+        self.assertTrue(all(key[0] == max(k[0] for k in self.server.dashboard.snapshots.entries)
+                            for key in self.server.dashboard.snapshots.entries))
+
     def work_session(self, task_id):
         status, headers, body = self.request('/work/' + task_id + '/session', 'POST', None,
                                              {'Authorization': 'Bearer native-test-secret'})
