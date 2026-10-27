@@ -90,8 +90,10 @@ export function tooltip(box) {
       tip.hidden = false;
       const rect = box.getBoundingClientRect?.();
       if (rect && event?.clientX != null) {
-        tip.style.left = `${Math.min(event.clientX - rect.left + 12, rect.width - 180)}px`;
-        tip.style.top = `${event.clientY - rect.top + 12}px`;
+        const x = event.clientX - rect.left, y = event.clientY - rect.top, height = tip.offsetHeight || 0;
+        tip.style.left = `${Math.max(0, Math.min(x + 12, rect.width - 180))}px`;
+        // Flip above the pointer when the box would clip it (panels hide their overflow).
+        tip.style.top = `${y + 12 + height > rect.height && y - 12 - height >= 0 ? y - 12 - height : y + 12}px`;
       }
     },
     hide() { tip.hidden = true; },

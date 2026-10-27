@@ -1829,8 +1829,10 @@ h1 {
   display:none;
 }
 .gantt-host {
-  position:relative;
   padding:10px 16px 4px;
+}
+.gantt {
+  position:relative;
 }
 .gantt-frame {
   overflow-x:auto;
