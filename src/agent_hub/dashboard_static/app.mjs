@@ -46,6 +46,8 @@ let renderedMessages = new Map();
 let historyLoading = false;
 // True while the execution poll waits on the idle cadence and can be pulled forward.
 let detailIdleWait = false;
+// Anchor of the chain response held in state.chain; a 304 for the same anchor repeats it.
+let chainAnchor = null;
 // Hidden tabs schedule nothing; each skipped loop resumes once the tab is visible.
 // Resumed loops re-check their request gate, so stale selections stay inert.
 const hidden = () => document.visibilityState === 'hidden';
@@ -369,8 +371,11 @@ async function pollChain(token,id,desiredNode=null) {
     // A click during this request may choose a node outside its capped response.
     // Retry with that newer selection instead of replacing the inspected node.
     if(state.selected&&state.selected!==anchor&&!data.nodes.some(n=>n.id===state.selected)){delay=0;return;}
-    state.chain=data;state.chainId=data.chain.id;
-    renderList();renderChain();$('chain-error').hidden=true;
+    if(!(isUnchanged(data)&&state.chain&&chainAnchor===anchor)){
+      state.chain=data;state.chainId=data.chain.id;chainAnchor=anchor;
+      renderList();renderChain();
+    }
+    $('chain-error').hidden=true;
     if(!state.selected||!data.nodes.some(n=>n.id===state.selected)) {
       const selected=data.nodes.some(n=>n.id===desiredNode) ? desiredNode : data.nodes.some(n=>n.id===data.chain.latest_task_id) ? data.chain.latest_task_id : data.nodes[0]?.id;
       if(selected)selectNode(selected,false);

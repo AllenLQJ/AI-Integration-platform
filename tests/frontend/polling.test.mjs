@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 
 // Minimal DOM surface; this file runs in its own process so the app module starts fresh.
 class Element {
@@ -41,7 +42,8 @@ test('settled chains back off, hidden tabs stop polling and visible tabs resume 
     globalThis.matchMedia = ()=>({matches:true}); globalThis.addEventListener = ()=>{}; globalThis.innerWidth = 1200;
     globalThis.setTimeout = (fn,delay)=>{ const item = {fn,delay}; timers.push(item); return item; };
     globalThis.clearTimeout = timer=>{ if (timer) timer.cancelled = true; };
-    globalThis.fetch = async url=>{
+    // Content ETags like the Hub: an unchanged body revalidates as 304.
+    globalThis.fetch = async (url, options = {})=>{
       requests.push(url);
       const task = summary();
       const data = url.endsWith('/agents') ? {items:[{id:'echo'}]}
@@ -50,7 +52,9 @@ test('settled chains back off, hidden tabs stop polling and visible tabs resume 
         : url.includes('/chains/') ? {chain:task,nodes:[task],edges:[],messages:[],warnings:[],truncated:false}
         : {task,messages:[],relations:[],criteria:[],artifacts:[],verification_checks:[],
            ...(url.includes('?after_seq=') ? {live_events:{events:[],next_seq:1}} : {})};
-      return new Response(JSON.stringify(data));
+      const body = JSON.stringify(data), etag = '"' + createHash('sha256').update(url + body).digest('hex') + '"';
+      if (options.headers?.['If-None-Match'] === etag) return new Response(null, {status:304, headers:{ETag:etag}});
+      return new Response(body, {headers:{ETag:etag}});
     };
     await import('../../src/agent_hub/dashboard_static/app.mjs');
     await settle();
@@ -60,6 +64,12 @@ test('settled chains back off, hidden tabs stop polling and visible tabs resume 
     assert.equal(pending(2500).length, 0);
     assert.equal(pending(15000).length, 2);
     assert.equal(pending(5000).length, 1, 'list keeps its cadence so new chains appear');
+
+    // An unchanged chain (304 for the same anchor) is not re-rendered.
+    const pills = nodes.get('status-line').children[0];
+    const sleepingChain = pending(15000).find(item=>String(item.fn).includes('pollChain'));
+    sleepingChain.used = true; await sleepingChain.fn(); await settle();
+    assert.equal(nodes.get('status-line').children[0], pills, 'unchanged chain kept its rendered header');
 
     // A live execution tick is one request carrying both the detail and new events.
     const sleepingDetail = pending(15000).find(item=>!String(item.fn).includes('pollChain'));
