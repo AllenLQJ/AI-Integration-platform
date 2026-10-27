@@ -325,7 +325,7 @@ class DashboardHTTP:
         if path.startswith('/dashboard/api/'):
             if not self.authenticated(handler):
                 return self.error(handler, 401, 'UNAUTHORIZED')
-            conditional = bool(re.fullmatch(r'/dashboard/api/v1/(?:chains|tasks)(?:/[A-Za-z0-9_-]{1,128})?', path))
+            conditional = bool(re.fullmatch(r'/dashboard/api/v1/(?:(?:chains|tasks)(?:/[A-Za-z0-9_-]{1,128})?|overview)', path))
             requested = handler.headers.get('If-None-Match')
             version, fresh = self.fresh_etag(handler.path) if conditional else (None, None)
             if fresh and requested == fresh:
@@ -346,6 +346,9 @@ class DashboardHTTP:
             elif path == '/dashboard/api/v1/agents':
                 self.query(query, set())
                 result = dashboard.agents()
+            elif path == '/dashboard/api/v1/overview':
+                self.query(query, set())
+                result = chains.overview()
             elif re.fullmatch(r'/dashboard/api/v1/chains/([A-Za-z0-9_-]{1,128})', path):
                 self.query(query, set())
                 result = chains.detail(path.rsplit('/', 1)[1])
@@ -376,7 +379,10 @@ class DashboardHTTP:
             etag = self.content_etag(handler.path, content)
             # Only skip future projections at this version when no writer committed
             # while it was read; the content ETag itself is always accurate.
-            if version == self.data_version() and dashboard.results_unchanged():
+            # The overview's day window moves at midnight without any write, so it is
+            # always recomputed; its content ETag still yields 304 when nothing changed.
+            if (version == self.data_version() and dashboard.results_unchanged()
+                    and path != '/dashboard/api/v1/overview'):
                 self.remember(handler.path, version, etag, dashboard.result_files)
             if requested == etag:
                 return self.send(handler, 304, b'', etag=etag)
