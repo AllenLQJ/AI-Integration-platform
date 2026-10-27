@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import secrets
 import threading
@@ -184,6 +185,7 @@ def make_server(service, token):
             except (ValueError, TypeError, KeyError):
                 self.respond(400, {'error': {'code': 'INVALID_ARGUMENT', 'message': '请求格式不正确'}})
             except Exception:
+                logging.getLogger(__name__).exception('RPC 内部错误')
                 self.respond(500, {'error': {'code': 'INTERNAL_ERROR', 'message': '服务内部错误'}})
     return HubHTTPServer(('127.0.0.1', 0), Handler, dashboard)
 

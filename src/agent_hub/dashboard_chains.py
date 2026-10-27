@@ -4,6 +4,7 @@ A request scans only graph metadata once. Conversation/result reads are limited
 by the displayed-node cap; no adapters, scheduler or controller writes are used.
 """
 import heapq
+import sqlite3
 import threading
 from collections import OrderedDict, defaultdict, deque
 
@@ -84,7 +85,7 @@ class DashboardChains:
                     'SELECT work_item_id, task_id, relation, related_task_id FROM work_item_members').fetchall()
                 item_rows = db.execute("SELECT id, title, created, updated, title LIKE ? ESCAPE '\\' AS title_matches "
                                        'FROM work_items', (pattern,)).fetchall()
-            except Exception:
+            except sqlite3.OperationalError:
                 member_rows, item_rows = [], []
         tasks = {row['id']: dict(row) for row in rows}
         work_items = {row['id']: dict(row) for row in item_rows}

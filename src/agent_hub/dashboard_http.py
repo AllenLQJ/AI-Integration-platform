@@ -5,6 +5,7 @@ separate credentials and are never consulted by RPC or the legacy workbench.
 """
 import json
 import hashlib
+import logging
 import re
 import secrets
 import sqlite3
@@ -249,6 +250,7 @@ class DashboardHTTP:
             status = 404 if error.code in {'NOT_FOUND', 'TASK_NOT_FOUND'} else 400
             self.error(handler, status, error.code)
         except Exception:
+            logging.getLogger(__name__).exception('看板请求内部错误')
             self.error(handler, 500, 'INTERNAL_ERROR')
         return True
 
