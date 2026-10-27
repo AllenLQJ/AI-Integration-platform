@@ -183,4 +183,3 @@ test('the stats card shows the numbers, flags truncation and offers a table', ()
   assert.equal(host.all(node => node.attributes.class === 'density-bar').length, 7);
   assert.equal(host.byClass('viz-data').length, 1);
 });
-
