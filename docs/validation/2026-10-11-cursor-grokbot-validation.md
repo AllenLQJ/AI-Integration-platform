@@ -4,7 +4,7 @@
 
 ## 本机状态
 
-- Cursor CLI `2026.10.01-e373342` 已安装、登录；Cursor IDE 桌面应用已安装 3.24.12；已登录，IDE MCP 界面确认 agent_hub 的 8 tools enabled；IDE 内实际任务派发未单独验收，见[安装记录](2026-10-11-cursor-ide-installation.md)。
+- Cursor CLI `2026.10.01-e373342` 已安装、登录；Cursor IDE 桌面应用已安装 3.24.12；已登录，IDE MCP 界面确认 agent_hub 的 8 tools enabled；IDE 内实际任务派发未单独验收，见[安装记录](../2026-10-11-cursor-ide-installation.md)。
 - `@cursor/bdk@0.2.23` 已安装，bdk login 已完成；保留现有 Grok Bot.app 0.68.1。
 - Cursor 用户 `~/.cursor/mcp.json` 已注册 agent_hub，官方 list-tools 发现全部八工具。
 - Hub 私有配置保留原三执行器并加入 cursor、grokbot；无在途任务时重载。新版共享后台两个新执行器的真实冒烟均通过。
@@ -111,7 +111,7 @@ rpc 仅接受八工具和 JSON 对象，也可 `--arguments -` 从 stdin 读取�
 
 ### 后续提交与在途退出补测
 
-接入快照已于本日提交并推送 `5b52abb`，上文未提交状态为当时验收阶段记录。后续始终复用原 Bot / session 12252578，没有新建 Bot：正常后台退出场景已取得 interrupt_acknowledged=true、remote_cancelled=true 与四次 idle，补齐同 Bot 在途退出强制中断；10 秒期限再次自然完成，stop_reason=already_idle，强制期限中断仍未覆盖。证据为私有 `~/.agent-hub/grokbot-cancel-20261011-final-lifecycle/report.json`。Muse 取消及 SSH Hub 调度后续实现见 [新增记录](2026-10-11-muse-cancel-remote-hub.md)。
+接入快照已于本日提交并推送 `5b52abb`，上文未提交状态为当时验收阶段记录。后续始终复用原 Bot / session 12252578，没有新建 Bot：正常后台退出场景已取得 interrupt_acknowledged=true、remote_cancelled=true 与四次 idle，补齐同 Bot 在途退出强制中断；10 秒期限再次自然完成，stop_reason=already_idle，强制期限中断仍未覆盖。证据为私有 `~/.agent-hub/grokbot-cancel-20261011-final-lifecycle/report.json`。Muse 取消及 SSH Hub 调度后续实现见 [新增记录](../2026-10-11-muse-cancel-remote-hub.md)。
 
 
 新增功能之后的完整回归为 129 项：128 通过、1 项 Windows ACL 跳过（49.332 秒），见上方新增记录；前述 110 项为接入阶段记录。

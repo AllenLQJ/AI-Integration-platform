@@ -34,7 +34,7 @@ Interfaces: chain API per spec; graph renderer owns viewport and selection, invo
 - [x] Register graph.mjs in static whitelist; run frontend tests.
 
 ## Task 3: Integration and review
-Files: docs/dashboard.md, docs/2026-10-24-task-chain-validation.md.
+Files: docs/dashboard.md, docs/validation/2026-10-24-task-chain-validation.md.
 - [x] Run full Python and frontend suites; inspect diff with independent reviewer.
 - [x] Start isolated fixture preview, verify desktop/mobile graph, node/conversation linkage and polling in real browser. No model calls.
 - [x] Fix confirmed findings, re-run affected tests, document limits and evidence.

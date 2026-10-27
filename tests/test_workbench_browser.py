@@ -1,5 +1,6 @@
 import json
 import os
+from contextlib import contextmanager
 import select
 import shutil
 import subprocess
@@ -250,13 +251,17 @@ class WorkbenchBrowserTests(unittest.TestCase):
     def last_seq(self, ident):
         return self.service.store.events(ident, 0, 200)['events'][-1]['seq']
 
+    @contextmanager
     def failing(self, *tools):
         original = self.service.call
         def call(tool, arguments):
             if tool in tools:
                 raise RuntimeError('simulated outage: ' + tool)
             return original(tool, arguments)
-        return patch.object(self.service, 'call', side_effect=call)
+        # The outage is deliberate; socketserver would print a traceback for every request it breaks.
+        with patch.object(self.service, 'call', side_effect=call), \
+                patch('agent_hub.daemon.HubHTTPServer.handle_error', lambda *args: None):
+            yield
 
     def test_snapshot_outage_stays_visible_while_events_flow(self):
         ident = self.finished_task('snapshot-outage')

@@ -1,6 +1,6 @@
 # Muse 错误恢复修改与验证（2026-10-10）
 
-> 2026-10-11 更新：本文保留 Windows 恢复阶段证据；当前 Muse 模式为 delegate，最新 Mac 认证及真实断线恢复见 [补充验收](2026-10-11-macos-resilience-validation.md)，当前状态见 [开发进度](开发进度.md)。
+> 2026-10-11 更新：本文保留 Windows 恢复阶段证据；当前 Muse 模式为 delegate，最新 Mac 认证及真实断线恢复见 [补充验收](2026-10-11-macos-resilience-validation.md)，当前状态见 [开发进度](../开发进度.md)。
 
 > 分阶段历史验收记录：前文失败、未提交和旧共享进程描述均为当时状态。后续真实成功回收、共享切换及本地 Git 保存结果见本文后半部分；最新等待工具和后台重载见 `2026-10-10-wait-for-task-validation.md`。本轮新增可复现配套补丁见 `../vendor/muse-mcp/README.md`。
 

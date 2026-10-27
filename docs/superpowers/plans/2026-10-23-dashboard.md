@@ -22,7 +22,7 @@ GET /dashboard/ serves static application. Data endpoints require dedicated Http
 - [x] HTTP/session: tests for auth/origin/expiry/reuse/traversal; integrate existing daemon via focused helper. Add portable CLI dashboard opener.
 - [x] Frontend: A responsive layout in independent packaged static directory, API client separate from views, pagination/search/filter, race-safe polling and task switch, text-only rendering, truthful empty/error states. Meaningful JS tests.
 - [x] Distribution/docs: package static assets, usage and protocol docs, isolated wheel asset validation.
-- [x] Integration: complete Python regression, JS tests, browser actual API smoke, independent review and fixes. Final: 394 Python tests (389 passed, 5 skipped), 8 JS tests passed; see ../../2026-10-24-dashboard-validation.md for scope.
+- [x] Integration: complete Python regression, JS tests, browser actual API smoke, independent review and fixes. Final: 394 Python tests (389 passed, 5 skipped), 8 JS tests passed; see ../../validation/2026-10-24-dashboard-validation.md for scope.
 
 ## Review focus
 Untrusted executor output and tokens; task switching during inflight fetch; stale pagination; partial/truncated message visibility; sessions must not grant RPC/old workbench access.

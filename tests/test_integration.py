@@ -18,8 +18,13 @@ def stop_and_wait(client):
         import win32api, win32con, win32event
         handle = win32api.OpenProcess(win32con.SYNCHRONIZE, False,
                                       client.request('/health')['pid'])
+    # Reap the child we spawned, otherwise it is garbage collected while still a zombie
+    # and unittest prints a ResourceWarning for it.
+    process = getattr(client, '_process', None)
     try:
         client.stop()
+        if process is not None:
+            process.wait(10)
         if handle is not None:
             if win32event.WaitForSingleObject(handle, 10000) != win32event.WAIT_OBJECT_0:
                 raise AssertionError('daemon did not exit after shutdown')

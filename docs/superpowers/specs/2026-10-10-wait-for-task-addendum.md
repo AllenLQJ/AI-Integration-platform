@@ -145,4 +145,4 @@ TERMINAL = frozenset({'succeeded', 'failed', 'timed_out', 'cancelled',
 - 开发前验证：`docs/2026-10-09-preflight-results.md`
 - Hub 源码与验收记录：`%USERPROFILE%\.codex\worktrees\agent-hub-v1\AI-Integration-platform`
 - 本次故障任务：`task_id 730556f90162467f9ccb8cc0fec73d38`，日志 `%USERPROFILE%\.agent-hub\logs\730556f90162467f9ccb8cc0fec73d38\`
-- 新增等待工具验收：`docs/2026-10-10-wait-for-task-validation.md`，完整回归 62/62；真实 Codex/Claude 总控调用已验证，执行器为模拟 fixture；DeepSeek Harness 未验收。
+- 新增等待工具验收：`docs/validation/2026-10-10-wait-for-task-validation.md`，完整回归 62/62；真实 Codex/Claude 总控调用已验证，执行器为模拟 fixture；DeepSeek Harness 未验收。

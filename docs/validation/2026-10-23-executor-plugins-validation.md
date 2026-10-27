@@ -54,4 +54,4 @@ python -m unittest discover -s tests -v
 - 功能已合入 `main`（本记录撰写时仍在独立分支验证；合并后未因此重启共享后台或改动共享运行配置）。
 - 执行记录在 Windows 下使用 PowerShell 维护，替代技能中的 Bash 辅助脚本；测试命令和结果已写入本记录。
 
-接入规范见 [executor-plugins.md](executor-plugins.md)，可独立安装示例见 [echo-plugin](../examples/echo-plugin/README.md)。
+接入规范见 [executor-plugins.md](../executor-plugins.md)，可独立安装示例见 [echo-plugin](../../examples/echo-plugin/README.md)。

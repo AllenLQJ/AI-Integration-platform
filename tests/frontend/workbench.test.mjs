@@ -2,9 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
-// The workbench script lives in daemon.py as a plain (escape-free) Python string.
-const daemon = readFileSync(new URL('../../src/agent_hub/daemon.py', import.meta.url), 'utf8');
-const SCRIPT = daemon.match(/WORKBENCH_SCRIPT = '''([\s\S]*?)'''/)[1];
+// The daemon inlines this file into the page, so it has to stay free of backslashes and "</".
+const SCRIPT = readFileSync(new URL('../../src/agent_hub/dashboard_static/workbench.mjs', import.meta.url), 'utf8');
 
 class Element {
   constructor(tag, {className = '', id = '', text = ''} = {}) {
