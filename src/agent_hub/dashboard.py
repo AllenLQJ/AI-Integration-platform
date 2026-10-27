@@ -21,6 +21,9 @@ def _text(value):
                    r'\1[REDACTED]', value)
     # Signed links and URL userinfo can contain credentials with arbitrary names.
     value = re.sub(r'''(?i)(?:https?|wss?|ftp)://[^\s<>"']+''', '[URL]', value)
+    # Local file URIs bypass the absolute-path rule because of their scheme.
+    # They can expose usernames, hostnames and percent-encoded directory names.
+    value = re.sub(r'''(?i)\bfile:/+[^\s<>"']+''', '[PATH]', value)
     value = re.sub(r'''(?i)(?<!\w)(?:[a-z]:[\\/]|\\\\)[^\r\n<>"']*''', '[PATH]', value)
     value = re.sub(r'''(?<![\w:/])/(?:[^\s/<>"']+/)*[^\s<>"']*''', '[PATH]', value)
     return value
