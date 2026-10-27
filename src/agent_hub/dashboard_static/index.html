@@ -11,7 +11,7 @@
 <body>
   <header class="topbar">
     <div class="logo"><button class="icon-btn mobile-menu" id="menu-toggle" aria-label="打开任务列表" aria-controls="sidebar" aria-expanded="false">☰</button><span class="logo-mark" aria-hidden="true">◇</span>Agent Hub <span class="brand-caption">工作空间</span></div>
-    <div class="top-meta"><span id="connection" role="status">正在连接</span><span class="read-only">只读看板</span><button class="plain-btn" id="refresh">刷新</button></div>
+    <div class="top-meta"><button class="plain-btn overview-btn" id="overview-btn" aria-controls="overview" aria-pressed="true">总览</button><span id="connection" role="status">正在连接</span><span class="read-only">只读看板</span><button class="plain-btn" id="refresh">刷新</button></div>
   </header>
   <div class="notice" id="notice" role="alert" hidden></div>
   <div class="overlay" id="overlay" hidden></div>
@@ -24,11 +24,12 @@
       <div class="pagination"><button id="previous" class="plain-btn" disabled>上一页</button><span id="page-label"></span><button id="next" class="plain-btn" disabled>下一页</button></div>
       <div class="side-bottom"><span class="connection-dot" aria-hidden="true"></span><span id="agent-count">正在读取执行器</span><p>来自本机 Hub 的持久化记录</p></div>
     </aside>
-    <main class="main" id="main">
+    <main class="main overview-mode" id="main">
       <div class="eyebrow" id="workspace">工作空间</div>
       <div class="title-row"><h1 id="task-title">任务与协作，一目了然。</h1><button class="icon-btn" id="detail-toggle" aria-label="切换任务详情" aria-controls="detail" aria-expanded="true">▤</button></div>
-      <p class="subtitle" id="subtitle">选择一条任务链，查看执行关系与完整协作过程。</p>
+      <p class="subtitle" id="subtitle">近 14 天全局概况 · 选择左侧任务链查看执行关系与完整协作过程。</p>
       <div class="status-line" id="status-line"></div>
+      <section id="overview" class="overview-host" aria-label="全局总览" aria-busy="true"><p class="muted">正在读取全局概况…</p></section>
       <div id="chain-error" class="inline-error" role="status" hidden></div>
       <section id="graph-panel" class="graph-panel" aria-label="任务执行关系图" hidden>
         <div class="graph-heading"><div><strong>执行关系</strong><span id="graph-count"></span></div><div class="graph-controls"><button id="zoom-out" aria-label="缩小关系图">−</button><span id="zoom-label">100%</span><button id="zoom-in" aria-label="放大关系图">+</button><button id="graph-reset">复位</button><button id="graph-toggle" aria-expanded="true" aria-controls="graph-viewport">收起</button></div></div>

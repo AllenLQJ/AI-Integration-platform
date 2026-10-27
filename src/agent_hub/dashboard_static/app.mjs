@@ -1,5 +1,6 @@
 import {createAPI, consumeTicket, isUnchanged} from './api.mjs';
-import {DashboardState, chainIdle, POLL_ACTIVE, POLL_IDLE} from './state.mjs';
+import {DashboardState, RequestGate, chainIdle, POLL_ACTIVE, POLL_IDLE} from './state.mjs';
+import {renderOverview} from './overview.mjs';
 import {createGraph} from './graph.mjs';
 import {
   TimelineExpansion, timelineRecords, coverageNotes, kindLabel, provenanceLabel, statusLabel,
@@ -44,6 +45,10 @@ let view = 'messages', pageHistory = [], timer, chainTimer, listTimer, searchTim
 let contentKey = '', contentContext = '', renderedEvents = new Map(), listKey = '';
 let renderedMessages = new Map();
 let historyLoading = false;
+// Overview mode: shown while no chain is selected; it polls on its own slow cadence.
+const POLL_OVERVIEW = 30000;
+const overviewGate = new RequestGate();
+let overviewMode = true, overviewTimer, overviewData = null, configuredAgents = [], resizeTimer;
 // True while the execution poll waits on the idle cadence and can be pulled forward.
 let detailIdleWait = false;
 // Anchor of the chain response held in state.chain; a 304 for the same anchor repeats it.
@@ -69,7 +74,7 @@ for (const value of ['queued','running','waiting_for_user','succeeded','failed',
 function notice(message = '') { $('notice').textContent = message; $('notice').hidden = !message; }
 function failure(error) {
   if (error.status === 401 || error.status === 403) {
-    stopped = true; clearTimeout(timer); clearTimeout(chainTimer); clearTimeout(listTimer); clearTimeout(searchTimer); state.detailGate.invalidate(); state.chainGate.invalidate(); state.listGate.invalidate();
+    stopped = true; clearTimeout(timer); clearTimeout(chainTimer); clearTimeout(listTimer); clearTimeout(searchTimer); clearTimeout(overviewTimer); overviewGate.invalidate(); state.detailGate.invalidate(); state.chainGate.invalidate(); state.listGate.invalidate();
     $('connection').textContent = '会话已失效'; notice(error.message);
   } else $('connection').textContent = '连接中断 · 可重试';
 }
@@ -398,6 +403,7 @@ async function pollChain(token,id,desiredNode=null) {
 }
 async function selectChain(id,desiredNode=null) {
   if(stopped)return;
+  setOverviewMode(false);
   clearTimeout(timer);clearTimeout(chainTimer);const token=state.selectChain(id);
   historyLoading = false;
   contentKey='';contentContext='';renderedEvents=new Map();renderedMessages=new Map();
@@ -423,6 +429,53 @@ async function selectNode(id,scroll) {
   else if(view==='events')renderContent();
   await poll(token,id);
 }
+function setOverviewMode(on) {
+  overviewMode = on;
+  $('main').classList.toggle('overview-mode', on);
+  $('overview-btn').setAttribute('aria-pressed', String(on));
+  if (!on) { clearTimeout(overviewTimer); overviewGate.invalidate(); }
+}
+function drawOverview() {
+  if (!overviewData || !overviewMode) return;
+  const host = $('overview');
+  renderOverview(host, overviewData, {
+    agents: configuredAgents,
+    // The daily chart is laid out for the card's inner width, so its labels never scale down.
+    width: Math.max(280, (host.clientWidth || 700) - 34),
+    onSelect: (chainId, taskId) => selectChain(chainId, taskId),
+  });
+}
+async function loadOverview() {
+  if (stopped || !overviewMode) return;
+  clearTimeout(overviewTimer);
+  const token = overviewGate.next(), host = $('overview');
+  try {
+    const data = await api.overview(token.signal);
+    if (!overviewGate.current(token) || !overviewMode) return;
+    if (!(isUnchanged(data) && overviewData)) { overviewData = data; drawOverview(); }
+    host.setAttribute('aria-busy', 'false');
+    $('connection').textContent = '已连接';
+  } catch (error) {
+    if (!overviewGate.current(token)) return;
+    failure(error);
+    if (!overviewData) host.replaceChildren(empty('全局概况暂时无法读取', `${error.message} 将自动重试，也可点击刷新。`));
+  } finally {
+    if (!stopped && overviewMode && overviewGate.current(token)) overviewTimer = later('overview', loadOverview, POLL_OVERVIEW);
+  }
+}
+function showOverview() {
+  if (stopped) return;
+  clearTimeout(timer); clearTimeout(chainTimer); state.chainGate.invalidate(); state.detailGate.invalidate();
+  state.chainId = null; state.chain = null; state.selected = null; state.detail = null; state.events = []; chainAnchor = null;
+  contentKey = ''; contentContext = ''; renderedEvents = new Map(); renderedMessages = new Map();
+  graph.clear(); $('graph-panel').hidden = true; $('chain-warning').hidden = true; $('chain-error').hidden = true; $('detail-error').hidden = true;
+  $('workspace').textContent = '工作空间'; $('task-title').textContent = '任务与协作，一目了然。';
+  $('subtitle').textContent = '近 14 天全局概况 · 选择左侧任务链查看执行关系与完整协作过程。';
+  $('status-line').replaceChildren(); $('detail-content').replaceChildren(node('p','muted','选择任务后查看上下文。'));
+  closeDrawers(); setOverviewMode(true); renderList(); drawOverview(); loadOverview();
+}
+$('overview-btn').addEventListener('click', showOverview);
+addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(drawOverview, 150); });
 function setView(next) {
   view=next;
   for(const item of document.querySelectorAll('[data-view]')){item.classList.toggle('active',item.dataset.view===view);item.setAttribute('aria-pressed',String(item.dataset.view===view));}
@@ -486,10 +539,11 @@ async function loadAgents() {
     for (const agent of agents.items) $('agent-filter').append(new Option(agent.id,agent.id));
     $('agent-filter').value = selected;
     $('agent-count').textContent = `${agents.items.length} 个已配置执行器`;
+    configuredAgents = agents.items.map(agent => agent.id);
   } catch (error) { failure(error); notice(error.message); $('agent-count').textContent = '执行器列表不可用 · 可刷新重试'; }
   finally { agentsPending = false; }
 }
-$('refresh').addEventListener('click',()=>{ if (stopped) { notice('会话已失效，请通过本机 Hub 命令重新打开看板。'); return; } loadAgents(); loadList(state.offset); if (state.chainId) selectChain(state.chainId,state.selected); });
+$('refresh').addEventListener('click',()=>{ if (stopped) { notice('会话已失效，请通过本机 Hub 命令重新打开看板。'); return; } loadAgents(); loadList(state.offset); if (state.chainId) selectChain(state.chainId,state.selected); else loadOverview(); });
 function applyBulk(open) {
   if (!state.chainId) return;
   expansion.setAll(state.chainId, open);
@@ -504,6 +558,7 @@ async function start() {
     await consumeTicket(api);
     await loadAgents();
     await loadList();
+    loadOverview();
   } catch (error) { failure(error); notice(error.message); $('task-list').setAttribute('aria-busy','false'); $('agent-count').textContent = '执行器列表不可用'; }
 }
 start();
