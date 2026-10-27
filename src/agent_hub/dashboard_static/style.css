@@ -1544,7 +1544,7 @@ h1 {
   fill-opacity:.05;
 }
 .viz-tip {
-  position:absolute;
+  position:fixed;
   z-index:5;
   min-width:140px;
   max-width:200px;
@@ -1830,9 +1830,6 @@ h1 {
 }
 .gantt-host {
   padding:10px 16px 4px;
-}
-.gantt {
-  position:relative;
 }
 .gantt-frame {
   overflow-x:auto;
