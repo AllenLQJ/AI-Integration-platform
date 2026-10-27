@@ -182,6 +182,28 @@ class DashboardHTTPTests(unittest.TestCase):
                 self.assertEqual(status, 200, body)
                 self.assertNotEqual(changed['ETag'], headers['ETag'])
 
+    def test_task_detail_folds_live_events_into_one_conditional_read(self):
+        cookie = self.session()
+        task = self.service.submit('live-detail', 'fake', 'live', str(self.root), 'read_only')
+        self.service.store.event(task['id'], 'progress', {'message': 'one'})
+        cursor = self.service.store.events(task['id'], 0, 200)['next_seq']
+        path = '/dashboard/api/v1/tasks/' + task['id']
+        status, headers, body = self.request(path + '?after_seq=' + str(cursor), headers={'Cookie': cookie})
+        self.assertEqual(status, 200, body)
+        live = json.loads(body)
+        self.assertEqual(live['task']['id'], task['id'])
+        self.assertEqual(live['live_events'], {'events': [], 'next_seq': cursor})
+        conditional = {'Cookie': cookie, 'If-None-Match': headers['ETag']}
+        self.assertEqual(self.request(path + '?after_seq=' + str(cursor), headers=conditional)[0], 304)
+        self.service.store.event(task['id'], 'progress', {'message': 'two'})
+        status, _, body = self.request(path + '?after_seq=' + str(cursor), headers=conditional)
+        self.assertEqual(status, 200, body)
+        self.assertEqual([e['data']['message'] for e in json.loads(body)['live_events']['events']], ['two'])
+        # Without the cursor the detail keeps its previous shape.
+        self.assertNotIn('live_events', json.loads(self.request(path, headers={'Cookie': cookie})[2]))
+        for query in ('after_seq=-1', 'after_seq=x', 'after_seq=1&after_seq=2', 'before_seq=1'):
+            self.assertEqual(self.request(path + '?' + query, headers={'Cookie': cookie})[0], 400, query)
+
     def test_workbench_renders_latest_page_and_pages_older_events(self):
         from hub_fixtures import with_work_item
         task = self.service.call('submit_task', with_work_item(self.service, dict(request_id='work-paging', agent='fake',

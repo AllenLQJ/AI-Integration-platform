@@ -80,9 +80,12 @@ export function createAPI(fetcher = globalThis.fetch.bind(globalThis)) {
     async agents(signal) {
       const data = await request('api/v1/agents', {signal}); return valid(data, Array.isArray(data?.items));
     },
-    async detail(id, signal) {
-      const data = await request(`api/v1/tasks/${encodeURIComponent(id)}`, {signal});
-      return valid(data, data?.task?.id === id && ['messages','relations','criteria','artifacts'].every(key=>Array.isArray(data[key])));
+    // With `after`, the response also carries the live event page (`live_events`) after that cursor.
+    async detail(id, signal, after = null) {
+      const query = after == null ? '' : `?after_seq=${after}`;
+      const data = await request(`api/v1/tasks/${encodeURIComponent(id)}${query}`, {signal});
+      return valid(data, data?.task?.id === id && ['messages','relations','criteria','artifacts'].every(key=>Array.isArray(data[key]))
+        && (after == null || (Array.isArray(data.live_events?.events) && Number.isInteger(data.live_events.next_seq))));
     },
     async events(id, after, signal) {
       const data = await request(`api/v1/tasks/${encodeURIComponent(id)}/events?after_seq=${after}`, {signal});

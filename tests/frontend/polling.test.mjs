@@ -48,7 +48,8 @@ test('settled chains back off, hidden tabs stop polling and visible tabs resume 
         : url.includes('/events?') ? {events:[{seq:1,kind:'progress',data:{message:'done'},timestamp:2}],next_seq:1,has_more:false}
         : url.includes('/chains?') ? {items:[task],next_offset:null}
         : url.includes('/chains/') ? {chain:task,nodes:[task],edges:[],messages:[],warnings:[],truncated:false}
-        : {task,messages:[],relations:[],criteria:[],artifacts:[],verification_checks:[]};
+        : {task,messages:[],relations:[],criteria:[],artifacts:[],verification_checks:[],
+           ...(url.includes('?after_seq=') ? {live_events:{events:[],next_seq:1}} : {})};
       return new Response(JSON.stringify(data));
     };
     await import('../../src/agent_hub/dashboard_static/app.mjs');
@@ -59,6 +60,12 @@ test('settled chains back off, hidden tabs stop polling and visible tabs resume 
     assert.equal(pending(2500).length, 0);
     assert.equal(pending(15000).length, 2);
     assert.equal(pending(5000).length, 1, 'list keeps its cadence so new chains appear');
+
+    // A live execution tick is one request carrying both the detail and new events.
+    const sleepingDetail = pending(15000).find(item=>!String(item.fn).includes('pollChain'));
+    const tickStart = requests.length;
+    sleepingDetail.used = true; await sleepingDetail.fn(); await settle();
+    assert.deepEqual(requests.slice(tickStart), ['/dashboard/api/v1/tasks/task-1?after_seq=1']);
 
     // New work seen by the chain poll restores the fast cadence and pulls the
     // sleeping execution poll forward instead of leaving it on the 15s timer.
@@ -90,7 +97,7 @@ test('settled chains back off, hidden tabs stop polling and visible tabs resume 
     const resumed = requests.slice(before);
     assert.ok(resumed.some(url=>url.includes('/chains?')), resumed.join(' '));
     assert.ok(resumed.some(url=>url.includes('/chains/task-1')), resumed.join(' '));
-    assert.ok(resumed.some(url=>url.endsWith('/tasks/task-1')), resumed.join(' '));
+    assert.ok(resumed.some(url=>url.includes('/tasks/task-1')), resumed.join(' '));
     assert.ok(pending().length >= 3);
 
     // A second visibility event does not start duplicate loops.

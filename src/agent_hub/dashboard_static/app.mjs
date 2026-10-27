@@ -309,15 +309,20 @@ async function poll(token, id) {
   let delay = POLL_ACTIVE;
   try {
     const initial = !state.historyMode && state.cursor === 0;
-    const data = state.historyMode ? null : initial ? await api.eventHistory(id,undefined,token.signal)
-      : await api.events(id,state.cursor,token.signal);
-    if (!state.detailGate.current(token)) return;
-    // Store updates and verification transitions do not always emit events.
-    const detail = await api.detail(id,token.signal);
+    // Store updates and verification transitions do not always emit events, so the
+    // detail is read every tick. Live ticks fetch it together with new events.
+    let data = null, detail;
+    if (initial) {
+      data = await api.eventHistory(id,undefined,token.signal);
+      if (!state.detailGate.current(token)) return;
+      detail = await api.detail(id,token.signal);
+    } else if (state.historyMode) detail = await api.detail(id,token.signal);
+    else { detail = await api.detail(id,token.signal,state.cursor); data = detail.live_events; }
     if (!state.detailGate.current(token)) return;
     const detailKey = value => value && [value.task,value.relations,value.criteria,value.artifacts,value.verification_checks,value.acceptance_policy];
     // A revalidated (304) response repeats the last body for this execution.
     const changed = !state.detail || (!isUnchanged(detail) && JSON.stringify(detailKey(state.detail)) !== JSON.stringify(detailKey(detail)));
+    if (detail.live_events) { const {live_events: _events, ...rest} = detail; detail = rest; }
     state.detail = detail;
     if (data && !(initial ? state.replaceEvents(token,data,false) : state.commitEvents(token,data))) return;
     if (changed) renderDetail();

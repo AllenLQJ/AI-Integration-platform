@@ -364,8 +364,12 @@ class DashboardHTTP:
                         after = self.integer(args.get('after_seq', '0'), 0, 9223372036854775807)
                         result = dashboard.events(match[1], after_seq=after)
                 else:
-                    self.query(query, set())
+                    # after_seq folds the live event page into the detail poll (one request per tick).
+                    args = self.query(query, {'after_seq'})
                     result = dashboard.detail(match[1])
+                    if 'after_seq' in args:
+                        after = self.integer(args['after_seq'], 0, 9223372036854775807)
+                        result['live_events'] = dashboard.events(match[1], after_seq=after)
             if not conditional:
                 return self.send(handler, 200, result)
             content = json.dumps(result, ensure_ascii=False).encode('utf-8')
