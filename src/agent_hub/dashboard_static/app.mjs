@@ -2,7 +2,7 @@ import {createAPI, consumeTicket, isUnchanged} from './api.mjs';
 import {DashboardState, RequestGate, chainIdle, POLL_ACTIVE, POLL_IDLE} from './state.mjs';
 import {renderOverview} from './overview.mjs';
 import {agentColors, relativeTime, stateOutcome} from './viz.mjs';
-import {renderGantt} from './chainviz.mjs';
+import {renderChainStats, renderGantt} from './chainviz.mjs';
 import {createGraph} from './graph.mjs';
 import {
   TimelineExpansion, timelineRecords, coverageNotes, kindLabel, provenanceLabel, statusLabel,
@@ -304,6 +304,7 @@ function renderChain() {
   if(state.chain.truncated&&!notes.length)notes.push('此任务链仅展示部分记录。');
   $('chain-warning').textContent=notes.join(' ');$('chain-warning').hidden=!notes.length;
   $('graph-panel').hidden=false;graph.render(state.chain.nodes,state.chain.edges,state.selected);drawGantt();
+  $('chain-stats').hidden=false;renderChainStats($('chain-stats'),state.chain);
   $('graph-count').textContent=`${state.chain.nodes.length} 个节点 · ${state.chain.edges.length} 条关联`;
   renderContent();
 }
@@ -411,7 +412,7 @@ async function pollChain(token,id,desiredNode=null) {
     if(!(isUnchanged(data)&&state.chain&&chainAnchor===anchor)){
       state.chain=data;state.chainId=data.chain.id;chainAnchor=anchor;
       renderList();renderChain();
-    } else if(state.chain.chain.active_count)drawGantt();
+    } else if(state.chain.chain.active_count){drawGantt();renderChainStats($('chain-stats'),state.chain);}
     $('chain-error').hidden=true;
     if(!state.selected||!data.nodes.some(n=>n.id===state.selected)) {
       const selected=data.nodes.some(n=>n.id===desiredNode) ? desiredNode : data.nodes.some(n=>n.id===data.chain.latest_task_id) ? data.chain.latest_task_id : data.nodes[0]?.id;
@@ -428,7 +429,7 @@ async function pollChain(token,id,desiredNode=null) {
   } catch(error) {
     if(!state.chainGate.current(token))return;
     failure(error);$('chain-error').textContent=`${error.message} 将自动重试，也可点击刷新。`;$('chain-error').hidden=false;delay=5000;
-    if(!state.chain){$('graph-panel').hidden=true;graph.clear();$('content').replaceChildren(empty('任务链暂时无法读取','请等待重试，或点击刷新。'));contentKey='';}
+    if(!state.chain){$('graph-panel').hidden=true;$('chain-stats').hidden=true;graph.clear();$('content').replaceChildren(empty('任务链暂时无法读取','请等待重试，或点击刷新。'));contentKey='';}
   } finally {
     if(!stopped&&state.chainGate.current(token))chainTimer=later('chain',()=>pollChain(token,id,desiredNode),delay);
   }
@@ -439,7 +440,7 @@ async function selectChain(id,desiredNode=null) {
   clearTimeout(timer);clearTimeout(chainTimer);const token=state.selectChain(id);
   historyLoading = false;
   contentKey='';contentContext='';renderedEvents=new Map();renderedMessages=new Map();
-  graph.clear();$('graph-panel').hidden=true;$('chain-warning').hidden=true;$('chain-error').hidden=true;$('zoom-label').textContent='100%';
+  graph.clear();$('graph-panel').hidden=true;$('chain-stats').hidden=true;$('chain-warning').hidden=true;$('chain-error').hidden=true;$('zoom-label').textContent='100%';
   closeDrawers();renderList();$('detail-error').hidden=true;
   $('task-title').textContent='正在读取任务链…';$('subtitle').textContent=id;$('status-line').replaceChildren();
   $('detail-content').replaceChildren(node('p','muted','正在读取…'));renderContent();
@@ -500,7 +501,7 @@ function showOverview() {
   clearTimeout(timer); clearTimeout(chainTimer); state.chainGate.invalidate(); state.detailGate.invalidate();
   state.chainId = null; state.chain = null; state.selected = null; state.detail = null; state.events = []; chainAnchor = null;
   contentKey = ''; contentContext = ''; renderedEvents = new Map(); renderedMessages = new Map();
-  graph.clear(); $('graph-panel').hidden = true; $('chain-warning').hidden = true; $('chain-error').hidden = true; $('detail-error').hidden = true;
+  graph.clear(); $('graph-panel').hidden = true; $('chain-stats').hidden = true; $('chain-warning').hidden = true; $('chain-error').hidden = true; $('detail-error').hidden = true;
   $('workspace').textContent = '工作空间'; $('task-title').textContent = '任务与协作，一目了然。';
   $('subtitle').textContent = '近 14 天全局概况 · 选择左侧任务链查看执行关系与完整协作过程。';
   $('status-line').replaceChildren(); $('detail-content').replaceChildren(node('p','muted','选择任务后查看上下文。'));
