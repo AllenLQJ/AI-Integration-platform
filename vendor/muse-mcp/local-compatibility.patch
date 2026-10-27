@@ -1,5 +1,5 @@
 diff --git a/cli.py b/cli.py
-index 3f5c2d2..50c17cc 100755
+index 3f5c2d2..ca9bea2 100755
 --- a/cli.py
 +++ b/cli.py
 @@ -35,7 +35,18 @@ def _browser_run(argv):
@@ -22,6 +22,26 @@ index 3f5c2d2..50c17cc 100755
      if r.returncode != 0:
          raise RuntimeError((r.stderr or r.stdout)[:200] or f"exit {r.returncode}")
      try:
+@@ -50,7 +61,9 @@ def _browser_run(argv):
+ def _browser_cookies(headed):
+     """Read the cookie jar via agent-browser. Headed auto-connect attaches
+     to the user's real Chrome; plain mode uses a fresh browser (no login)."""
+-    base = ["agent-browser"] + (["--headed", "--auto-connect"] if headed else [])
++    cdp = os.environ.get("MUSE_BROWSER_CDP") if headed else None
++    base = ["agent-browser"] + (["--cdp", cdp] if cdp else
++                               ["--headed", "--auto-connect"] if headed else [])
+     last_err = "unknown error"
+     for _ in range(3):
+         try:
+@@ -64,7 +77,7 @@ def _browser_cookies(headed):
+                              and (t.get("id") or t.get("tabId"))]
+                 if not muse_tabs:
+                     return None, "no muse.ai tab open in Chrome"
+-                _browser_run(base + ["tab", muse_tabs[0].get("id") or muse_tabs[0]["tabId"]])
++                _browser_run(base + ["tab", muse_tabs[0].get("id") or muse_tabs[0]["tabId"], "--json"])
+             data = _browser_run(base + ["cookies", "get", "--json"])
+             jar = data.get("cookies", []) if isinstance(data, dict) else []
+             return [c for c in jar if "muse.ai" in c.get("domain", "")], None
 diff --git a/muse.py b/muse.py
 index f43338b..b032f71 100644
 --- a/muse.py
@@ -329,10 +349,38 @@ index 252ca7c..2194d39 100644
  
  
 diff --git a/tests/test_mcp.py b/tests/test_mcp.py
-index 3df9728..8457f47 100644
+index 3df9728..3c180eb 100644
 --- a/tests/test_mcp.py
 +++ b/tests/test_mcp.py
-@@ -72,6 +72,28 @@ class MCPClientTests(unittest.TestCase):
+@@ -56,6 +56,27 @@ def config_for(path, enable_raw=False):
+ 
+ 
+ class MCPClientTests(unittest.TestCase):
++    def test_browser_cookie_export_uses_json_when_selecting_tab(self):
++        for cdp in (None, '9222'):
++            with self.subTest(cdp=cdp), patch.dict(os.environ, {}, clear=True):
++                if cdp:
++                    os.environ['MUSE_BROWSER_CDP'] = cdp
++                base = ['agent-browser', '--cdp', cdp] if cdp else ['agent-browser', '--headed', '--auto-connect']
++                cookie = {'name': 'hatch_sess', 'domain': '.muse.ai', 'value': 'test-only'}
++                def browser(argv):
++                    self.assertIn('--json', argv)
++                    self.assertEqual(argv[:len(base)], base)
++                    if 'list' in argv:
++                        return {'tabs': [{'tabId': 't1', 'url': 'https://muse.ai/'}]}
++                    if 'cookies' in argv:
++                        return {'cookies': [cookie]}
++                    return {}
++                with patch.object(cli, '_browser_run', side_effect=browser) as run:
++                    jar, error = cli._browser_cookies(True)
++                self.assertIsNone(error)
++                self.assertEqual(jar, [cookie])
++                self.assertEqual(run.call_count, 3)
++
+     def setUp(self):
+         self.tempdir = tempfile.TemporaryDirectory()
+         self.cookie_file = Path(self.tempdir.name) / "cookies.txt"
+@@ -72,6 +93,28 @@ class MCPClientTests(unittest.TestCase):
              gateway_factory=lambda *a, **k: gateway,
          )
  

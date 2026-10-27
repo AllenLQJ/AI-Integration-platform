@@ -30,6 +30,14 @@ npm install --prefix .tools agent-browser@0.38.2
 
 认证命令的 Python 模块入口是 `python -m muse_mcp.cli auth export`。`python -m muse_mcp` 只启动等待 stdio 输入的 MCP 服务，不处理 `auth export` 参数，不能用来刷新登录。独立运行 `python verify_muse.py` 只检查状态；加 `--send` 才会发送一条真实测试消息。
 
+认证导出切换标签页时同样使用 `--json`，避免把成功切换的文本输出误判为失败。若 Chrome 已开启远程调试但自动发现失败，可通过 `MUSE_BROWSER_CDP` 显式指定 Chrome 设置页显示的端口，例如在 macOS/Linux 运行：
+
+```sh
+MUSE_BROWSER_CDP=9222 .venv/bin/python -m muse_mcp.cli auth export
+```
+
+以上命令在连接器目录执行，并要求 `agent-browser` 已在 PATH 中。该变量只用于认证导出；日常 MCP 调用不需要浏览器调试连接。Cookie 仍只写入用户的私有配置目录，缺少有效登录 Cookie 时不会覆盖已有文件。
+
 2026-10-21 Windows 本机已验证导出成功、MCP `ok=true` / `authenticated=true`，并收到真实测试回复“连接成功”。此项仅覆盖本轮认证与消息收发。
 
 同日发布复测中，一次重复导出未取得 `hatch_sess`，上游工具拒绝覆盖已有 Cookie，脚本以错误退出；随后独立状态检查仍为 `ok=true` / `authenticated=true`。再次运行认证脚本后导出及状态检查通过，并收到新一轮真实回复“复测成功”。长期稳定性尚未验证，不能把已有认证有效当作新一轮导出成功。
