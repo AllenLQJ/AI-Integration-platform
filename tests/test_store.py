@@ -59,6 +59,39 @@ class StoreTests(unittest.TestCase):
         # After close the store keeps working with per-call connections.
         self.assertEqual(self.store.get(task['id'])['id'], task['id'])
 
+    def test_close_releases_pooled_connections_from_finished_threads(self):
+        # A finished thread's pooled connection is kept alive by the sqlite
+        # statement-cache cycle, so it outlives the thread until cyclic GC.
+        # close() must drop it itself: Windows cannot delete tasks.db while
+        # that handle is still open, and cleanup does not wait for GC.
+        import gc
+        import sqlite3
+        import threading
+        self.store.reuse_connections()
+        def other():
+            with self.store.connection() as db:
+                db.execute('SELECT 1').fetchall()
+        gc.disable()
+        try:
+            before = {id(obj) for obj in gc.get_objects() if isinstance(obj, sqlite3.Connection)}
+            worker = threading.Thread(target=other)
+            worker.start()
+            worker.join()
+            self.store.close()
+            leaked = []
+            for obj in gc.get_objects():
+                if not isinstance(obj, sqlite3.Connection) or id(obj) in before:
+                    continue
+                try:
+                    obj.execute('SELECT 1')
+                except sqlite3.ProgrammingError:
+                    continue
+                leaked.append(obj)
+            self.assertEqual(leaked, [])
+        finally:
+            gc.enable()
+            gc.collect()
+
     def test_concurrent_idempotency_and_conflict(self):
         with ThreadPoolExecutor(8) as pool:
             ids = list(pool.map(lambda _: self.store.create('same', self.spec)['id'], range(20)))

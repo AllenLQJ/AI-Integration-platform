@@ -5,17 +5,9 @@ import sqlite3
 import threading
 import time
 import uuid
-import weakref
 from contextlib import contextmanager
 from pathlib import Path
 from .models import HubError, TERMINAL, redact
-
-
-class _PooledConnection:
-    __slots__ = ('db', '__weakref__')
-
-    def __init__(self, db):
-        self.db = db
 
 
 class Store:
@@ -62,23 +54,26 @@ class Store:
         Opening a connection costs hundreds of microseconds, which dominates
         small reads. Nested use within a thread still opens a separate
         connection so each `with connection()` remains its own transaction.
+
+        The sqlite statement cache keeps a finished thread's connection alive
+        until cyclic GC. close() holds those connections and closes them
+        itself, so a data directory can be removed without waiting for GC
+        (Windows refuses to delete an open tasks.db).
         """
         self._local = threading.local()
-        # Holders, not connections: sqlite3.Connection has no weakref slot. A
-        # finished thread drops its holder, which closes that connection.
-        self._cached = weakref.WeakSet()
-        self._cached_lock = threading.Lock()
+        self._pooled = []
+        self._pooled_lock = threading.Lock()
 
     def close(self):
-        if getattr(self, '_local', None) is None:
+        if getattr(self, '_local', None) is None and not getattr(self, '_pooled', None):
             return
-        with self._cached_lock:
-            cached = list(self._cached)
-            self._cached.clear()
+        with self._pooled_lock:
+            pooled = list(self._pooled)
+            self._pooled.clear()
         self._local = None
-        for holder in cached:
+        for db in pooled:
             try:
-                holder.db.close()
+                db.close()
             except sqlite3.Error:
                 pass
 
@@ -86,18 +81,16 @@ class Store:
     def connection(self):
         local = getattr(self, '_local', None)
         cached = local is not None and not getattr(local, 'busy', False)
-        holder = getattr(local, 'holder', None) if cached else None
-        if holder is not None:
-            db = holder.db
-        else:
+        db = getattr(local, 'holder', None) if cached else None
+        if db is None:
             # Cached connections are only used by their owning thread; close()
             # may run elsewhere, hence check_same_thread=False.
             db = sqlite3.connect(self.path, timeout=30, check_same_thread=not cached)
             db.row_factory = sqlite3.Row
             if cached:
-                holder = local.holder = _PooledConnection(db)
-                with self._cached_lock:
-                    self._cached.add(holder)
+                local.holder = db
+                with self._pooled_lock:
+                    self._pooled.append(db)
         if cached:
             local.busy = True
         broken = False
@@ -115,8 +108,11 @@ class Store:
                 if broken or db.in_transaction:
                     # Never hand a connection with an unknown transaction state to the next caller.
                     local.holder = None
-                    with self._cached_lock:
-                        self._cached.discard(holder)
+                    with self._pooled_lock:
+                        try:
+                            self._pooled.remove(db)
+                        except ValueError:
+                            pass
                     try:
                         db.close()
                     except sqlite3.Error:
