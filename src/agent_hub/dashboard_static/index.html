@@ -32,8 +32,9 @@
       <section id="overview" class="overview-host" aria-label="全局总览" aria-busy="true"><p class="muted">正在读取全局概况…</p></section>
       <div id="chain-error" class="inline-error" role="status" hidden></div>
       <section id="graph-panel" class="graph-panel" aria-label="任务执行关系图" hidden>
-        <div class="graph-heading"><div><strong>执行关系</strong><span id="graph-count"></span></div><div class="graph-controls"><button id="zoom-out" aria-label="缩小关系图">−</button><span id="zoom-label">100%</span><button id="zoom-in" aria-label="放大关系图">+</button><button id="graph-reset">复位</button><button id="graph-toggle" aria-expanded="true" aria-controls="graph-viewport">收起</button></div></div>
+        <div class="graph-heading"><div><strong>执行关系</strong><span id="graph-count"></span></div><div class="graph-controls"><span class="view-switch" role="group" aria-label="切换执行视图"><button id="view-graph" aria-pressed="true">关系图</button><button id="view-gantt" aria-pressed="false">时间轴</button></span><span class="zoom-controls" id="zoom-controls"><button id="zoom-out" aria-label="缩小关系图">−</button><span id="zoom-label">100%</span><button id="zoom-in" aria-label="放大关系图">+</button><button id="graph-reset">复位</button></span><button id="graph-toggle" aria-expanded="true" aria-controls="graph-viewport gantt">收起</button></div></div>
         <div id="graph-viewport" class="graph-viewport" tabindex="0" aria-label="执行关系图，可横向滚动"><div id="graph-stage" class="graph-stage"></div></div>
+        <div id="gantt" class="gantt-host" aria-label="执行时间轴" hidden></div>
         <p class="graph-hint" id="graph-hint">点击节点定位对话 · 实线表示续接或切换，虚线表示审查</p>
       </section>
       <div id="chain-warning" class="inline-error" role="status" hidden></div>

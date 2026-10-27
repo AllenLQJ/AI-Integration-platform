@@ -1801,3 +1801,90 @@ h1 {
 .state-more {
   margin-left:3px;
 }
+
+/* Execution view switch and the Gantt chart inside the graph panel. */
+.view-switch {
+  display:inline-flex;
+  padding:2px;
+  border-radius:8px;
+  background:var(--p-f0f0f3);
+}
+.graph-controls .view-switch button {
+  min-height:23px;
+  padding:2px 9px;
+  background:transparent;
+  font-size:11px;
+}
+.graph-controls .view-switch button[aria-pressed="true"] {
+  background:var(--p-ffffff);
+  color:var(--ink);
+  font-weight:600;
+}
+.zoom-controls {
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+}
+.zoom-controls[hidden] {
+  display:none;
+}
+.gantt-host {
+  position:relative;
+  padding:10px 16px 4px;
+}
+.gantt-frame {
+  overflow-x:auto;
+}
+.gantt-chart {
+  display:block;
+  max-width:none;
+}
+.gantt-chart .grid {
+  stroke:var(--line);
+}
+.gantt-chart .lane-line {
+  stroke:var(--line);
+  stroke-dasharray:2 3;
+}
+.gantt-chart .axis,
+.gantt-chart .now-label {
+  fill:var(--muted);
+  font-size:10px;
+  font-variant-numeric:tabular-nums;
+}
+.gantt-chart .lane-name {
+  fill:var(--ink);
+  font-size:11px;
+}
+.gantt-chart .now-line {
+  stroke:var(--viz-active);
+  stroke-width:1.5;
+  stroke-dasharray:4 3;
+}
+.gantt-chart .hit {
+  fill:transparent;
+}
+.gantt-bar {
+  cursor:pointer;
+  outline:none;
+}
+.gantt-bar .bar.active {
+  fill-opacity:.75;
+}
+.gantt-bar:hover .bar,
+.gantt-bar:focus-visible .bar,
+.gantt-bar.selected .bar {
+  stroke:var(--ink);
+  stroke-width:2;
+}
+.gantt-chart .bar-label {
+  fill:var(--p-ffffff);
+  font-size:10px;
+  font-weight:600;
+  pointer-events:none;
+}
+.gantt-note {
+  margin:6px 0 0;
+  color:var(--muted);
+  font-size:11px;
+}

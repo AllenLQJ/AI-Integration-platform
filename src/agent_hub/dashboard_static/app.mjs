@@ -2,6 +2,7 @@ import {createAPI, consumeTicket, isUnchanged} from './api.mjs';
 import {DashboardState, RequestGate, chainIdle, POLL_ACTIVE, POLL_IDLE} from './state.mjs';
 import {renderOverview} from './overview.mjs';
 import {agentColors, relativeTime, stateOutcome} from './viz.mjs';
+import {renderGantt} from './chainviz.mjs';
 import {createGraph} from './graph.mjs';
 import {
   TimelineExpansion, timelineRecords, coverageNotes, kindLabel, provenanceLabel, statusLabel,
@@ -50,6 +51,8 @@ let historyLoading = false;
 const POLL_OVERVIEW = 30000;
 const overviewGate = new RequestGate();
 let overviewMode = true, overviewTimer, overviewData = null, configuredAgents = [], resizeTimer;
+// Execution view inside the graph panel: 'graph' (relations) or 'gantt' (time); kept across chains.
+let chainView = 'graph';
 // True while the execution poll waits on the idle cadence and can be pulled forward.
 let detailIdleWait = false;
 // Anchor of the chain response held in state.chain; a 304 for the same anchor repeats it.
@@ -300,7 +303,7 @@ function renderChain() {
   const notes=state.chain.warnings.map(item=>warnings[item]||text(item));
   if(state.chain.truncated&&!notes.length)notes.push('此任务链仅展示部分记录。');
   $('chain-warning').textContent=notes.join(' ');$('chain-warning').hidden=!notes.length;
-  $('graph-panel').hidden=false;graph.render(state.chain.nodes,state.chain.edges,state.selected);
+  $('graph-panel').hidden=false;graph.render(state.chain.nodes,state.chain.edges,state.selected);drawGantt();
   $('graph-count').textContent=`${state.chain.nodes.length} 个节点 · ${state.chain.edges.length} 条关联`;
   renderContent();
 }
@@ -408,7 +411,7 @@ async function pollChain(token,id,desiredNode=null) {
     if(!(isUnchanged(data)&&state.chain&&chainAnchor===anchor)){
       state.chain=data;state.chainId=data.chain.id;chainAnchor=anchor;
       renderList();renderChain();
-    }
+    } else if(state.chain.chain.active_count)drawGantt();
     $('chain-error').hidden=true;
     if(!state.selected||!data.nodes.some(n=>n.id===state.selected)) {
       const selected=data.nodes.some(n=>n.id===desiredNode) ? desiredNode : data.nodes.some(n=>n.id===data.chain.latest_task_id) ? data.chain.latest_task_id : data.nodes[0]?.id;
@@ -444,7 +447,7 @@ async function selectChain(id,desiredNode=null) {
 }
 async function selectNode(id,scroll) {
   if(stopped||!state.chain?.nodes.some(n=>n.id===id))return;
-  clearTimeout(timer);const token=state.select(id);graph.select(id);highlightMessages();
+  clearTimeout(timer);const token=state.select(id);graph.select(id);highlightMessages();drawGantt();
   historyLoading = false;
   $('detail-content').replaceChildren(node('p','muted','正在读取执行…'));$('detail-error').hidden=true;
   if(scroll){
@@ -504,15 +507,36 @@ function showOverview() {
   closeDrawers(); setOverviewMode(true); renderList(); drawOverview(); loadOverview();
 }
 $('overview-btn').addEventListener('click', showOverview);
-addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(drawOverview, 150); });
+addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { drawOverview(); drawGantt(); }, 150); });
+function drawGantt() {
+  if (chainView !== 'gantt' || !state.chain || $('graph-panel').classList.contains('collapsed')) return;
+  renderGantt($('gantt'), state.chain, {agents: configuredAgents, selected: state.selected,
+    width: Math.max(320, ($('gantt').clientWidth || $('graph-panel').clientWidth || 700) - 32),
+    onSelect: id => selectNode(id, true)});
+}
+function setChainView(next) {
+  chainView = next;
+  const collapsed = $('graph-panel').classList.contains('collapsed');
+  $('graph-viewport').hidden = collapsed || next !== 'graph';
+  $('gantt').hidden = collapsed || next !== 'gantt';
+  $('zoom-controls').hidden = next !== 'graph';
+  $('view-graph').setAttribute('aria-pressed', String(next === 'graph'));
+  $('view-gantt').setAttribute('aria-pressed', String(next === 'gantt'));
+  $('graph-hint').textContent = next === 'graph' ? '点击节点定位对话 · 实线表示续接或切换，虚线表示审查'
+    : '按执行器分泳道 · 横条从提交到结束，进行中的执行延伸到现在 · 点击定位对话';
+  drawGantt();
+}
+$('view-graph').addEventListener('click', () => setChainView('graph'));
+$('view-gantt').addEventListener('click', () => setChainView('gantt'));
 function setView(next) {
   view=next;
   for(const item of document.querySelectorAll('[data-view]')){item.classList.toggle('active',item.dataset.view===view);item.setAttribute('aria-pressed',String(item.dataset.view===view));}
 }
 $('graph-toggle').addEventListener('click',()=>{
   const collapsed=$('graph-panel').classList.toggle('collapsed');
-  $('graph-viewport').hidden=collapsed;$('graph-hint').hidden=collapsed;
+  $('graph-viewport').hidden=collapsed||chainView!=='graph';$('gantt').hidden=collapsed||chainView!=='gantt';$('graph-hint').hidden=collapsed;
   $('graph-toggle').textContent=collapsed?'展开':'收起';$('graph-toggle').setAttribute('aria-expanded',String(!collapsed));
+  if(!collapsed)drawGantt();
 });
 for(const [id,delta] of [['zoom-out',-.1],['zoom-in',.1]])$(id).addEventListener('click',()=>{$('zoom-label').textContent=`${Math.round(graph.zoom(delta)*100)}%`;});
 $('graph-reset').addEventListener('click',()=>{graph.reset();$('zoom-label').textContent='100%';});
