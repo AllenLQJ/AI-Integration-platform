@@ -54,8 +54,25 @@ class Service:
         self.review_failures = {}
         self.review_retry_at = {}
         self.recover_auto_rework()
+        self._locked_tools = {
+            'ide_next_task': lambda a: self._tool_ide('ide_next_task', a),
+            'ide_task_update': lambda a: self._tool_ide('ide_task_update', a),
+            'ide_task_status': lambda a: self._tool_ide('ide_task_status', a),
+            'get_capabilities': self._tool_get_capabilities,
+            'get_artifact': self._tool_get_artifact,
+            'create_work_item': self._tool_create_work_item,
+            'submit_task': self._tool_submit_task,
+            'resume_task': lambda a: self.resume_task(**a),
+            'get_task': self._tool_get_task,
+            'get_result': self._tool_get_result,
+        }
         self.thread = threading.Thread(target=self.schedule, daemon=True)
         self.thread.start()
+
+    # Tools that act on an existing attempt: they carry task_id and honour the controller lease.
+    CONTROLLED_TOOLS = frozenset({
+        'continue_task', 'cancel_task', 'verify_task', 'record_verification', 'switch_executor',
+        'record_external_verification', 'record_activity', 'link_task', 'reconcile_task'})
 
     def call(self, tool, arguments):
         if tool == 'transfer_artifact':
@@ -69,66 +86,8 @@ class Service:
         if (tool in {'submit_task', 'continue_task', 'switch_executor'} and isinstance(arguments, dict)
                 and isinstance(arguments.get('request_id'), str) and arguments['request_id'].startswith('auto-review:')):
             raise HubError('INVALID_ARGUMENT', 'auto-review: 请求键保留给内部审核服务')
-        controlled = {'continue_task', 'cancel_task', 'verify_task', 'record_verification', 'switch_executor',
-                      'record_external_verification', 'record_activity', 'link_task', 'reconcile_task'}
-        if tool == 'claim_controller' or tool in controlled:
-            if any(k.startswith('_') for k in arguments):
-                raise HubError('INVALID_ARGUMENT', '不允许设置内部任务字段')
-            task_key = arguments.get('task_id') or arguments.get('related_task_id')
-            if tool == 'link_task':
-                task_key = arguments.get('task_id')
-            if not isinstance(task_key, str) or not task_key:
-                raise HubError('INVALID_ARGUMENT', 'task_id 需要非空字符串')
-            root = self.verification.root_id(task_key)
-            # reconcile_task: auth/lease under lock, network I/O outside the global Service lock
-            # and outside the long-held verification lock.
-            if tool == 'reconcile_task':
-                args = dict(arguments)
-                if set(args) - {'request_id', 'task_id', 'controller_id', 'controller_epoch'}:
-                    raise HubError('INVALID_ARGUMENT', 'reconcile_task 参数不正确')
-                controller_id = args.pop('controller_id', None)
-                controller_epoch = args.pop('controller_epoch', None)
-                with self.verification.task_lock(root):
-                    self.verification.check_controller(args['task_id'], controller_id, controller_epoch)
-                    prepared = self._reconcile_prepare(args['request_id'], args['task_id'])
-                    if prepared.get('cached'):
-                        return prepared['response']
-                return self._reconcile_execute(prepared, controller_id=controller_id,
-                                               controller_epoch=controller_epoch)
-            with self.verification.task_lock(root):
-                args = dict(arguments)
-                if tool in controlled:
-                    self.verification.check_controller(args.get('task_id') or task_key,
-                                                       args.pop('controller_id', None), args.pop('controller_epoch', None))
-                if tool == 'claim_controller':
-                    return self.verification.claim(**args)
-                if tool in {'record_verification', 'record_external_verification'} and isinstance(args.get('verifier_id'), str) and (
-                        args['verifier_id'] in self.adapters or args['verifier_id'].startswith('hub-')):
-                    raise HubError('INVALID_ARGUMENT', '执行器不能写验收结果，hub- 前缀保留给内部验证器')
-                if tool == 'record_verification':
-                    return self.verification.record(**args)
-                if tool == 'record_external_verification':
-                    return self.verification.external(**args)
-                if tool == 'record_activity':
-                    if set(args) - {'request_id', 'task_id', 'event_id', 'activity'}:
-                        raise HubError('INVALID_ARGUMENT', 'record_activity 参数不正确')
-                    return self.record_activity(**args)
-                if tool == 'link_task':
-                    if set(args) - {'request_id', 'work_item_id', 'task_id', 'relation', 'related_task_id'}:
-                        raise HubError('INVALID_ARGUMENT', 'link_task 参数不正确')
-                    return self.work_items.link_task(**args)
-                if tool == 'verify_task':
-                    result = self.verification.request(args['request_id'], dict(tool=tool, task_id=args['task_id']),
-                                                       lambda: self.verification.run(args['task_id'], args['request_id']))
-                    self.reviewer.process(args['task_id'])
-                    self.auto_rework(args['task_id'])
-                    return result
-                with self.verification.task_lock(args['task_id']), self.lock:
-                    if tool == 'continue_task':
-                        return self.continue_task(**args)
-                    if tool == 'switch_executor':
-                        return self.switch_executor(**args)
-                    return self.cancel(**args)
+        if tool == 'claim_controller' or tool in self.CONTROLLED_TOOLS:
+            return self._call_controlled(tool, arguments)
         if tool == 'list_agents':
             with self.lock:
                 adapters = list(self.adapters.items())
@@ -138,74 +97,155 @@ class Service:
             return self.verification.work_item(**arguments)
         if tool == 'get_events':
             return dict(self.store.events(**arguments), contract_version='1.0')
-        with self.lock:
-            if tool in {'ide_next_task', 'ide_task_update', 'ide_task_status'}:
-                from .adapters.cursor_ide import CursorIDE
-                adapter = self.adapters.get('cursor')
-                if not isinstance(adapter, CursorIDE):
-                    raise HubError('AGENT_UNAVAILABLE', 'Cursor IDE 桥接未配置')
-                method = {'ide_next_task': adapter.next_task, 'ide_task_update': adapter.update,
-                          'ide_task_status': adapter.status}[tool]
-                return method(**arguments)
-            if tool == 'get_capabilities':
-                return self.gateway.capabilities(self.adapters)
-            if tool == 'get_artifact':
-                if set(arguments) - {'artifact_id', 'target_host_id', 'target_node_id'}:
-                    raise HubError('INVALID_ARGUMENT', '产物查询字段不正确')
-                args = dict(arguments)
-                target_node = args.pop('target_node_id', None)
-                if target_node is not None:
-                    node = self.nodes.get(target_node)
-                    args['target_host_id'] = node['host_id']
-                    args['target_transport'] = node['transport']
-                return self.nodes.artifact(**args)
-            if tool == 'create_work_item':
-                if set(arguments) - {'request_id', 'title', 'acceptance'}:
-                    raise HubError('INVALID_ARGUMENT', 'create_work_item 参数不正确')
-                return self.work_items.create(**arguments)
-            if tool == 'submit_task':
-                allowed = {'request_id', 'agent', 'prompt', 'cwd', 'mode', 'timeout_seconds', 'context',
-                           'acceptance', 'node_id', 'work_item_id', 'relation', 'related_task_id'}
-                if set(arguments) - allowed:
-                    raise HubError('INVALID_ARGUMENT', '不允许设置内部任务字段')
-                args = dict(arguments)
-                work_item_id = args.pop('work_item_id', None)
-                relation = args.pop('relation', None)
-                related_task_id = args.pop('related_task_id', None)
-                if work_item_id is None:
-                    raise HubError('WORK_ITEM_REQUIRED',
-                                   '公开提交必须提供 work_item_id；请先 create_work_item，审核/返修还需 related_task_id')
-                _, relation = self.work_items.require_for_submit(work_item_id, relation, related_task_id)
-                if args.get('acceptance') is None:
-                    inherited = self.work_items.acceptance_for_dispatch(work_item_id, relation)
-                    if inherited is not None:
-                        args['acceptance'] = inherited
-                # Relation participates in task digest so replay with changed link metadata conflicts.
-                task = self.submit(**args, work_item_id=work_item_id,
-                                   work_relation=relation, work_related_task_id=related_task_id)
-                self.work_items.attach(work_item_id, task['id'], relation, related_task_id, args['request_id'])
-                return task
-            if tool == 'resume_task':
-                return self.resume_task(**arguments)
-            if tool == 'continue_task':
-                return self.continue_task(**arguments)
-            if tool == 'get_task':
-                return self.public(self.store.get(arguments['task_id']))
-            if tool == 'get_result':
-                task = self.store.get(arguments['task_id'])
-                if task['state'] not in TERMINAL:
-                    return dict(ready=False, state=task['state'], intervention=task.get('intervention'), permissions=self.permissions(task), **self.verification.fields(task),
-                                **result_fields(task['state'], {}))
-                result = self.store.read_result(task)
-                if task.get('remote_observation') and 'remote_observation' not in result:
-                    result['remote_observation'] = task['remote_observation']
-                if task.get('last_reconcile') and 'last_reconcile' not in result:
-                    result['last_reconcile'] = task['last_reconcile']
-                result.update(result_fields(task['state'], result, task))
-                return dict(result, ready=True, state=task['state'], permissions=self.permissions(task), **self.verification.fields(task))
-            if tool == 'cancel_task':
-                return self.cancel(**arguments)
+        handler = self._locked_tools.get(tool)
+        if handler is None:
             raise HubError('UNKNOWN_TOOL', '未知工具')
+        with self.lock:
+            return handler(arguments)
+
+    def _call_controlled(self, tool, arguments):
+        if any(k.startswith('_') for k in arguments):
+            raise HubError('INVALID_ARGUMENT', '不允许设置内部任务字段')
+        task_key = arguments.get('task_id') or arguments.get('related_task_id')
+        if tool == 'link_task':
+            task_key = arguments.get('task_id')
+        if not isinstance(task_key, str) or not task_key:
+            raise HubError('INVALID_ARGUMENT', 'task_id 需要非空字符串')
+        root = self.verification.root_id(task_key)
+        # reconcile_task: auth/lease under lock, network I/O outside the global Service lock
+        # and outside the long-held verification lock.
+        if tool == 'reconcile_task':
+            args = dict(arguments)
+            if set(args) - {'request_id', 'task_id', 'controller_id', 'controller_epoch'}:
+                raise HubError('INVALID_ARGUMENT', 'reconcile_task 参数不正确')
+            controller_id = args.pop('controller_id', None)
+            controller_epoch = args.pop('controller_epoch', None)
+            with self.verification.task_lock(root):
+                self.verification.check_controller(args['task_id'], controller_id, controller_epoch)
+                prepared = self._reconcile_prepare(args['request_id'], args['task_id'])
+                if prepared.get('cached'):
+                    return prepared['response']
+            return self._reconcile_execute(prepared, controller_id=controller_id,
+                                           controller_epoch=controller_epoch)
+        with self.verification.task_lock(root):
+            args = dict(arguments)
+            if tool in self.CONTROLLED_TOOLS:
+                self.verification.check_controller(args.get('task_id') or task_key,
+                                                   args.pop('controller_id', None), args.pop('controller_epoch', None))
+            return getattr(self, '_tool_' + tool)(args)
+
+    def _reject_executor_verifier(self, args):
+        verifier = args.get('verifier_id')
+        if isinstance(verifier, str) and (verifier in self.adapters or verifier.startswith('hub-')):
+            raise HubError('INVALID_ARGUMENT', '执行器不能写验收结果，hub- 前缀保留给内部验证器')
+
+    def _tool_claim_controller(self, args):
+        return self.verification.claim(**args)
+
+    def _tool_record_verification(self, args):
+        self._reject_executor_verifier(args)
+        return self.verification.record(**args)
+
+    def _tool_record_external_verification(self, args):
+        self._reject_executor_verifier(args)
+        return self.verification.external(**args)
+
+    def _tool_record_activity(self, args):
+        if set(args) - {'request_id', 'task_id', 'event_id', 'activity'}:
+            raise HubError('INVALID_ARGUMENT', 'record_activity 参数不正确')
+        return self.record_activity(**args)
+
+    def _tool_link_task(self, args):
+        if set(args) - {'request_id', 'work_item_id', 'task_id', 'relation', 'related_task_id'}:
+            raise HubError('INVALID_ARGUMENT', 'link_task 参数不正确')
+        return self.work_items.link_task(**args)
+
+    def _tool_verify_task(self, args):
+        result = self.verification.request(args['request_id'], dict(tool='verify_task', task_id=args['task_id']),
+                                           lambda: self.verification.run(args['task_id'], args['request_id']))
+        self.reviewer.process(args['task_id'])
+        self.auto_rework(args['task_id'])
+        return result
+
+    def _tool_continue_task(self, args):
+        with self.verification.task_lock(args['task_id']), self.lock:
+            return self.continue_task(**args)
+
+    def _tool_switch_executor(self, args):
+        with self.verification.task_lock(args['task_id']), self.lock:
+            return self.switch_executor(**args)
+
+    def _tool_cancel_task(self, args):
+        with self.verification.task_lock(args['task_id']), self.lock:
+            return self.cancel(**args)
+
+    # The handlers below run under Service.lock; each takes the raw arguments.
+    def _tool_ide(self, tool, arguments):
+        from .adapters.cursor_ide import CursorIDE
+        adapter = self.adapters.get('cursor')
+        if not isinstance(adapter, CursorIDE):
+            raise HubError('AGENT_UNAVAILABLE', 'Cursor IDE 桥接未配置')
+        method = {'ide_next_task': adapter.next_task, 'ide_task_update': adapter.update,
+                  'ide_task_status': adapter.status}[tool]
+        return method(**arguments)
+
+    def _tool_get_capabilities(self, arguments):
+        return self.gateway.capabilities(self.adapters)
+
+    def _tool_get_artifact(self, arguments):
+        if set(arguments) - {'artifact_id', 'target_host_id', 'target_node_id'}:
+            raise HubError('INVALID_ARGUMENT', '产物查询字段不正确')
+        args = dict(arguments)
+        target_node = args.pop('target_node_id', None)
+        if target_node is not None:
+            node = self.nodes.get(target_node)
+            args['target_host_id'] = node['host_id']
+            args['target_transport'] = node['transport']
+        return self.nodes.artifact(**args)
+
+    def _tool_create_work_item(self, arguments):
+        if set(arguments) - {'request_id', 'title', 'acceptance'}:
+            raise HubError('INVALID_ARGUMENT', 'create_work_item 参数不正确')
+        return self.work_items.create(**arguments)
+
+    def _tool_submit_task(self, arguments):
+        allowed = {'request_id', 'agent', 'prompt', 'cwd', 'mode', 'timeout_seconds', 'context',
+                   'acceptance', 'node_id', 'work_item_id', 'relation', 'related_task_id'}
+        if set(arguments) - allowed:
+            raise HubError('INVALID_ARGUMENT', '不允许设置内部任务字段')
+        args = dict(arguments)
+        work_item_id = args.pop('work_item_id', None)
+        relation = args.pop('relation', None)
+        related_task_id = args.pop('related_task_id', None)
+        if work_item_id is None:
+            raise HubError('WORK_ITEM_REQUIRED',
+                           '公开提交必须提供 work_item_id；请先 create_work_item，审核/返修还需 related_task_id')
+        _, relation = self.work_items.require_for_submit(work_item_id, relation, related_task_id)
+        if args.get('acceptance') is None:
+            inherited = self.work_items.acceptance_for_dispatch(work_item_id, relation)
+            if inherited is not None:
+                args['acceptance'] = inherited
+        # Relation participates in task digest so replay with changed link metadata conflicts.
+        task = self.submit(**args, work_item_id=work_item_id,
+                           work_relation=relation, work_related_task_id=related_task_id)
+        self.work_items.attach(work_item_id, task['id'], relation, related_task_id, args['request_id'])
+        return task
+
+    def _tool_get_task(self, arguments):
+        return self.public(self.store.get(arguments['task_id']))
+
+    def _tool_get_result(self, arguments):
+        task = self.store.get(arguments['task_id'])
+        if task['state'] not in TERMINAL:
+            return dict(ready=False, state=task['state'], intervention=task.get('intervention'), permissions=self.permissions(task), **self.verification.fields(task),
+                        **result_fields(task['state'], {}))
+        result = self.store.read_result(task)
+        if task.get('remote_observation') and 'remote_observation' not in result:
+            result['remote_observation'] = task['remote_observation']
+        if task.get('last_reconcile') and 'last_reconcile' not in result:
+            result['last_reconcile'] = task['last_reconcile']
+        result.update(result_fields(task['state'], result, task))
+        return dict(result, ready=True, state=task['state'], permissions=self.permissions(task), **self.verification.fields(task))
 
     def record_activity(self, request_id, task_id, event_id, activity):
         """Append a controller-reported activity without mutating task lifecycle."""

@@ -37,6 +37,17 @@ class ServiceDispatchTests(unittest.TestCase):
             import time; time.sleep(.02)
         self.fail('task did not finish')
 
+    def test_every_declared_tool_is_routed(self):
+        from agent_hub.__main__ import TOOLS
+        for tool in TOOLS:
+            with self.subTest(tool=tool):
+                try:
+                    self.service.call(tool, {})
+                except HubError as error:
+                    self.assertNotEqual(error.code, 'UNKNOWN_TOOL')
+                except (TypeError, KeyError):
+                    pass  # reached the handler, which wanted arguments
+
     def test_unknown_tool_is_rejected(self):
         self.assertEqual(self.code('no_such_tool', {}), 'UNKNOWN_TOOL')
 
