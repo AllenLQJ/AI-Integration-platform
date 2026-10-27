@@ -37,8 +37,6 @@
 ```zsh
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -e .
-# 当前测试显式导入 exceptiongroup，运行回归前安装
-uv pip install --python .venv/bin/python exceptiongroup
 .venv/bin/python -m agent_hub status
 .venv/bin/python -m agent_hub mcp
 ```

@@ -35,8 +35,6 @@ Create an environment in the source directory with Python 3.10 or later. Python 
 ```zsh
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -e .
-# The current tests explicitly import exceptiongroup.
-uv pip install --python .venv/bin/python exceptiongroup
 .venv/bin/python -m agent_hub status
 .venv/bin/python -m agent_hub mcp
 ```
