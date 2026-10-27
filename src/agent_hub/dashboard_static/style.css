@@ -1454,7 +1454,7 @@ h1 {
   letter-spacing:-.6px;
   font-variant-numeric:tabular-nums;
 }
-.kpi.attention .kpi-value::before {
+.kpi.alert .kpi-value::before {
   content:'! ';
   color:var(--viz-wait);
 }
@@ -1469,6 +1469,7 @@ h1 {
   stroke-width:2;
   stroke-linecap:round;
   stroke-linejoin:round;
+  vector-effect:non-scaling-stroke;
 }
 .viz-card {
   padding:14px 16px 12px;

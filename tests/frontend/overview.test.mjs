@@ -101,6 +101,12 @@ test('renders tiles, charts with hover and data tables, and opens a chain from t
   const values = host.byClass('kpi-value').map(node => node.textContent);
   assert.deepEqual(values, ['2', '8', '67%', '2']);
   assert.match(host.byClass('kpi-sub')[0].textContent, /1 项等待人工/);
+  // The alert tile must not reuse the attention list's class, whose layout rules would leak onto it.
+  assert.deepEqual(host.byClass('kpi').map(tile => tile.className), ['kpi', 'kpi', 'kpi', 'kpi alert']);
+  // The sparkline stretches to the tile instead of keeping its 120x28 aspect ratio.
+  assert.equal(host.byClass('sparkline')[0].attributes.preserveAspectRatio, 'none');
+  // Review states read as Chinese labels, never as raw status keys.
+  assert.doesNotMatch(host.byClass('attention-item')[0].text, /needs_review/);
   // One hit target per day, each with an accessible summary and a hover tooltip.
   const hits = host.all(node => node.attributes.class === 'hit');
   assert.equal(hits.length, 14);

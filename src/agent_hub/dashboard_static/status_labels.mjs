@@ -4,7 +4,7 @@ export const names = {
   queued: '排队中', running: '执行中', waiting_for_user: '等待用户', succeeded: '执行成功',
   completed: '已完成', failed: '失败', timed_out: '已超时', interrupted: '本地执行已中断',
   delivery_unknown: '投递未确认', cancelled: '已取消', pending: '待验收',
-  awaiting_verification: '等待验收', verifying: '验收中', rework_required: '需要返工',
+  awaiting_verification: '等待验收', verifying: '验收中', needs_review: '待人工审核', rework_required: '需要返工',
   passed: '验收通过', rejected: '验收未通过', not_requested: '未设置额外验收',
   completed_no_extra: '已完成／无需额外验收', not_configured: '未配置验收', unknown: '状态未知',
 };

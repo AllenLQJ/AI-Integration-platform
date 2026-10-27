@@ -198,12 +198,13 @@ function kpis(data) {
   tile('近 14 天成功率', stats.rate == null ? '—' : `${Math.round(stats.rate * 100)}%`,
     stats.finished ? `${stats.succeeded} / ${stats.finished} 次已结束` : '暂无已结束的执行', sparkline(dailyRates(data.daily)));
   tile('待人工处理', review + rework + waiting, `审核 ${review} · 返工 ${rework} · 等待 ${waiting}`, null,
-    review + rework + waiting ? 'attention' : '');
+    review + rework + waiting ? 'alert' : '');
   return tiles;
 }
 
 function sparkline(rates) {
-  const width = 120, height = 28, chart = svg('svg', {viewBox: `0 0 ${width} ${height}`, class: 'sparkline', 'aria-hidden': 'true'});
+  const width = 120, height = 28, chart = svg('svg', {viewBox: `0 0 ${width} ${height}`, class: 'sparkline',
+    preserveAspectRatio: 'none', 'aria-hidden': 'true'});
   const step = rates.length > 1 ? width / (rates.length - 1) : width;
   let path = '', open = false;
   rates.forEach((rate, i) => {
