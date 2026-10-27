@@ -61,9 +61,25 @@ test('real app safely renders and recovers initialization while polling preserve
     nodes.get('refresh').listeners.click(); await settle();
     assert.equal(nodes.get('agent-count').textContent,'1 个已配置执行器');
     // Lists keep refreshing even before any task has been selected.
-    taskItems = [{...task,id:'task-2',title:'new task'},task];
+    // Agents arrive sorted by name, so 'a-agent' ranks first while the configured executor owns slot 1.
+    taskItems = [{...task,id:'task-2',title:'new task',agents:['a-agent','custom-executor'],
+      member_states:['succeeded','failed','cancelled','running'],member_states_omitted:2},task];
     await tick(5000);
     assert.equal(nodes.get('task-list').children.length,2);
+    // Sidebar: a status cell per recent execution, the omitted count, executor dots and a relative time.
+    const descendants = (n, cls, found = []) => { for (const c of n.children) { if ((c.className || '').split(' ').includes(cls)) found.push(c); descendants(c, cls, found); } return found; };
+    const listed = nodes.get('task-list').children[0];
+    const cells = descendants(listed,'state-cell');
+    assert.deepEqual(cells.map(c=>c.style.background),['var(--viz-ok)','var(--viz-fail)','var(--viz-other)','var(--viz-active)']);
+    assert.equal(descendants(listed,'state-more')[0].textContent,'+2');
+    const strip = descendants(listed,'state-strip')[0];
+    assert.equal(strip.attributes.role,'img');
+    assert.equal(strip.attributes['aria-label'],'最近 4 次执行：成功 1，失败 1，其他结束 1，进行中 1；另有 2 次更早的执行');
+    // Executor colours follow the configured order, the same as the overview.
+    assert.deepEqual(descendants(listed,'agent-dot').map(d=>d.style.background),['var(--viz-agent-2)','var(--viz-agent-1)']);
+    assert.match(descendants(listed,'task-time')[0].textContent,/^1 次 · \d+ 天前$/);
+    // A chain without the new fields still renders an empty strip.
+    assert.equal(descendants(nodes.get('task-list').children[1],'state-cell').length,0);
     taskItems = [task]; await tick(5000);
     const taskButton = nodes.get('task-list').children[0];
     await taskButton.listeners.click();

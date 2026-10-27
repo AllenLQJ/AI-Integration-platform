@@ -16,6 +16,8 @@ MAX_NODES = 200
 MAX_MESSAGES = 500
 MAX_TEXT = 1000000
 MAX_TIMELINE = 500
+# Sidebar status strip: the most recent executions of a chain, oldest first.
+MEMBER_STATES = 12
 # Overview: a two-week window, and the few chains a person should look at first.
 OVERVIEW_DAYS = 14
 OVERVIEW_ATTENTION_LIMIT = 8
@@ -234,12 +236,15 @@ class DashboardChains:
         # Title / stats / latest main execution from implementation — not overridden by review state.
         chain_id = component.get('work_item_id') or root
         title = _text(component.get('work_item_title') or root_summary['title'])[:500]
+        ordered = sorted(component['members'], key=lambda ident: (tasks[ident]['created'], ident))
         return dict(latest_summary, id=chain_id, title=title, created=root_summary['created'],
                     updated=component['updated'], root_task_id=root, latest_task_id=latest,
                     work_item_id=component.get('work_item_id'),
                     task_count=len(component['members']),
                     agents=sorted({_text(tasks[ident]['agent']) for ident in component['members']}),
-                    active_count=sum(tasks[ident]['state'] not in TERMINAL for ident in component['members']))
+                    active_count=sum(tasks[ident]['state'] not in TERMINAL for ident in component['members']),
+                    member_states=[_text(tasks[ident]['state']) for ident in ordered[-MEMBER_STATES:]],
+                    member_states_omitted=max(0, len(ordered) - MEMBER_STATES))
 
     def chains(self, limit=30, offset=0, q='', state='', agent=''):
         _integer(limit, 'limit', 1, 100)

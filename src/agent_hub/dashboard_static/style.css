@@ -1756,3 +1756,48 @@ h1 {
     white-space:normal;
   }
 }
+
+/* Sidebar: executor dots, a status strip per chain and its last update. */
+.task-agents {
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  min-width:0;
+}
+.agent-dot {
+  display:inline-block;
+  flex-shrink:0;
+  width:7px;
+  height:7px;
+  border-radius:50%;
+}
+.task-strip {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  margin-top:7px;
+}
+.state-strip {
+  display:flex;
+  align-items:center;
+  gap:2px;
+  min-width:0;
+}
+.state-cell {
+  display:block;
+  flex-shrink:0;
+  width:8px;
+  height:8px;
+  border-radius:2px;
+}
+.state-more,
+.task-time {
+  color:var(--p-72727d);
+  font-size:10px;
+  font-variant-numeric:tabular-nums;
+  white-space:nowrap;
+}
+.state-more {
+  margin-left:3px;
+}

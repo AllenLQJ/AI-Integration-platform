@@ -1,6 +1,7 @@
 import {createAPI, consumeTicket, isUnchanged} from './api.mjs';
 import {DashboardState, RequestGate, chainIdle, POLL_ACTIVE, POLL_IDLE} from './state.mjs';
 import {renderOverview} from './overview.mjs';
+import {agentColors, relativeTime, stateOutcome} from './viz.mjs';
 import {createGraph} from './graph.mjs';
 import {
   TimelineExpansion, timelineRecords, coverageNotes, kindLabel, provenanceLabel, statusLabel,
@@ -84,7 +85,8 @@ function empty(title, description) {
   return wrapper;
 }
 function renderList() {
-  const key = JSON.stringify([state.items,state.chainId,state.offset,state.nextOffset,pageHistory]);
+  // The minute keeps relative times ("3 分钟前") fresh between data changes.
+  const key = JSON.stringify([state.items,state.chainId,state.offset,state.nextOffset,pageHistory,configuredAgents,Math.floor(Date.now()/60000)]);
   if (key === listKey) return;
   listKey = key;
   const focusedId = document.activeElement?.dataset?.taskId;
@@ -95,9 +97,16 @@ function renderList() {
     button.dataset.taskId = task.id;
     button.setAttribute('aria-pressed', String(state.chainId === task.id));
     const meta = node('div','task-sub');
-    meta.append(node('span','',`${task.task_count} 次执行 · ${(task.agents||[]).join(' / ') || '执行器未记录'}`),node('span','',stateLabel(task)));
+    const who = node('span','task-agents');
+    const colors = agentColors(configuredAgents, task.agents || []);
+    for (const [index, agent] of (task.agents || []).entries()) {
+      const dot = node('span','agent-dot'); dot.style.background = colors.get(agent); dot.setAttribute('aria-hidden','true');
+      who.append(...(index ? [node('span','',' / ')] : []), dot, node('span','',agent));
+    }
+    if (!task.agents?.length) who.append(node('span','','执行器未记录'));
+    meta.append(who,node('span','',stateLabel(task)));
     if (task.active_count) button.append(node('span','chain-activity',`${task.active_count} 项进行中`));
-    button.append(node('div','task-title',task.title || task.id),meta);
+    button.append(node('div','task-title',task.title || task.id),meta,stateStrip(task));
     button.addEventListener('click',()=>selectChain(task.id)); list.append(button);
     if (focusedId === task.id) button.focus({preventScroll:true});
   }
@@ -106,6 +115,26 @@ function renderList() {
   $('page-label').textContent = state.items.length ? `${state.offset + 1}–${state.offset + state.items.length}` : '无记录';
   $('previous').disabled = !pageHistory.length; $('next').disabled = state.nextOffset == null;
   list.scrollTop = scroll;
+}
+/** One cell per recent execution, coloured by outcome; the accessible name carries the counts. */
+function stateStrip(task) {
+  const row = node('div','task-strip'), cells = node('span','state-strip');
+  const counts = new Map();
+  for (const value of task.member_states || []) {
+    const outcome = stateOutcome(value);
+    const cell = node('span','state-cell'); cell.style.background = outcome.color;
+    cells.append(cell);
+    counts.set(outcome.label, (counts.get(outcome.label) || 0) + 1);
+  }
+  if (task.member_states_omitted) cells.append(node('span','state-more',`+${task.member_states_omitted}`));
+  const summary = [...counts].map(([name, count]) => `${name} ${count}`).join('，');
+  cells.setAttribute('role','img');
+  cells.setAttribute('aria-label', `最近 ${(task.member_states || []).length} 次执行：${summary || '无记录'}`
+    + (task.member_states_omitted ? `；另有 ${task.member_states_omitted} 次更早的执行` : ''));
+  const time = node('time','task-time',`${task.task_count} 次${task.updated ? ' · ' + relativeTime(task.updated) : ''}`);
+  if (task.updated) time.setAttribute('title', date(task.updated));
+  row.append(cells,time);
+  return row;
 }
 function scheduleList() {
   clearTimeout(listTimer);
