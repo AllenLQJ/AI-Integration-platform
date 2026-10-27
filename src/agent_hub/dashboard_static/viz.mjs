@@ -78,7 +78,8 @@ export function card(title, note) {
   box.append(head);
   return box;
 }
-/** One tooltip per card; marks call show() on hover and focus. */
+/** One tooltip per card; marks call show() on hover and focus. It is fixed to the viewport, so
+ * panels that hide their overflow cannot clip it; it flips and clamps to stay on screen. */
 export function tooltip(box) {
   const tip = el('div', 'viz-tip');
   tip.hidden = true;
@@ -88,10 +89,15 @@ export function tooltip(box) {
     show(lines, event) {
       tip.replaceChildren(...lines.map((line, i) => el(i ? 'div' : 'strong', '', line)));
       tip.hidden = false;
-      const rect = box.getBoundingClientRect?.();
-      if (rect && event?.clientX != null) {
-        tip.style.left = `${Math.min(event.clientX - rect.left + 12, rect.width - 180)}px`;
-        tip.style.top = `${event.clientY - rect.top + 12}px`;
+      if (event?.clientX != null) {
+        const width = globalThis.innerWidth || 1024, height = globalThis.innerHeight || 768, tall = tip.offsetHeight || 0;
+        const {clientX: x, clientY: y} = event;
+        tip.style.left = `${Math.max(4, Math.min(x + 12, width - 190))}px`;
+        tip.style.top = `${y + 12 + tall > height && y - 12 - tall >= 0 ? y - 12 - tall : y + 12}px`;
+      } else {
+        // Keyboard focus has no pointer: anchor to the focused mark.
+        const rect = event?.target?.getBoundingClientRect?.();
+        if (rect) { tip.style.left = `${Math.max(4, rect.left)}px`; tip.style.top = `${rect.bottom + 6}px`; }
       }
     },
     hide() { tip.hidden = true; },
