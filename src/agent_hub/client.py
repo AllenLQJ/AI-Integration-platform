@@ -10,6 +10,33 @@ from .config import data_dir, private_dir
 from .models import HubError
 
 
+def detach_spawned_daemon():
+    """Leave the parent's session and drop descriptors it could not close.
+
+    macOS deadlocks if a process that already has threads forks. The client
+    therefore posix_spawns the daemon (no start_new_session, close_fds left
+    false, which is what Python requires to use posix_spawn) and sets
+    AGENT_HUB_DETACH. A foreground `agent-hub daemon` does not set that, so
+    it stays attached to its terminal.
+    """
+    if os.environ.pop('AGENT_HUB_DETACH', None) != '1' or os.name == 'nt':
+        return
+    try:
+        os.setsid()
+    except OSError:
+        pass
+    try:
+        inherited = [int(name) for name in os.listdir('/dev/fd')]
+    except OSError:
+        return
+    for fd in inherited:
+        if fd > 2:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 class Client:
     def __init__(self, root=None):
         self.root = Path(root) if root else data_dir()
@@ -54,8 +81,17 @@ class Client:
         else:
             log = (self.root / 'daemon.log').open('ab')
             try:
-                process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                                           start_new_session=True, close_fds=True)
+                kwargs = dict(stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+                if sys.platform == 'darwin':
+                    # start_new_session forces fork. After this process has
+                    # threads, that fork deadlocks on macOS and the daemon
+                    # never writes connection.json.
+                    env = os.environ.copy()
+                    env['AGENT_HUB_DETACH'] = '1'
+                    kwargs.update(close_fds=False, start_new_session=False, env=env)
+                else:
+                    kwargs.update(close_fds=True, start_new_session=True)
+                process = subprocess.Popen(argv, **kwargs)
                 # Retain the handle while this frontend lives; daemon itself outlives it.
                 self._process = process
             finally: log.close()

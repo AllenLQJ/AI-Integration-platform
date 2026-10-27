@@ -94,6 +94,8 @@ def main():
             raise SystemExit(1) from None
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command == 'daemon':
+        from .client import detach_spawned_daemon
+        detach_spawned_daemon()
         root = data_dir()
         from .config import private_dir
         private_dir(root)

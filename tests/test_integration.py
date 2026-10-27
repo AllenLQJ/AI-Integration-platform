@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -36,6 +37,63 @@ def stop_and_wait(client):
 
 
 class IntegrationTests(unittest.TestCase):
+    def test_detach_spawned_daemon_leaves_the_parent_session_and_fds(self):
+        read_fd, write_fd = os.pipe()
+        script = (
+            'import os\n'
+            'from agent_hub.client import detach_spawned_daemon\n'
+            'extra = int(os.environ["EXTRA_FD"])\n'
+            'parent = os.getsid(0)\n'
+            'detach_spawned_daemon()\n'
+            'try:\n'
+            '    os.fstat(extra)\n'
+            '    alive = True\n'
+            'except OSError:\n'
+            '    alive = False\n'
+            'open(os.devnull, "rb").close()\n'
+            'print(int(os.getsid(0) != parent), int(alive))\n'
+        )
+        env = dict(os.environ, EXTRA_FD=str(write_fd), AGENT_HUB_DETACH='1', PYTHONPATH='src')
+        try:
+            completed = subprocess.run(
+                [sys.executable, '-c', script], env=env, input=b'',
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, close_fds=False)
+        finally:
+            os.close(read_fd)
+            os.close(write_fd)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.splitlines()[-1], b'1 0')
+
+    def test_darwin_daemon_spawn_avoids_fork(self):
+        from unittest.mock import patch
+        from agent_hub.client import Client
+        with tempfile.TemporaryDirectory() as td:
+            client = Client(td)
+            with patch('agent_hub.client.sys.platform', 'darwin'), \
+                    patch('agent_hub.client.subprocess.Popen', side_effect=RuntimeError('stop')) as popen, \
+                    patch.object(client, 'request', side_effect=OSError):
+                with self.assertRaises(RuntimeError):
+                    client.ensure()
+            kwargs = popen.call_args.kwargs
+            self.assertFalse(kwargs['start_new_session'])
+            self.assertFalse(kwargs['close_fds'])
+            self.assertEqual(kwargs['env']['AGENT_HUB_DETACH'], '1')
+
+    def test_other_posix_daemon_spawn_starts_a_new_session(self):
+        from unittest.mock import patch
+        from agent_hub.client import Client
+        with tempfile.TemporaryDirectory() as td:
+            client = Client(td)
+            with patch('agent_hub.client.sys.platform', 'linux'), \
+                    patch('agent_hub.client.subprocess.Popen', side_effect=RuntimeError('stop')) as popen, \
+                    patch.object(client, 'request', side_effect=OSError):
+                with self.assertRaises(RuntimeError):
+                    client.ensure()
+            kwargs = popen.call_args.kwargs
+            self.assertTrue(kwargs['start_new_session'])
+            self.assertTrue(kwargs['close_fds'])
+            self.assertNotIn('env', kwargs)
+
     def test_daemon_autostart_singleton_restart(self):
         with tempfile.TemporaryDirectory() as td:
             client = Client(td)
