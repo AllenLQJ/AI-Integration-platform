@@ -62,12 +62,15 @@ test('tick spacing picks minutes, hours or days from the span', () => {
   assert.equal(tickStep(6 * 3600, 600), 3600);
   assert.equal(tickStep(2 * 86400, 600), 12 * 3600);
   assert.equal(tickStep(60 * 86400, 600), 14 * 86400);
-  const marks = ticks(T + 1, T + 3 * 3600, 3600);
-  assert.equal(marks.length, 3);
-  assert.ok(marks.every((t, i) => i === 0 || t - marks[i - 1] === 3600));
-  assert.match(tickLabel(marks[0], 3600, null), /^\d+\/\d+ \d\d:\d\d$/);
-  assert.match(tickLabel(marks[1], 3600, marks[0]), /^\d\d:\d\d$/);
-  assert.match(tickLabel(T, 86400, null), /^\d+\/\d+$/);
+  // Local clock times, so the expectations hold in every time zone (CI runs in UTC).
+  const local = (...parts) => new Date(2026, 9, ...parts).getTime() / 1000;
+  const marks = ticks(local(27, 9, 10), local(27, 12, 30), 3600);
+  assert.deepEqual(marks, [local(27, 10), local(27, 11), local(27, 12)]);
+  assert.equal(tickLabel(marks[0], 3600, null), '10/27 10:00');
+  assert.equal(tickLabel(marks[1], 3600, marks[0]), '11:00');
+  // Crossing midnight brings the date back.
+  assert.equal(tickLabel(local(28, 0), 3600, local(27, 23)), '10/28 00:00');
+  assert.equal(tickLabel(local(27, 15), 86400, null), '10/27');
 });
 
 test('renders bars that announce themselves, highlight the selection and open an execution', () => {
