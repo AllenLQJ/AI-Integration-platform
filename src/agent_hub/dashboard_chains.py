@@ -16,6 +16,12 @@ MAX_NODES = 200
 MAX_MESSAGES = 500
 MAX_TEXT = 1000000
 MAX_TIMELINE = 500
+# Overview: a two-week window, and the few chains a person should look at first.
+OVERVIEW_DAYS = 14
+OVERVIEW_ATTENTION_LIMIT = 8
+OVERVIEW_FAILED = frozenset({'failed', 'timed_out'})
+OVERVIEW_REVIEW = frozenset({'needs_review', 'rework_required'})
+OVERVIEW_ATTENTION = frozenset({'failed', 'timed_out', 'interrupted', 'delivery_unknown', 'waiting_for_user'})
 
 
 class SnapshotCache:
@@ -247,6 +253,82 @@ class DashboardChains:
         page = matching[offset:offset + limit]
         return dict(items=[self._summary(tasks, component) for component in page],
                     next_offset=offset + limit if offset + limit < len(matching) else None)
+
+    def _latest_work_status(self, latest_ids):
+        """work_status of each chain's latest execution, batched instead of one read per chain."""
+        from .verification import Verification
+        statuses = {}
+        ids = list(latest_ids)
+        with self.store.connection() as db:
+            for offset in range(0, len(ids), 400):
+                group = ids[offset:offset + 400]
+                marks = ','.join('?' * len(group))
+                rows = {row['id']: row for row in db.execute(f'SELECT * FROM tasks WHERE id IN ({marks})', group)}
+                try:
+                    checks = {row['task_id']: row for row in db.execute(
+                        f'SELECT * FROM verifications WHERE task_id IN ({marks})', group)}
+                except sqlite3.OperationalError:
+                    checks = {}
+                for ident, row in rows.items():
+                    task = self.store.decode(row)
+                    summary = Verification.summary_from_row(task, checks.get(ident))
+                    statuses[ident] = self.dashboard.service.verification.fields(task, summary=summary)['work_status']
+        return statuses
+
+    def overview(self, today=None, days=OVERVIEW_DAYS):
+        """Aggregate counts only: no prompts beyond chain titles, no paths, no sessions."""
+        import datetime
+        import statistics
+        tasks, components, _ = self._snapshot()
+        latest = [component['latest'] for component in components]
+        work = self._latest_work_status(latest)
+        states = defaultdict(int)
+        agents = defaultdict(lambda: dict(executions=0, succeeded=0, failed=0, active=0, durations=[]))
+        today = today or datetime.date.today()
+        first = today - datetime.timedelta(days=days - 1)
+        daily = {first + datetime.timedelta(days=offset): dict(succeeded=0, failed=0, other=0, active=0)
+                 for offset in range(days)}
+        for task in tasks.values():
+            state, agent = task['state'], _text(task['agent'] or '')
+            outcome = ('active' if state not in TERMINAL else 'succeeded' if state == 'succeeded'
+                       else 'failed' if state in OVERVIEW_FAILED else 'other')
+            states[state] += 1
+            entry = agents[agent]
+            entry['executions'] += 1
+            if outcome in {'succeeded', 'failed', 'active'}:
+                entry[outcome] += 1
+            if state in TERMINAL:
+                entry['durations'].append(max(0.0, task['updated'] - task['created']))
+            day = datetime.date.fromtimestamp(task['created'])
+            if day in daily:
+                daily[day][outcome] += 1
+        chain_status = defaultdict(int)
+        for ident in latest:
+            chain_status[work.get(ident, 'unknown')] += 1
+        flagged = [component for component in components
+                   if work.get(component['latest']) in OVERVIEW_REVIEW
+                   or tasks[component['latest']]['state'] in OVERVIEW_ATTENTION]
+        flagged.sort(key=lambda component: (-component['updated'], component['root']))
+        attention = []
+        for component in flagged[:OVERVIEW_ATTENTION_LIMIT]:
+            summary = self._summary(tasks, component)
+            attention.append(dict(chain_id=summary['id'], task_id=component['latest'], title=summary['title'],
+                                  agent=summary['agent'], state=summary['state'],
+                                  work_status=summary['work_status'], updated=summary['updated']))
+        return dict(
+            totals=dict(chains=len(components), executions=len(tasks),
+                        active=sum(task['state'] not in TERMINAL for task in tasks.values()),
+                        waiting_for_user=states.get('waiting_for_user', 0)),
+            states=dict(sorted(states.items())),
+            work_status=dict(sorted(chain_status.items())),
+            agents=[dict(agent=name, executions=entry['executions'], succeeded=entry['succeeded'],
+                         failed=entry['failed'], active=entry['active'],
+                         median_seconds=(round(statistics.median(entry['durations']), 1)
+                                         if entry['durations'] else None))
+                    for name, entry in sorted(agents.items())],
+            daily=[dict(date=day.isoformat(), **counts) for day, counts in sorted(daily.items())],
+            attention=attention,
+            attention_total=len(flagged))
 
     @staticmethod
     def _message_order(message):

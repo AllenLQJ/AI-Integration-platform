@@ -77,6 +77,28 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertEqual(self.request('/work/example', headers={'Cookie': cookie})[0], 401)
         self.assertEqual(self.request('/health', headers={'Authorization': 'Bearer native-test-secret'})[0], 200)
 
+    def test_overview_needs_a_session_takes_no_query_and_revalidates(self):
+        path = '/dashboard/api/v1/overview'
+        self.assertEqual(self.request(path)[0], 401)
+        cookie = self.session()
+        self.assertEqual(self.request(path + '?days=30', headers={'Cookie': cookie})[0], 400)
+        task = self.service.submit('overview-task', 'fake', 'hello', str(self.root), 'read_only')
+        self.service.store.finish(task['id'], 'failed', {'error': 'boom'})
+        status, headers, body = self.request(path, headers={'Cookie': cookie})
+        self.assertEqual(status, 200, body)
+        result = json.loads(body)
+        self.assertEqual(result['totals']['executions'], 1)
+        self.assertEqual(result['attention'][0]['task_id'], task['id'])
+        self.assertNotIn(str(self.root), body.decode())
+        etag = headers['ETag']
+        status, _, body = self.request(path, headers={'Cookie': cookie, 'If-None-Match': etag})
+        self.assertEqual((status, body), (304, b''))
+        # The day window can move without a write, so the overview is never served from the
+        # version-only fast path: it is recomputed, and only an identical result earns a 304.
+        with patch('agent_hub.dashboard_chains.DashboardChains.overview', return_value={'moved': True}):
+            status, _, body = self.request(path, headers={'Cookie': cookie, 'If-None-Match': etag})
+        self.assertEqual((status, json.loads(body)), (200, {'moved': True}))
+
     def test_conditional_reads_skip_projection_and_notice_verification_only_writes(self):
         cookie = self.session()
         task = self.service.submit('etag-task', 'fake', 'hello', str(self.root), 'read_only')
