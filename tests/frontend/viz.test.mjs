@@ -36,3 +36,23 @@ test('the tooltip stays on screen: it flips above the pointer near the bottom an
   tip.hide();
   assert.equal(element.hidden, true);
 });
+
+test('with a page body, every chart shares one tooltip under <body>, outside any clipping panel', () => {
+  const body = new Node('body');
+  globalThis.document = {createElement: tag => new Node(tag), body};
+  try {
+    const first = new Node('section'), second = new Node('section');
+    const a = tooltip(first), b = tooltip(second);
+    assert.equal(body.children.length, 1);
+    assert.deepEqual([first.children.length, second.children.length], [0, 0]);
+    a.show(['a'], {clientX: 10, clientY: 10});
+    assert.equal(body.children[0].hidden, false);
+    // Drawing another chart hides a tooltip whose marks are gone.
+    tooltip(new Node('section'));
+    assert.equal(body.children[0].hidden, true);
+    b.show(['b'], {clientX: 10, clientY: 10});
+    assert.equal(body.children[0].hidden, false);
+  } finally {
+    globalThis.document = {createElement: tag => new Node(tag)};
+  }
+});

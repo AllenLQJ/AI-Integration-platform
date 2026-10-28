@@ -3,6 +3,7 @@ import {DashboardState, RequestGate, chainIdle, POLL_ACTIVE, POLL_IDLE} from './
 import {renderOverview} from './overview.mjs';
 import {agentColors, relativeTime, stateOutcome} from './viz.mjs';
 import {renderChainStats, renderGantt} from './chainviz.mjs';
+import {stagger} from './motion.mjs';
 import {createGraph} from './graph.mjs';
 import {
   TimelineExpansion, timelineRecords, coverageNotes, kindLabel, provenanceLabel, statusLabel,
@@ -75,12 +76,14 @@ const graph = createGraph($('graph-viewport'),$('graph-stage'),id=>selectNode(id
 const stateFilter = $('state-filter');
 stateFilter.replaceChildren(new Option('全部状态',''));
 for (const value of ['queued','running','waiting_for_user','succeeded','failed','timed_out','cancelled','interrupted','delivery_unknown']) stateFilter.append(new Option(names[value],value));
+/** The top bar's status pill: its dot pulses while live and turns red on failure. */
+function connection(text, state) { $('connection').textContent = text; $('connection').dataset.state = state; }
 function notice(message = '') { $('notice').textContent = message; $('notice').hidden = !message; }
 function failure(error) {
   if (error.status === 401 || error.status === 403) {
     stopped = true; clearTimeout(timer); clearTimeout(chainTimer); clearTimeout(listTimer); clearTimeout(searchTimer); clearTimeout(overviewTimer); overviewGate.invalidate(); state.detailGate.invalidate(); state.chainGate.invalidate(); state.listGate.invalidate();
-    $('connection').textContent = '会话已失效'; notice(error.message);
-  } else $('connection').textContent = '连接中断 · 可重试';
+    connection('会话已失效', 'stopped'); notice(error.message);
+  } else connection('连接中断 · 可重试', 'error');
 }
 function empty(title, description) {
   const wrapper = node('div','empty-state');
@@ -156,7 +159,7 @@ async function loadList(offset = 0, background = false) {
     else if (offset < state.offset) pageHistory.pop();
     state.items = data.items; state.offset = offset; state.nextOffset = data.next_offset;
     renderList(); $('previous').disabled = !pageHistory.length; $('next').disabled = state.nextOffset == null;
-    notice(); $('connection').textContent = '已连接';
+    notice(); connection('已连接', 'live');
   } catch (error) {
     if (!state.listGate.current(token)) return;
     failure(error); notice(error.message);
@@ -367,7 +370,7 @@ async function poll(token, id) {
     if (data && !(initial ? state.replaceEvents(token,data,false) : state.commitEvents(token,data))) return;
     if (changed) renderDetail();
     renderContent();
-    $('detail-error').hidden = true; $('connection').textContent = '已连接';
+    $('detail-error').hidden = true; connection('已连接', 'live');
     $('sync-time').textContent = `同步于 ${new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`;
     if (chainIdle(state.chain, state.detail)) delay = POLL_IDLE;
     if (!initial && data?.events.length >= 200) delay = 0;
@@ -418,7 +421,7 @@ async function pollChain(token,id,desiredNode=null) {
       const selected=data.nodes.some(n=>n.id===desiredNode) ? desiredNode : data.nodes.some(n=>n.id===data.chain.latest_task_id) ? data.chain.latest_task_id : data.nodes[0]?.id;
       if(selected)selectNode(selected,false);
     }
-    $('connection').textContent='已连接';
+    connection('已连接','live');
     if(chainIdle(state.chain,state.detail))delay=POLL_IDLE;
     else if(detailIdleWait&&state.selected&&state.detailGate.token){
       // New work arrived while the execution poll slept on the idle cadence.
@@ -470,13 +473,15 @@ function setOverviewMode(on) {
 }
 function drawOverview() {
   if (!overviewData || !overviewMode) return;
-  const host = $('overview');
+  const host = $('overview'), first = !host.querySelector?.('.overview');
   renderOverview(host, overviewData, {
     agents: configuredAgents,
     // The daily chart is laid out for the card's inner width, so its labels never scale down.
     width: Math.max(280, (host.clientWidth || 700) - 34),
     onSelect: (chainId, taskId) => selectChain(chainId, taskId),
   });
+  // Cards rise in once when the overview first appears, not on every refresh.
+  if (first) stagger(host.querySelectorAll?.('.kpi, .viz-card') || []);
 }
 async function loadOverview() {
   if (stopped || !overviewMode) return;
@@ -487,7 +492,7 @@ async function loadOverview() {
     if (!overviewGate.current(token) || !overviewMode) return;
     if (!(isUnchanged(data) && overviewData)) { overviewData = data; drawOverview(); }
     host.setAttribute('aria-busy', 'false');
-    $('connection').textContent = '已连接';
+    connection('已连接', 'live');
   } catch (error) {
     if (!overviewGate.current(token)) return;
     failure(error);
