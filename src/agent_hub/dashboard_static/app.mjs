@@ -128,7 +128,7 @@ function stateStrip(task) {
   const counts = new Map();
   for (const value of task.member_states || []) {
     const outcome = stateOutcome(value);
-    const cell = node('span','state-cell'); cell.style.background = outcome.color;
+    const cell = node('span', outcome.key === 'active' ? 'state-cell live' : 'state-cell'); cell.style.background = outcome.color;
     cells.append(cell);
     counts.set(outcome.label, (counts.get(outcome.label) || 0) + 1);
   }
@@ -479,6 +479,7 @@ function drawOverview() {
     // The daily chart is laid out for the card's inner width, so its labels never scale down.
     width: Math.max(280, (host.clientWidth || 700) - 34),
     onSelect: (chainId, taskId) => selectChain(chainId, taskId),
+    animate: first,
   });
   // Cards rise in once when the overview first appears, not on every refresh.
   if (first) stagger(host.querySelectorAll?.('.kpi, .viz-card') || []);
