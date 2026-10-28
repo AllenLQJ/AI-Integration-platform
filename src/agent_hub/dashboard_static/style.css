@@ -1737,6 +1737,159 @@ h1 {
   animation:blink 1.8s ease-in-out infinite;
 }
 
+/* Timeline cards: a stripe tells messages, operations and failures apart at a glance. */
+.timeline-card {
+  position:relative;
+}
+.timeline-card::before {
+  content:"";
+  position:absolute;
+  left:0;
+  top:0;
+  bottom:0;
+  width:3px;
+  background:var(--edge-strong);
+}
+.timeline-card[data-kind="message"]::before {
+  background:linear-gradient(var(--accent), var(--accent-2));
+}
+.timeline-card[data-kind="test"]::before {
+  background:var(--viz-ok);
+}
+.timeline-card[data-failed="true"]::before {
+  background:var(--viz-fail);
+}
+.gantt.animate .bar {
+  transform-box:fill-box;
+  transform-origin:0 50%;
+  animation:fill .7s var(--ease-out) both;
+  animation-delay:calc(var(--i, 0) * 40ms + .1s);
+}
+
+/* ---- Command palette (⌘K) ------------------------------------------------------------------ */
+.cmd-btn {
+  display:inline-flex;
+  align-items:center;
+  gap:10px;
+  padding:4px 6px 4px 12px;
+  border:1px solid var(--edge);
+  border-radius:999px;
+  background:var(--surface-2);
+  color:var(--text-3);
+  font-size:12px;
+  transition:border-color var(--dur-fast), color var(--dur-fast);
+}
+.cmd-btn:hover {
+  border-color:var(--accent-edge);
+  color:var(--text-1);
+}
+.cmd-btn kbd,
+.cmd-foot {
+  font-family:var(--mono);
+}
+.cmd-btn kbd {
+  padding:1px 7px;
+  border:1px solid var(--edge-strong);
+  border-radius:6px;
+  background:var(--surface-1);
+  color:var(--text-2);
+  font-size:10.5px;
+}
+.cmd-backdrop {
+  position:fixed;
+  inset:0;
+  z-index:40;
+  display:grid;
+  align-items:start;
+  justify-items:center;
+  padding:14vh 16px 16px;
+  background:var(--scrim);
+  backdrop-filter:blur(6px);
+  animation:fade var(--dur) var(--ease-out);
+}
+.cmd-panel {
+  width:min(640px,100%);
+  overflow:hidden;
+  border:1px solid var(--edge-strong);
+  border-radius:var(--radius-l);
+  background:var(--glass-strong);
+  box-shadow:0 1px 0 var(--highlight) inset, 0 30px 80px var(--shadow), 0 0 0 1px var(--accent-soft);
+  backdrop-filter:blur(20px) saturate(150%);
+  animation:pop-in var(--dur) var(--ease-spring);
+}
+.cmd-input {
+  width:100%;
+  padding:17px 20px;
+  border:0;
+  border-bottom:1px solid var(--edge);
+  background:transparent;
+  color:var(--text-1);
+  font-size:16px;
+  outline:none;
+}
+.cmd-input::placeholder {
+  color:var(--text-3);
+}
+.cmd-input:focus-visible {
+  box-shadow:none;
+}
+.cmd-list {
+  max-height:min(52vh,420px);
+  margin:0;
+  padding:6px;
+  overflow:auto;
+  list-style:none;
+}
+.cmd-option {
+  display:grid;
+  grid-template-columns:auto minmax(0,1fr) auto;
+  align-items:center;
+  gap:10px;
+  padding:9px 12px;
+  border:1px solid transparent;
+  border-radius:10px;
+  cursor:pointer;
+}
+.cmd-option[aria-selected="true"] {
+  border-color:var(--accent-edge);
+  background:linear-gradient(90deg, var(--accent-soft), transparent 85%);
+}
+.cmd-group {
+  padding:1px 8px;
+  border:1px solid var(--edge);
+  border-radius:999px;
+  color:var(--text-3);
+  font-size:10.5px;
+  white-space:nowrap;
+}
+.cmd-title {
+  overflow:hidden;
+  font-size:13px;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.cmd-option[aria-selected="true"] .cmd-title {
+  color:var(--accent-text);
+}
+.cmd-hint {
+  color:var(--text-3);
+  font-size:11px;
+  white-space:nowrap;
+  font-variant-numeric:tabular-nums;
+}
+.cmd-empty {
+  padding:22px 12px;
+  color:var(--text-3);
+  font-size:12.5px;
+  text-align:center;
+}
+.cmd-foot {
+  padding:8px 16px;
+  border-top:1px solid var(--edge);
+  color:var(--text-3);
+  font-size:10.5px;
+}
+
 /* ---- Loading skeletons --------------------------------------------------------------------- */
 .skeleton {
   display:block;
@@ -1827,6 +1980,17 @@ h1 {
 @keyframes blink {
   50% {
     opacity:.35;
+  }
+}
+@keyframes fade {
+  from {
+    opacity:0;
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity:0;
+    transform:translateY(-8px) scale(.98);
   }
 }
 @keyframes dash-flow {
@@ -1969,8 +2133,12 @@ h1 {
     font-size:11px;
   }
   .brand-caption,
-  .read-only {
+  .read-only,
+  .cmd-btn span {
     display:none;
+  }
+  .cmd-btn {
+    padding:4px;
   }
   .logo {
     gap:8px;

@@ -5,7 +5,7 @@ import {
 } from '../../src/agent_hub/dashboard_static/chainviz.mjs';
 
 class Node {
-  constructor(tag) { this.tagName = tag; this.children = []; this.attributes = {}; this.listeners = {}; this.style = {}; this.dataset = {}; this.textContent = ''; this.hidden = false; this.className = ''; }
+  constructor(tag) { this.tagName = tag; this.children = []; this.attributes = {}; this.listeners = {}; this.style = {setProperty(key, value) { this[key] = value; }}; this.dataset = {}; this.textContent = ''; this.hidden = false; this.className = ''; }
   append(...items) { this.children.push(...items); }
   replaceChildren(...items) { this.children = [...items]; }
   setAttribute(key, value) { this.attributes[key] = value; }
@@ -182,4 +182,16 @@ test('the stats card shows the numbers, flags truncation and offers a table', ()
   // 24 slices of 150s: records fall into slices 0–5 and 23.
   assert.equal(host.all(node => node.attributes.class === 'density-bar').length, 7);
   assert.equal(host.byClass('viz-data').length, 1);
+});
+
+test('the timeline sweeps in only when asked, each bar carrying its creation order', () => {
+  const still = new Node('div');
+  renderGantt(still, {nodes, warnings: []}, {now: T + 3600, width: 700});
+  assert.equal(still.children[0].className, 'gantt');
+  const host = new Node('div');
+  renderGantt(host, {nodes, warnings: []}, {now: T + 3600, width: 700, animate: true});
+  assert.equal(host.children[0].className, 'gantt animate');
+  const order = host.all(node => (node.attributes.class || '').startsWith('gantt-bar'))
+    .map(bar => [bar.attributes['data-task'], bar.style['--i']]);
+  assert.deepEqual(Object.fromEntries(order), {c1: '0', x1: '1', x2: '2', x3: '3', m1: '4'});
 });
