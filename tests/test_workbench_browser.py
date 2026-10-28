@@ -40,6 +40,13 @@ class Chrome:
         os.close(to_chrome[0]); os.close(from_chrome[1])
         self.output, self.input = to_chrome[1], from_chrome[0]
         self.buffer, self.ident = b'', 0
+        # A cold Chrome on a busy CI runner can take longer than one command's budget to answer.
+        # Wait for it once here, generously, so the tests' own 20s budgets measure the page.
+        try:
+            self.send('Browser.getVersion', timeout=90)
+        except BaseException:
+            self.close()
+            raise
 
     def send(self, method, params=None, session=None, timeout=20):
         self.ident += 1

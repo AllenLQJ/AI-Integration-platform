@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {GANTT, ganttLayout, tickStep, ticks, tickLabel, renderGantt} from '../../src/agent_hub/dashboard_static/chainviz.mjs';
+import {
+  ACTIVITY_KINDS, GANTT, chainStats, failedRecord, ganttLayout, renderChainStats, renderGantt, tickLabel, tickStep, ticks,
+} from '../../src/agent_hub/dashboard_static/chainviz.mjs';
 
 class Node {
   constructor(tag) { this.tagName = tag; this.children = []; this.attributes = {}; this.listeners = {}; this.style = {}; this.dataset = {}; this.textContent = ''; this.hidden = false; this.className = ''; }
@@ -107,4 +109,77 @@ test('an empty chain says so instead of drawing an empty chart', () => {
   renderGantt(host, {nodes: [], warnings: []});
   assert.match(host.text, /还没有执行记录/);
   assert.equal(host.all(node => node.tagName === 'svg').length, 0);
+});
+
+const entry = (kind, at, extra = {}) => ({id: `${kind}-${at}`, kind, timestamp: T + at, status: 'completed', ...extra});
+const timeline = [
+  entry('message', 0),
+  entry('file_read', 100), entry('file_read', 200),
+  entry('file_change', 300),
+  entry('command', 400, {operation: {exit_code: 0}}),
+  entry('command', 500, {status: 'completed', operation: {exit_code: 2}}),   // non-zero exit counts as failed
+  entry('test', 600, {status: 'failed'}),                                      // executor said failed
+  entry('test', 700, {operation: {exit_code: 0}}),
+  entry('test', 750, {status: 'started'}),                                     // not a finished run
+  entry('mystery', 800),                                                       // unknown kinds count as system
+  entry('message', 3500, {status: 'failed'}),                                  // messages never count as failures
+];
+
+test('failures come from the executor status or a non-zero exit code', () => {
+  assert.equal(failedRecord({status: 'failed'}), true);
+  assert.equal(failedRecord({status: 'completed', operation: {exit_code: 1}}), true);
+  assert.equal(failedRecord({status: 'completed', operation: {exit_code: '0'}}), false);
+  assert.equal(failedRecord({status: 'completed', operation: {}}), false);
+});
+
+test('chain statistics count executions, records by kind, failures and test runs', () => {
+  const stats = chainStats({nodes, timeline, warnings: []}, {now: T + 3600});
+  assert.equal(stats.executions, 5);
+  assert.deepEqual(stats.outcomes, {succeeded: 3, other: 0, failed: 1, active: 1});
+  assert.equal(stats.active, true);
+  assert.deepEqual(Object.fromEntries(ACTIVITY_KINDS.map(k => [k.key, stats.kinds[k.key].count])),
+    {message: 2, file_read: 2, file_change: 1, command: 2, test: 3, system: 1});
+  assert.equal(stats.kinds.command.failed, 1);
+  assert.equal(stats.kinds.test.failed, 1);
+  assert.equal(stats.kinds.message.failed, 0);
+  assert.equal(stats.messages, 2);
+  assert.equal(stats.operations, 9);
+  assert.equal(stats.operationFailures, 2);
+  assert.deepEqual(stats.tests, {runs: 2, failed: 1, passed: 1});
+  assert.equal(stats.truncated, false);
+});
+
+test('the span reaches now for running work and density splits it into equal slices', () => {
+  const stats = chainStats({nodes, timeline, warnings: ['timeline_truncated']}, {now: T + 3600, bins: 6});
+  assert.equal(stats.start, T);
+  assert.equal(stats.end, T + 3600);
+  assert.equal(stats.duration, 3600);
+  assert.equal(stats.density.length, 6);
+  // 600s slices: 0–500s → first, 600–800s → second, 3500s → last.
+  assert.deepEqual(stats.density.map(bin => bin.count), [6, 4, 0, 0, 0, 1]);
+  assert.equal(stats.density.reduce((t, bin) => t + bin.count, 0), timeline.length);
+  assert.equal(stats.truncated, true);
+  // Finished chains stop at their last update.
+  assert.equal(chainStats({nodes: nodes.slice(0, 4), timeline: []}, {now: T + 99999}).end, T + 1800);
+});
+
+test('a chain without records still produces a zero-length, all-empty summary', () => {
+  const stats = chainStats({nodes: [], timeline: []}, {now: T});
+  assert.equal(stats.duration, 0);
+  assert.equal(stats.density.every(bin => bin.count === 0), true);
+  assert.deepEqual(stats.tests, {runs: 0, failed: 0, passed: 0});
+});
+
+test('the stats card shows the numbers, flags truncation and offers a table', () => {
+  const host = new Node('div');
+  renderChainStats(host, {nodes, timeline, warnings: ['timeline_truncated']}, {now: T + 3600});
+  const values = host.byClass('stat-value').map(node => node.textContent);
+  assert.deepEqual(values, ['1 小时', '5 次', '2', '9', '1 / 2']);
+  assert.match(host.text, /仍在进行/);
+  assert.match(host.text, /2 次失败/);
+  assert.match(host.text, /仅统计已载入的记录/);
+  assert.equal(host.byClass('kind-row').length, ACTIVITY_KINDS.length);
+  // 24 slices of 150s: records fall into slices 0–5 and 23.
+  assert.equal(host.all(node => node.attributes.class === 'density-bar').length, 7);
+  assert.equal(host.byClass('viz-data').length, 1);
 });

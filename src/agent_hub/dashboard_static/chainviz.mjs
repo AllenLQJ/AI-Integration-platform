@@ -141,3 +141,124 @@ export function renderGantt(host, chain, {agents = [], selected = null, now, wid
   host.replaceChildren(box);
   return box;
 }
+
+// --- in-chain statistics ------------------------------------------------------------------------
+
+export const ACTIVITY_KINDS = [
+  {key: 'message', label: '消息'}, {key: 'file_read', label: '读文件'}, {key: 'file_change', label: '改文件'},
+  {key: 'command', label: '命令'}, {key: 'test', label: '测试'}, {key: 'system', label: '系统'},
+];
+const KNOWN_KINDS = new Set(ACTIVITY_KINDS.map(kind => kind.key));
+
+/** A record failed when the executor said so or its command exited non-zero. */
+export const failedRecord = entry => entry?.status === 'failed'
+  || (entry?.operation?.exit_code != null && Number(entry.operation.exit_code) !== 0);
+
+/**
+ * Counts for one chain from its detail response: span (running work counts up to `now`),
+ * executions by outcome, timeline records by kind with failures, test runs, and activity
+ * density over `bins` equal slices of the span.
+ */
+export function chainStats(chain, {now = Date.now() / 1000, bins = 24} = {}) {
+  const nodes = chain?.nodes || [], timeline = chain?.timeline || [];
+  const outcomes = Object.fromEntries(OUTCOMES.map(outcome => [outcome.key, 0]));
+  let start = Infinity, end = -Infinity, active = false;
+  for (const node of nodes) {
+    const running = !TERMINAL.has(node.state);
+    active ||= running;
+    outcomes[stateOutcome(node.state).key] += 1;
+    start = Math.min(start, node.created);
+    end = Math.max(end, running ? Math.max(now, node.updated ?? node.created) : node.updated ?? node.created);
+  }
+  const kinds = Object.fromEntries(ACTIVITY_KINDS.map(kind => [kind.key, {count: 0, failed: 0}]));
+  const stamps = [];
+  let testRuns = 0, testFailed = 0;
+  for (const entry of timeline) {
+    const kind = KNOWN_KINDS.has(entry.kind) ? entry.kind : 'system';
+    kinds[kind].count += 1;
+    const failed = kind !== 'message' && failedRecord(entry);
+    if (failed) kinds[kind].failed += 1;
+    if (kind === 'test' && entry.status !== 'started') { testRuns += 1; if (failed) testFailed += 1; }
+    if (typeof entry.timestamp === 'number') stamps.push(entry.timestamp);
+  }
+  if (!nodes.length) { start = stamps.length ? Math.min(...stamps) : now; end = stamps.length ? Math.max(...stamps) : now; }
+  if (stamps.length) { start = Math.min(start, ...stamps); end = Math.max(end, ...stamps); }
+  const width = Math.max(1, end - start) / bins;
+  const density = Array.from({length: bins}, (_, i) => ({from: start + i * width, to: start + (i + 1) * width, count: 0}));
+  for (const t of stamps) density[Math.min(bins - 1, Math.floor((t - start) / width))].count += 1;
+  return {
+    start, end, duration: Math.max(0, end - start), active, executions: nodes.length, outcomes,
+    kinds, messages: kinds.message.count, operations: timeline.length - kinds.message.count,
+    operationFailures: Object.entries(kinds).reduce((total, [key, value]) => total + (key === 'message' ? 0 : value.failed), 0),
+    tests: {runs: testRuns, failed: testFailed, passed: testRuns - testFailed},
+    density, truncated: (chain?.warnings || []).includes('timeline_truncated'),
+  };
+}
+
+/** Render the stats card for a chain into `host`. */
+export function renderChainStats(host, chain, {now} = {}) {
+  const stats = chainStats(chain, {now});
+  const box = el('div', 'chain-stats-card');
+  const head = el('div', 'viz-card-head');
+  head.append(el('h2', '', '链内统计'));
+  if (stats.truncated) head.append(el('span', 'viz-note', '时间线较长，仅统计已载入的记录'));
+  box.append(head);
+  const tiles = el('div', 'stat-row');
+  const tile = (name, value, sub) => {
+    const item = el('div', 'stat');
+    item.append(el('span', 'stat-label', name), el('strong', 'stat-value', value));
+    if (sub) item.append(el('span', 'stat-sub', sub));
+    tiles.append(item);
+  };
+  tile('总耗时', formatDuration(stats.duration), stats.active ? '仍在进行' : '从首次提交到最后结束');
+  tile('执行', `${stats.executions} 次`, OUTCOMES.filter(o => stats.outcomes[o.key]).map(o => `${o.label} ${stats.outcomes[o.key]}`).join(' · '));
+  tile('消息', stats.messages);
+  tile('操作', stats.operations, stats.operationFailures ? `${stats.operationFailures} 次失败` : '');
+  tile('测试', stats.tests.runs ? `${stats.tests.passed} / ${stats.tests.runs}` : '—',
+    stats.tests.runs ? (stats.tests.failed ? `通过 / 共计 · ${stats.tests.failed} 次失败` : '通过 / 共计') : '未记录测试');
+  box.append(tiles);
+  const grid = el('div', 'stat-grid');
+  // Kinds: one hue; the label names the kind, so colour carries no identity here.
+  const kinds = el('div', 'stat-panel');
+  kinds.append(el('h3', '', '按类型'));
+  const max = Math.max(1, ...ACTIVITY_KINDS.map(kind => stats.kinds[kind.key].count));
+  for (const kind of ACTIVITY_KINDS) {
+    const value = stats.kinds[kind.key];
+    const row = el('div', 'kind-row' + (value.count ? '' : ' zero'));
+    const track = el('span', 'kind-track');
+    const bar = el('span', 'kind-bar');
+    bar.style.width = `${value.count / max * 100}%`;
+    track.append(bar);
+    row.append(el('span', 'kind-name', kind.label), track, el('span', 'kind-count', value.count),
+      el('span', 'kind-failed', value.failed ? `✕ ${value.failed}` : ''));
+    kinds.append(row);
+  }
+  const activity = el('div', 'stat-panel');
+  activity.append(el('h3', '', '活动密度'));
+  const tip = tooltip(activity);
+  const W = 240, H = 64, peak = Math.max(1, ...stats.density.map(bin => bin.count)), slot = W / stats.density.length;
+  const chart = svg('svg', {viewBox: `0 0 ${W} ${H}`, class: 'density', preserveAspectRatio: 'none', role: 'img',
+    'aria-label': `活动记录在时间上的分布，最忙的时段 ${peak} 条`});
+  stats.density.forEach((bin, index) => {
+    const h = bin.count ? Math.max(2, bin.count / peak * (H - 2)) : 0;
+    const x = index * slot;
+    if (h) chart.append(svg('rect', {x: x + 1, y: H - h, width: Math.max(1, slot - 2), height: h, class: 'density-bar'}));
+    const hit = svg('rect', {x, y: 0, width: slot, height: H, class: 'hit'});
+    hover(hit, tip, () => [`${clock(bin.from)} – ${clock(bin.to)}`, `${bin.count} 条记录`]);
+    chart.append(hit);
+  });
+  const axis = el('div', 'density-axis');
+  axis.append(el('span', '', clock(stats.start)), el('span', '', clock(stats.end)));
+  activity.append(chart, axis);
+  grid.append(kinds, activity);
+  box.append(grid);
+  box.append(dataTable('按类型的记录数', ['类型', '记录', '失败'],
+    ACTIVITY_KINDS.map(kind => [kind.label, stats.kinds[kind.key].count, stats.kinds[kind.key].failed])));
+  host.replaceChildren(box);
+  return box;
+}
+
+function clock(t) {
+  const d = new Date(t * 1000);
+  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
