@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {THEMES, applyTheme, nextTheme, readTheme, saveTheme} from '../../src/agent_hub/dashboard_static/theme.mjs';
+import {THEMES, applyTheme, nextTheme, readFlag, readTheme, saveFlag, saveTheme} from '../../src/agent_hub/dashboard_static/theme.mjs';
 
 const memory = () => {
   const data = new Map();
@@ -40,4 +40,16 @@ test('applying a theme sets or clears the root override', () => {
   applyTheme('system', root);
   assert.equal(attributes.has('data-theme'), false);
   assert.doesNotThrow(() => applyTheme('dark', undefined));
+});
+
+test('panel flags are remembered when on and cleared when off', () => {
+  const storage = memory();
+  assert.equal(readFlag('side-collapsed', storage), false);
+  saveFlag('side-collapsed', true, storage);
+  assert.equal(readFlag('side-collapsed', storage), true);
+  assert.equal(storage.data.get('agent-hub:side-collapsed'), '1');
+  saveFlag('side-collapsed', false, storage);
+  assert.equal(storage.data.size, 0);
+  assert.equal(readFlag('side-collapsed', broken), false);
+  assert.doesNotThrow(() => saveFlag('side-collapsed', true, broken));
 });

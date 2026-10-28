@@ -5,7 +5,7 @@ import {agentColors, relativeTime, stateOutcome} from './viz.mjs';
 import {failedRecord, renderChainStats, renderGantt} from './chainviz.mjs';
 import {createPalette} from './command.mjs';
 import {stagger, viewTransition} from './motion.mjs';
-import {THEMES, THEME_ICONS, THEME_LABELS, applyTheme, nextTheme, readTheme, saveTheme} from './theme.mjs';
+import {THEMES, THEME_ICONS, THEME_LABELS, applyTheme, nextTheme, readFlag, readTheme, saveFlag, saveTheme} from './theme.mjs';
 import {createGraph} from './graph.mjs';
 import {
   TimelineExpansion, timelineRecords, coverageNotes, kindLabel, provenanceLabel, statusLabel,
@@ -458,7 +458,7 @@ async function selectChain(id,desiredNode=null) {
     $('detail-content').replaceChildren(node('p','muted','正在读取…'));renderContent();
   };
   // Leaving the overview cross-fades; the browser runs `apply` a frame later, so wait for it.
-  const transition=overviewMode?viewTransition(apply):(apply(),null);
+  const transition=viewTransition(apply);
   if(transition)await transition.updateCallbackDone.catch(()=>{});
   if(token)await pollChain(token,id,desiredNode);
 }
@@ -571,22 +571,47 @@ $('graph-toggle').addEventListener('click',()=>{
 for(const [id,delta] of [['zoom-out',-.1],['zoom-in',.1]])$(id).addEventListener('click',()=>{$('zoom-label').textContent=`${Math.round(graph.zoom(delta)*100)}%`;});
 $('graph-reset').addEventListener('click',()=>{graph.reset();$('zoom-label').textContent='100%';});
 let drawerFocus;
+// Side panels: on wide screens they collapse in place (the grid track animates to zero); below the
+// breakpoints the same buttons open them as drawers. Collapsed states are remembered per viewer.
+const PANELS = {
+  side: {panel: 'sidebar', button: 'side-toggle', drawerBelow: 650, label: '任务链侧栏'},
+  detail: {panel: 'detail', button: 'detail-toggle', drawerBelow: 1080, label: '详情栏'},
+};
+const collapsed = {side: readFlag('side-collapsed'), detail: readFlag('detail-collapsed')};
+function syncPanels() {
+  for (const [name, spec] of Object.entries(PANELS)) {
+    $('shell').classList.toggle(`${name}-collapsed`, collapsed[name]);
+    const drawer = innerWidth <= spec.drawerBelow, open = drawer ? $(spec.panel).classList.contains('show') : !collapsed[name];
+    $(spec.button).setAttribute('aria-expanded', String(open));
+    $(spec.button).setAttribute('aria-label', `${open ? '收起' : '展开'}${spec.label}`);
+    $(spec.button).title = `${open ? '收起' : '展开'}${spec.label}`;
+  }
+}
+function togglePanel(name) {
+  const spec = PANELS[name];
+  if (innerWidth <= spec.drawerBelow) {
+    if ($(spec.panel).classList.contains('show')) closeDrawers(); else openDrawer(spec.panel, $(spec.button));
+    return;
+  }
+  collapsed[name] = !collapsed[name];
+  saveFlag(`${name}-collapsed`, collapsed[name]);
+  syncPanels();
+  // Charts are laid out for their width; redraw once the panel has finished moving.
+  clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { drawOverview(); drawGantt(); }, 360);
+}
 function closeDrawers() {
   $('sidebar').classList.remove('show'); $('detail').classList.remove('show'); $('overlay').hidden = true;
-  $('menu-toggle').setAttribute('aria-expanded','false');
-  $('detail-toggle').setAttribute('aria-expanded',String(!$('detail').classList.contains('hidden') && innerWidth > 1080));
+  syncPanels();
   if (drawerFocus) { drawerFocus.focus(); drawerFocus = null; }
 }
 function openDrawer(id, trigger) {
   closeDrawers(); drawerFocus = trigger;
-  $(id).classList.add('show'); $('overlay').hidden = false; trigger.setAttribute('aria-expanded','true');
+  $(id).classList.add('show'); $('overlay').hidden = false; syncPanels();
   $(id).querySelector('button,input,select')?.focus();
 }
-$('menu-toggle').addEventListener('click',()=>openDrawer('sidebar',$('menu-toggle')));
-$('detail-toggle').addEventListener('click',()=>{
-  if (innerWidth <= 1080) { if ($('detail').classList.contains('show')) closeDrawers(); else openDrawer('detail',$('detail-toggle')); }
-  else { const hidden = $('detail').classList.toggle('hidden'); $('shell').classList.toggle('no-detail',hidden); $('detail-toggle').setAttribute('aria-expanded',String(!hidden)); }
-});
+$('side-toggle').addEventListener('click',()=>togglePanel('side'));
+$('detail-toggle').addEventListener('click',()=>togglePanel('detail'));
+syncPanels();
 for (const id of ['overlay','close-sidebar','close-detail']) $(id).addEventListener('click',closeDrawers);
 // Appearance: the top-bar button cycles 跟随系统 → 浅色 → 深色; the palette can pick one directly.
 let theme = readTheme();
@@ -598,7 +623,11 @@ function setTheme(next, remember = true) {
   button.title = `外观：${THEME_LABELS[theme]}`;
 }
 setTheme(theme, false);
-$('theme-toggle').addEventListener('click', () => viewTransition(() => setTheme(nextTheme(theme))));
+$('theme-toggle').addEventListener('click', () => {
+  // Decide now, animate later: the transition runs its update a frame late, so quick clicks would race.
+  const next = nextTheme(theme); theme = next;
+  viewTransition(() => setTheme(next));
+});
 const chainEntry = task => ({id: task.id, group: '任务链', title: task.title || task.id,
   hint: `${task.task_count} 次 · ${stateLabel(task)}`, run: () => selectChain(task.id)});
 const palette = createPalette({
@@ -610,7 +639,9 @@ const palette = createPalette({
     ] : []),
     {id: 'cmd:refresh', group: '操作', title: '刷新数据', hint: '重新读取', run: () => $('refresh').click()},
     ...THEMES.map(choice => ({id: `cmd:theme-${choice}`, group: '外观', title: `外观：${THEME_LABELS[choice]}`,
-      hint: choice === theme ? '当前' : '', run: () => viewTransition(() => setTheme(choice))})),
+      hint: choice === theme ? '当前' : '', run: () => { theme = choice; viewTransition(() => setTheme(choice)); }})),
+    ...Object.entries(PANELS).map(([name, spec]) => ({id: `cmd:panel-${name}`, group: '布局',
+      title: `${collapsed[name] ? '展开' : '收起'}${spec.label}`, hint: '', run: () => togglePanel(name)})),
     ...state.items.map(chainEntry),
   ],
   // Chains beyond the loaded sidebar page come from the server's own search.
@@ -632,8 +663,7 @@ document.addEventListener('keydown',event=>{
 });
 addEventListener('resize',closeDrawers);
 for (const tab of document.querySelectorAll('[data-view]')) tab.addEventListener('click',()=>{
-  setView(tab.dataset.view);
-  if (state.chainId) renderContent();
+  viewTransition(()=>{ setView(tab.dataset.view); if (state.chainId) renderContent(); });
 });
 function filtersChanged() {
   clearTimeout(searchTimer); clearTimeout(listTimer); listPending = false;

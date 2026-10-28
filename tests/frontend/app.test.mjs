@@ -60,6 +60,16 @@ test('real app safely renders and recovers initialization while polling preserve
     assert.match(nodes.get('agent-count').textContent,/不可用/);
     nodes.get('refresh').listeners.click(); await settle();
     assert.equal(nodes.get('agent-count').textContent,'1 个已配置执行器');
+    // Wide screens collapse a side panel in place; the toggle reports the new state.
+    assert.equal(nodes.get('side-toggle').attributes['aria-expanded'],'true');
+    nodes.get('side-toggle').listeners.click();
+    assert.ok(nodes.get('shell').classes.has('side-collapsed'));
+    assert.deepEqual([nodes.get('side-toggle').attributes['aria-expanded'],nodes.get('side-toggle').attributes['aria-label']],['false','展开任务链侧栏']);
+    nodes.get('detail-toggle').listeners.click();
+    assert.ok(nodes.get('shell').classes.has('detail-collapsed'));
+    nodes.get('side-toggle').listeners.click(); nodes.get('detail-toggle').listeners.click();
+    assert.ok(!nodes.get('shell').classes.has('side-collapsed') && !nodes.get('shell').classes.has('detail-collapsed'));
+    assert.equal(nodes.get('detail-toggle').attributes['aria-label'],'收起详情栏');
     // Lists keep refreshing even before any task has been selected.
     // Agents arrive sorted by name, so 'a-agent' ranks first while the configured executor owns slot 1.
     taskItems = [{...task,id:'task-2',title:'new task',agents:['a-agent','custom-executor'],

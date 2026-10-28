@@ -31,3 +31,15 @@ export function applyTheme(theme, root = globalThis.document?.documentElement) {
   if (theme === 'light' || theme === 'dark') root.setAttribute('data-theme', theme);
   else root.removeAttribute('data-theme');
 }
+
+/** Panel layout preferences (e.g. a collapsed sidebar), stored the same forgiving way. */
+export function readFlag(name, storage = globalThis.localStorage) {
+  try { return storage?.getItem(`agent-hub:${name}`) === '1'; } catch { return false; }
+}
+
+export function saveFlag(name, on, storage = globalThis.localStorage) {
+  try {
+    if (on) storage?.setItem(`agent-hub:${name}`, '1');
+    else storage?.removeItem(`agent-hub:${name}`);
+  } catch { /* not remembered */ }
+}
