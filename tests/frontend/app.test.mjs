@@ -105,6 +105,8 @@ test('real app safely renders and recovers initialization while polling preserve
     assert.ok(!rendered.some(x=>x.tagName === 'img'));
     assert.ok(timers.some(x=>x.delay === 2500));
     const messageNode = nodes.get('content').children[0];
+    // The chain's first cards rise in once, after its records arrive (not on the loading render).
+    assert.ok(messageNode.classes.has('enter'), 'a newly opened chain animates its first cards');
     eventItems = []; taskState = 'running';
     await tick(2500);
     assert.equal(nodes.get('status-line').children[0].textContent,'最近主执行 · 执行中');

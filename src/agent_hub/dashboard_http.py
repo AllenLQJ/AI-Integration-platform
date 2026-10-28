@@ -21,7 +21,7 @@ from .models import HubError
 
 STATIC_ROOT = Path(__file__).with_name('dashboard_static')
 ASSETS = {'index.html': 'text/html', 'app.mjs': 'text/javascript',
-          'graph.mjs': 'text/javascript', 'timeline.mjs': 'text/javascript', 'overview.mjs': 'text/javascript', 'viz.mjs': 'text/javascript', 'chainviz.mjs': 'text/javascript', 'motion.mjs': 'text/javascript',
+          'graph.mjs': 'text/javascript', 'timeline.mjs': 'text/javascript', 'overview.mjs': 'text/javascript', 'viz.mjs': 'text/javascript', 'chainviz.mjs': 'text/javascript', 'motion.mjs': 'text/javascript', 'command.mjs': 'text/javascript',
           'status_labels.mjs': 'text/javascript',
           'api.mjs': 'text/javascript', 'state.mjs': 'text/javascript', 'style.css': 'text/css'}
 COOKIE_PREFIX = 'hub_dashboard_'

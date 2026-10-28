@@ -82,9 +82,9 @@ function stamp(t) {
 }
 
 /** Render the Gantt chart into `host`. `onSelect(id)` focuses an execution. */
-export function renderGantt(host, chain, {agents = [], selected = null, now, width, onSelect = () => {}} = {}) {
+export function renderGantt(host, chain, {agents = [], selected = null, now, width, onSelect = () => {}, animate = false} = {}) {
   const nodes = chain?.nodes || [];
-  const box = el('div', 'gantt');
+  const box = el('div', animate ? 'gantt animate' : 'gantt');
   if (!nodes.length) { box.append(el('p', 'muted', '这条任务链还没有执行记录。')); host.replaceChildren(box); return box; }
   const layout = ganttLayout(nodes, {now, width, agents});
   const colors = agentColors(agents, layout.lanes.map(lane => lane.agent));
@@ -121,6 +121,7 @@ export function renderGantt(host, chain, {agents = [], selected = null, now, wid
     const group = svg('g', {class: 'gantt-bar' + (bar.id === selected ? ' selected' : ''), tabindex: 0, role: 'button',
       'aria-label': `第 ${bar.index} 次执行，${bar.agent}，${label(bar.state)}，时长 ${formatDuration(bar.end - bar.start)}`,
       'data-task': bar.id});
+    group.style?.setProperty?.('--i', String(bar.index - 1));
     group.append(svg('rect', {x: bar.x, y: bar.y - 4, width: bar.width, height: GANTT.bar + 8, class: 'hit'}));
     group.append(svg('rect', {x: bar.x, y: bar.y, width: bar.width, height: GANTT.bar, rx: Math.min(4, bar.width / 2),
       fill: outcome.color, class: 'bar' + (bar.active ? ' active' : '')}));

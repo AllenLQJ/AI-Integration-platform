@@ -2,8 +2,9 @@ import {createAPI, consumeTicket, isUnchanged} from './api.mjs';
 import {DashboardState, RequestGate, chainIdle, POLL_ACTIVE, POLL_IDLE} from './state.mjs';
 import {renderOverview} from './overview.mjs';
 import {agentColors, relativeTime, stateOutcome} from './viz.mjs';
-import {renderChainStats, renderGantt} from './chainviz.mjs';
-import {stagger} from './motion.mjs';
+import {failedRecord, renderChainStats, renderGantt} from './chainviz.mjs';
+import {createPalette} from './command.mjs';
+import {stagger, viewTransition} from './motion.mjs';
 import {createGraph} from './graph.mjs';
 import {
   TimelineExpansion, timelineRecords, coverageNotes, kindLabel, provenanceLabel, statusLabel,
@@ -47,6 +48,8 @@ function date(value) {
 let view = 'messages', pageHistory = [], timer, chainTimer, listTimer, searchTimer, stopped = false, listPending = false, agentsPending = false;
 let contentKey = '', contentContext = '', renderedEvents = new Map(), listKey = '';
 let renderedMessages = new Map();
+// Set when a chain's timeline is (re)opened; the first render that has cards plays their entrance.
+let pendingEntrance = false;
 let historyLoading = false;
 // Overview mode: shown while no chain is selected; it polls on its own slow cadence.
 const POLL_OVERVIEW = 30000;
@@ -212,6 +215,8 @@ function renderTimelineCard(record) {
   const entry = node('details', 'timeline-card message');
   entry.open = open;
   entry.dataset.messageTask = record.task_id || '';
+  entry.dataset.kind = record.kind || '';
+  if (record.kind !== 'message' && failedRecord(record)) entry.dataset.failed = 'true';
   entry.dataset.recordId = record.id;
   entry.id = `timeline-${record.id}`;
   entry.setAttribute('aria-expanded', String(open));
@@ -252,7 +257,7 @@ function renderContent() {
   const key = JSON.stringify([context, view === 'events' ? [state.detail, state.events] : records]);
   if (key === contentKey) { renderCoverage(); return; }
   contentKey = key;
-  if (context !== contentContext) { content.replaceChildren(); renderedEvents = new Map(); renderedMessages = new Map(); }
+  if (context !== contentContext) { content.replaceChildren(); renderedEvents = new Map(); renderedMessages = new Map(); pendingEntrance = true; }
   contentContext = context;
   content.setAttribute('aria-label', view === 'messages' ? '整条任务链的统一时间线' : '选中执行的事件');
   if (view === 'events') {
@@ -288,6 +293,7 @@ function renderContent() {
   for (const child of [...content.children]) if (!wanted.has(child)) child.remove();
   desired.forEach((entry, index) => { if (content.children[index] !== entry) content.insertBefore(entry, content.children[index] || null); });
   renderedMessages = next;
+  if (pendingEntrance && desired.length) { stagger(desired.slice(0, 12)); pendingEntrance = false; }
   if (!desired.length) content.replaceChildren(empty('暂无时间线记录', '这条任务链尚未记录消息或操作。'));
   highlightMessages();
   renderCoverage();
@@ -439,15 +445,21 @@ async function pollChain(token,id,desiredNode=null) {
 }
 async function selectChain(id,desiredNode=null) {
   if(stopped)return;
-  setOverviewMode(false);
-  clearTimeout(timer);clearTimeout(chainTimer);const token=state.selectChain(id);
-  historyLoading = false;
-  contentKey='';contentContext='';renderedEvents=new Map();renderedMessages=new Map();
-  graph.clear();$('graph-panel').hidden=true;$('chain-stats').hidden=true;$('chain-warning').hidden=true;$('chain-error').hidden=true;$('zoom-label').textContent='100%';
-  closeDrawers();renderList();$('detail-error').hidden=true;
-  $('task-title').textContent='正在读取任务链…';$('subtitle').textContent=id;$('status-line').replaceChildren();
-  $('detail-content').replaceChildren(node('p','muted','正在读取…'));renderContent();
-  await pollChain(token,id,desiredNode);
+  let token;
+  const apply=()=>{
+    setOverviewMode(false);
+    clearTimeout(timer);clearTimeout(chainTimer);token=state.selectChain(id);
+    historyLoading = false;
+    contentKey='';contentContext='';renderedEvents=new Map();renderedMessages=new Map();
+    graph.clear();$('graph-panel').hidden=true;$('chain-stats').hidden=true;$('chain-warning').hidden=true;$('chain-error').hidden=true;$('zoom-label').textContent='100%';
+    closeDrawers();renderList();$('detail-error').hidden=true;
+    $('task-title').textContent='正在读取任务链…';$('subtitle').textContent=id;$('status-line').replaceChildren();
+    $('detail-content').replaceChildren(node('p','muted','正在读取…'));renderContent();
+  };
+  // Leaving the overview cross-fades; the browser runs `apply` a frame later, so wait for it.
+  const transition=overviewMode?viewTransition(apply):(apply(),null);
+  if(transition)await transition.updateCallbackDone.catch(()=>{});
+  if(token)await pollChain(token,id,desiredNode);
 }
 async function selectNode(id,scroll) {
   if(stopped||!state.chain?.nodes.some(n=>n.id===id))return;
@@ -513,17 +525,26 @@ function showOverview() {
   $('status-line').replaceChildren(); $('detail-content').replaceChildren(node('p','muted','选择任务后查看上下文。'));
   closeDrawers(); setOverviewMode(true); renderList(); drawOverview(); loadOverview();
 }
-$('overview-btn').addEventListener('click', showOverview);
+function showOverviewAnimated() { if (!stopped) viewTransition(showOverview); }
+$('overview-btn').addEventListener('click', showOverviewAnimated);
 addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { drawOverview(); drawGantt(); }, 150); });
+// The chain the timeline last drew in for; bars only sweep in when this changes.
+let ganttShownFor = null;
 function drawGantt() {
   if (chainView !== 'gantt' || !state.chain || $('graph-panel').classList.contains('collapsed')) return;
-  renderGantt($('gantt'), state.chain, {agents: configuredAgents, selected: state.selected,
+  const animate = ganttShownFor !== state.chainId;
+  ganttShownFor = state.chainId;
+  renderGantt($('gantt'), state.chain, {agents: configuredAgents, selected: state.selected, animate,
     // Laid out for the panel's inner width (padding 16px each side); it scrolls only below 240px.
     width: Math.max(240, ($('gantt').clientWidth || $('graph-panel').clientWidth || 700) - 32),
     onSelect: id => selectNode(id, true)});
 }
 function setChainView(next) {
+  viewTransition(() => applyChainView(next));
+}
+function applyChainView(next) {
   chainView = next;
+  if (next === 'gantt') ganttShownFor = null;
   const collapsed = $('graph-panel').classList.contains('collapsed');
   $('graph-viewport').hidden = collapsed || next !== 'graph';
   $('gantt').hidden = collapsed || next !== 'gantt';
@@ -566,7 +587,27 @@ $('detail-toggle').addEventListener('click',()=>{
   else { const hidden = $('detail').classList.toggle('hidden'); $('shell').classList.toggle('no-detail',hidden); $('detail-toggle').setAttribute('aria-expanded',String(!hidden)); }
 });
 for (const id of ['overlay','close-sidebar','close-detail']) $(id).addEventListener('click',closeDrawers);
+const chainEntry = task => ({id: task.id, group: '任务链', title: task.title || task.id,
+  hint: `${task.task_count} 次 · ${stateLabel(task)}`, run: () => selectChain(task.id)});
+const palette = createPalette({
+  items: () => [
+    {id: 'cmd:overview', group: '导航', title: '回到总览', hint: '全局概况', run: showOverviewAnimated},
+    ...(state.chainId ? [
+      {id: 'cmd:graph', group: '视图', title: '切换到关系图', hint: '执行关系', run: () => setChainView('graph')},
+      {id: 'cmd:gantt', group: '视图', title: '切换到时间轴', hint: '执行甘特图', run: () => setChainView('gantt')},
+    ] : []),
+    {id: 'cmd:refresh', group: '操作', title: '刷新数据', hint: '重新读取', run: () => $('refresh').click()},
+    ...state.items.map(chainEntry),
+  ],
+  // Chains beyond the loaded sidebar page come from the server's own search.
+  search: async query => (await api.chains({q: query.slice(0, 500), limit: 8, offset: 0})).items.map(chainEntry),
+});
+$('command-key').textContent = /Mac|iP(hone|ad)/.test(globalThis.navigator?.platform || '') ? '⌘K' : 'Ctrl K';
+$('command-btn').addEventListener('click', () => palette.open());
 document.addEventListener('keydown',event=>{
+  if ((event.metaKey || event.ctrlKey) && String(event.key || '').toLowerCase() === 'k') {
+    event.preventDefault(); if (palette.isOpen()) palette.close(); else palette.open(); return;
+  }
   if (event.key === 'Escape') closeDrawers();
   if (event.key !== 'Tab' || !drawerFocus) return;
   const panel = $('sidebar').classList.contains('show') ? $('sidebar') : $('detail');
