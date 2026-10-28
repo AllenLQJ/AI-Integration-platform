@@ -48,6 +48,8 @@ function date(value) {
 let view = 'messages', pageHistory = [], timer, chainTimer, listTimer, searchTimer, stopped = false, listPending = false, agentsPending = false;
 let contentKey = '', contentContext = '', renderedEvents = new Map(), listKey = '';
 let renderedMessages = new Map();
+// Set when a chain's timeline is (re)opened; the first render that has cards plays their entrance.
+let pendingEntrance = false;
 let historyLoading = false;
 // Overview mode: shown while no chain is selected; it polls on its own slow cadence.
 const POLL_OVERVIEW = 30000;
@@ -255,8 +257,7 @@ function renderContent() {
   const key = JSON.stringify([context, view === 'events' ? [state.detail, state.events] : records]);
   if (key === contentKey) { renderCoverage(); return; }
   contentKey = key;
-  const fresh = context !== contentContext;
-  if (fresh) { content.replaceChildren(); renderedEvents = new Map(); renderedMessages = new Map(); }
+  if (context !== contentContext) { content.replaceChildren(); renderedEvents = new Map(); renderedMessages = new Map(); pendingEntrance = true; }
   contentContext = context;
   content.setAttribute('aria-label', view === 'messages' ? '整条任务链的统一时间线' : '选中执行的事件');
   if (view === 'events') {
@@ -292,7 +293,7 @@ function renderContent() {
   for (const child of [...content.children]) if (!wanted.has(child)) child.remove();
   desired.forEach((entry, index) => { if (content.children[index] !== entry) content.insertBefore(entry, content.children[index] || null); });
   renderedMessages = next;
-  if (fresh && desired.length) stagger(desired.slice(0, 12));
+  if (pendingEntrance && desired.length) { stagger(desired.slice(0, 12)); pendingEntrance = false; }
   if (!desired.length) content.replaceChildren(empty('暂无时间线记录', '这条任务链尚未记录消息或操作。'));
   highlightMessages();
   renderCoverage();
