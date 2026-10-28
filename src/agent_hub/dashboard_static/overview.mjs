@@ -8,6 +8,7 @@ import {
 } from './viz.mjs';
 
 export {OUTCOMES, AGENT_SLOTS, agentColors, formatDuration, relativeTime} from './viz.mjs';
+import {countUp} from './motion.mjs';
 
 export const WORK_BUCKETS = [
   {key: 'done', label: '验收通过', icon: '✓', color: 'var(--viz-ok)', statuses: ['completed', 'passed']},
@@ -80,15 +81,17 @@ export function stackDay(day, scaleMax, height, gap = 2) {
 
 // --- rendering -------------------------------------------------------------------------------
 
-function kpis(data) {
+function kpis(data, animate) {
   const stats = windowStats(data.daily), work = data.work_status || {};
   const review = work.needs_review || 0, rework = work.rework_required || 0, waiting = work.waiting_for_user || 0;
   const tiles = el('div', 'kpis');
   const tile = (name, value, sub, extra, tone) => {
     const box = el('div', 'kpi' + (tone ? ` ${tone}` : ''));
-    box.append(el('span', 'kpi-label', name), el('strong', 'kpi-value', value), el('span', 'kpi-sub', sub));
+    const number = el('strong', 'kpi-value', value);
+    box.append(el('span', 'kpi-label', name), number, el('span', 'kpi-sub', sub));
     if (extra) box.append(extra);
     tiles.append(box);
+    if (animate) countUp(number, String(value));
   };
   tile('执行中', data.totals.active, data.totals.waiting_for_user ? `其中 ${data.totals.waiting_for_user} 项等待人工`
     : `共 ${data.totals.chains} 条任务链`);
@@ -110,8 +113,19 @@ function sparkline(rates) {
     const x = (i * step).toFixed(1), y = (2 + (1 - rate) * (height - 4)).toFixed(1);
     path += `${open ? 'L' : 'M'}${x} ${y} `; open = true;
   });
-  if (path) chart.append(svg('path', {d: path.trim(), class: 'spark-line'}));
-  return chart;
+  // pathLength=1 lets CSS draw the line in with a single dash, whatever its real length.
+  if (path) chart.append(svg('path', {d: path.trim(), class: 'spark-line', pathLength: 1}));
+  const frame = el('div', 'spark');
+  frame.append(chart);
+  // The latest day with a rate gets a glowing dot; it is HTML so the stretched SVG cannot squash it.
+  const last = rates.findLastIndex(rate => rate != null);
+  if (last >= 0) {
+    const dot = el('span', 'spark-dot');
+    dot.style.left = `${rates.length > 1 ? last / (rates.length - 1) * 100 : 0}%`;
+    dot.style.top = `${(2 + (1 - rates[last]) * (height - 4)) / height * 100}%`;
+    frame.append(dot);
+  }
+  return frame;
 }
 
 function dailyChart(data, width) {
@@ -138,8 +152,10 @@ function dailyChart(data, width) {
     segments.forEach((segment, index) => {
       const y = top + segment.y, h = segment.height, last = index === segments.length - 1;
       const r = last ? Math.min(4, h, barW / 2) : 0;
-      chart.append(svg('path', {class: 'bar', fill: segment.color,
-        d: `M${x} ${y + h}V${y + r}${r ? `Q${x} ${y} ${x + r} ${y}` : ''}H${x + barW - r}${r ? `Q${x + barW} ${y} ${x + barW} ${y + r}` : ''}V${y + h}Z`}));
+      const piece = svg('path', {class: 'bar', fill: segment.color,
+        d: `M${x} ${y + h}V${y + r}${r ? `Q${x} ${y} ${x + r} ${y}` : ''}H${x + barW - r}${r ? `Q${x + barW} ${y} ${x + barW} ${y + r}` : ''}V${y + h}Z`});
+      piece.style?.setProperty?.('--i', String(i));
+      chart.append(piece);
     });
     if ((daily.length - 1 - i) % every === 0) {
       const text = svg('text', {x: left + i * band + band / 2, y: H - 8, class: 'axis', 'text-anchor': 'middle'});
@@ -226,7 +242,7 @@ function attentionList(data, onSelect, now) {
     ? `显示最近 ${data.attention.length} 条，共 ${data.attention_total} 条` : '');
   const list = el('ul', 'attention');
   const buckets = new Map(WORK_BUCKETS.flatMap(bucket => bucket.statuses.map(status => [status, bucket])));
-  for (const item of data.attention) {
+  for (const [index, item] of data.attention.entries()) {
     const status = ['needs_review', 'rework_required'].includes(item.work_status) ? item.work_status : item.state;
     const bucket = buckets.get(status) || WORK_BUCKETS.at(-1);
     const entry = el('li');
@@ -238,6 +254,7 @@ function attentionList(data, onSelect, now) {
     button.append(badge, el('span', 'attention-title', item.title || item.chain_id),
       el('span', 'attention-meta', `${item.agent || '未记录'} · ${relativeTime(item.updated, now)}`));
     button.addEventListener('click', () => onSelect(item.chain_id, item.task_id));
+    entry.style?.setProperty?.('--i', String(index));
     entry.append(button);
     list.append(entry);
   }
@@ -249,13 +266,16 @@ function attentionList(data, onSelect, now) {
   return box;
 }
 
-/** Replace `container` with the overview. `onSelect(chainId, taskId)` opens a chain. */
-export function renderOverview(container, data, {onSelect = () => {}, agents = [], now, width} = {}) {
+/**
+ * Replace `container` with the overview. `onSelect(chainId, taskId)` opens a chain. With `animate`,
+ * numbers count up and charts draw in; callers pass it for the first view only, not for refreshes.
+ */
+export function renderOverview(container, data, {onSelect = () => {}, agents = [], now, width, animate = false} = {}) {
   const colors = agentColors(agents, data.agents.map(agent => agent.agent));
   const grid = el('div', 'viz-grid');
   grid.append(agentChart(data, colors), workChart(data));
-  const root = el('div', 'overview');
-  root.append(kpis(data), dailyChart(data, width), grid, attentionList(data, onSelect, now ?? Date.now() / 1000));
+  const root = el('div', 'overview' + (animate ? ' animate' : ''));
+  root.append(kpis(data, animate), dailyChart(data, width), grid, attentionList(data, onSelect, now ?? Date.now() / 1000));
   container.replaceChildren(root);
   return root;
 }

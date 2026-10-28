@@ -1697,6 +1697,46 @@ h1 {
   font-variant-numeric:tabular-nums;
 }
 
+/* ---- Chart entrance (first view only: the overview gets .animate) --------------------------- */
+.spark {
+  position:relative;
+}
+.spark-dot {
+  position:absolute;
+  width:7px;
+  height:7px;
+  margin:-3.5px 0 0 -3.5px;
+  border-radius:50%;
+  background:var(--viz-ok);
+  box-shadow:0 0 0 3px var(--surface-1), 0 0 12px var(--viz-ok);
+}
+.overview.animate .spark-line {
+  stroke-dasharray:1;
+  stroke-dashoffset:1;
+  animation:draw 1.2s var(--ease-out) .25s forwards;
+}
+.overview.animate .spark-dot {
+  animation:pop .45s var(--ease-spring) 1.3s both;
+}
+.overview.animate .viz-chart .bar {
+  transform-box:fill-box;
+  transform-origin:50% 100%;
+  animation:grow .75s var(--ease-out) both;
+  animation-delay:calc(var(--i, 0) * 35ms + .2s);
+}
+.overview.animate .agent-bar,
+.overview.animate .work-bar {
+  transform-origin:0 50%;
+  animation:fill .9s var(--ease-out) .3s both;
+}
+.overview.animate .attention li {
+  animation:rise var(--dur-slow) var(--ease-out) both;
+  animation-delay:calc(var(--i, 0) * 50ms + .35s);
+}
+.state-cell.live {
+  animation:blink 1.8s ease-in-out infinite;
+}
+
 /* ---- Loading skeletons --------------------------------------------------------------------- */
 .skeleton {
   display:block;
@@ -1761,6 +1801,32 @@ h1 {
 @keyframes breathe {
   50% {
     fill-opacity:.45;
+  }
+}
+@keyframes draw {
+  to {
+    stroke-dashoffset:0;
+  }
+}
+@keyframes grow {
+  from {
+    transform:scaleY(0);
+  }
+}
+@keyframes fill {
+  from {
+    transform:scaleX(0);
+  }
+}
+@keyframes pop {
+  from {
+    opacity:0;
+    transform:scale(0);
+  }
+}
+@keyframes blink {
+  50% {
+    opacity:.35;
   }
 }
 @keyframes dash-flow {

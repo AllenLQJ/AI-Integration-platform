@@ -7,7 +7,7 @@ import {
 
 // Just enough DOM for the renderer: elements, SVG elements, attributes and listeners.
 class Node {
-  constructor(tag) { this.tagName = tag; this.children = []; this.attributes = {}; this.listeners = {}; this.style = {}; this.dataset = {}; this.textContent = ''; this.hidden = false; this.className = ''; }
+  constructor(tag) { this.tagName = tag; this.children = []; this.attributes = {}; this.listeners = {}; this.style = {setProperty(key, value) { this[key] = value; }}; this.dataset = {}; this.textContent = ''; this.hidden = false; this.className = ''; }
   append(...items) { this.children.push(...items); }
   replaceChildren(...items) { this.children = [...items]; }
   setAttribute(key, value) { this.attributes[key] = value; }
@@ -135,4 +135,27 @@ test('an empty hub renders without charts breaking', () => {
   assert.deepEqual(host.byClass('kpi-value').map(node => node.textContent), ['0', '0', '—', '0']);
   assert.match(host.text, /目前没有需要人处理的任务链/);
   assert.match(host.text, /还没有执行记录/);
+});
+
+test('the first view animates: numbers count up, charts carry their order, and refreshes stay still', () => {
+  const still = new Node('section');
+  renderOverview(still, overview, {width: 640, now: 1120});
+  assert.equal(still.children[0].className, 'overview');
+  const host = new Node('section');
+  renderOverview(host, overview, {width: 640, now: 1120, animate: true});
+  assert.equal(host.children[0].className, 'overview animate');
+  // Without requestAnimationFrame (as here) a count-up lands on the final text at once.
+  assert.deepEqual(host.byClass('kpi-value').map(node => node.textContent), ['2', '8', '67%', '2']);
+  // Bars know their day for the staggered grow-in; attention rows know their position.
+  const bars = host.all(node => node.attributes.class === 'bar');
+  assert.ok(bars.length > 0);
+  assert.ok(bars.every(bar => /^\d+$/.test(bar.style['--i'])));
+  assert.equal(bars.at(-1).style['--i'], '13');
+  assert.equal(host.byClass('attention')[0].children[0].style['--i'], '0');
+  // The sparkline draws with one dash and ends on a dot at the latest day with a rate.
+  const spark = host.byClass('spark')[0];
+  assert.equal(spark.children[0].children[0].attributes.pathLength, '1');
+  const dot = host.byClass('spark-dot')[0];
+  assert.equal(dot.style.left, '100%');
+  assert.match(dot.style.top, /%$/);
 });

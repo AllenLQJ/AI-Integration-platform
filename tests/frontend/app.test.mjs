@@ -71,6 +71,8 @@ test('real app safely renders and recovers initialization while polling preserve
     const listed = nodes.get('task-list').children[0];
     const cells = descendants(listed,'state-cell');
     assert.deepEqual(cells.map(c=>c.style.background),['var(--viz-ok)','var(--viz-fail)','var(--viz-other)','var(--viz-active)']);
+    // Only running executions breathe.
+    assert.deepEqual(cells.map(c=>c.className),['state-cell','state-cell','state-cell','state-cell live']);
     assert.equal(descendants(listed,'state-more')[0].textContent,'+2');
     const strip = descendants(listed,'state-strip')[0];
     assert.equal(strip.attributes.role,'img');
