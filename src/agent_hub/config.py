@@ -3,6 +3,7 @@ import os
 import subprocess
 from pathlib import Path
 from .adapters.codex import Codex
+from .adapters.antigravity import Antigravity
 from .adapters.claude import Claude
 from .adapters.muse import Muse
 from .adapters.cursor import Cursor
@@ -112,7 +113,8 @@ def adapters(root):
                                   item['agent'], item['cwd'], item['mode'],
                                   platform=platform, shell=item.get('shell'))
     for name, cls in [('codex', Codex), ('claude', Claude), ('muse', Muse),
-                      ('cursor', Cursor), ('cursor_cli', Cursor), ('grokbot', GrokBot)]:
+                      ('cursor', Cursor), ('cursor_cli', Cursor), ('grokbot', GrokBot),
+                      ('antigravity', Antigravity)]:
         item = config.get('agents', {}).get(name)
         if item and item.get('enabled', True) and item.get('kind') not in {'remote', 'plugin', 'command'}:
             if name == 'cursor' and item.get('kind') == 'ide':
@@ -122,6 +124,7 @@ def adapters(root):
                                    item.get('state_file'), item.get('env'), item.get('session_id'))
             elif name == 'muse': result[name] = cls(item['executable'], item.get('args'), item.get('env'), item.get('session_id'))
             elif name == 'codex': result[name] = cls(item['executable'], item.get('env'), item.get('windows_sandbox', 'mxc'))
+            elif name == 'antigravity': result[name] = cls(item['executable'], item.get('env'), item.get('args'))
             elif name in {'cursor', 'cursor_cli'}:
                 result[name] = cls(item['executable'], item.get('env'), item.get('args'), item.get('credentials_file'),
                                    item.get('sandbox', 'enabled'))

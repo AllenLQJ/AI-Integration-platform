@@ -1,32 +1,106 @@
 {
-  "concurrency": {"global": 2, "per_agent": {"codex": 1, "claude": 1, "muse": 1, "cursor": 1, "grokbot": 1}},
-  "verification": {"max_auto_rework": 2},
+  "concurrency": {
+    "global": 2,
+    "per_agent": {
+      "codex": 1,
+      "claude": 1,
+      "muse": 1,
+      "cursor": 1,
+      "grokbot": 1,
+      "antigravity": 1
+    }
+  },
+  "verification": {
+    "max_auto_rework": 2
+  },
   "agents": {
-    "remote-worker": {"enabled": false, "kind": "remote", "platform": "linux", "shell": "posix", "ssh_host": "your-known-host",
+    "remote-worker": {
+      "enabled": false,
+      "kind": "remote",
+      "platform": "linux",
+      "shell": "posix",
+      "ssh_host": "your-known-host",
       "python": "/path/to/AI-Integration-platform/.venv/bin/python",
-      "data_dir": "/home/your-name/.agent-hub", "agent": "claude",
-      "cwd": "/home/your-name/project", "mode": "read_only"},
-    "remote-windows-worker": {"enabled": false, "kind": "remote", "platform": "windows", "shell": "cmd",
-      "ssh_host": "your-windows-host", "python": "C:/path/to/AI-Integration-platform/.venv/Scripts/python.exe",
-      "data_dir": "C:/Users/your-name/.agent-hub", "agent": "claude",
-      "cwd": "D:/your-project", "mode": "read_only"},
-    "codex": {"executable": "codex"},
-    "claude": {"executable": "claude"},
-    "example-writer": {"enabled": false, "kind": "plugin", "plugin": "echo", "options": {"prefix": "Example: "}},
-    "example-command": {"enabled": false, "kind": "command", "args": ["-m", "agent_hub_echo", "{request_file}"],
-      "resume_args": ["-m", "agent_hub_echo", "{request_file}"]},
-    "cursor": {"enabled": false, "kind": "ide", "executable": "C:/path/to/Cursor.exe"},
-    "cursor_cli": {"enabled": false, "executable": "C:/path/to/cursor-cli/node.exe",
-      "args": ["C:/path/to/cursor-cli/index.js"],
+      "data_dir": "/home/your-name/.agent-hub",
+      "agent": "claude",
+      "cwd": "/home/your-name/project",
+      "mode": "read_only"
+    },
+    "remote-windows-worker": {
+      "enabled": false,
+      "kind": "remote",
+      "platform": "windows",
+      "shell": "cmd",
+      "ssh_host": "your-windows-host",
+      "python": "C:/path/to/AI-Integration-platform/.venv/Scripts/python.exe",
+      "data_dir": "C:/Users/your-name/.agent-hub",
+      "agent": "claude",
+      "cwd": "D:/your-project",
+      "mode": "read_only"
+    },
+    "codex": {
+      "executable": "codex"
+    },
+    "claude": {
+      "executable": "claude"
+    },
+    "example-writer": {
+      "enabled": false,
+      "kind": "plugin",
+      "plugin": "echo",
+      "options": {
+        "prefix": "Example: "
+      }
+    },
+    "example-command": {
+      "enabled": false,
+      "kind": "command",
+      "args": [
+        "-m",
+        "agent_hub_echo",
+        "{request_file}"
+      ],
+      "resume_args": [
+        "-m",
+        "agent_hub_echo",
+        "{request_file}"
+      ]
+    },
+    "cursor": {
+      "enabled": false,
+      "kind": "ide",
+      "executable": "C:/path/to/Cursor.exe"
+    },
+    "cursor_cli": {
+      "enabled": false,
+      "executable": "C:/path/to/cursor-cli/node.exe",
+      "args": [
+        "C:/path/to/cursor-cli/index.js"
+      ],
       "sandbox": "enabled",
-      "credentials_file": "C:/Users/your-name/.config/agent-serve/credentials.json"},
-    "grokbot": {"enabled": false, "bot_name": "Agent Hub Worker", "session_id": "YOUR_VERIFIED_EXISTING_SESSION_ID",
-      "credentials_file": "/Users/your-name/.config/agent-serve/credentials.json"},
+      "credentials_file": "C:/Users/your-name/.config/agent-serve/credentials.json"
+    },
+    "grokbot": {
+      "enabled": false,
+      "bot_name": "Agent Hub Worker",
+      "session_id": "YOUR_VERIFIED_EXISTING_SESSION_ID",
+      "credentials_file": "/Users/your-name/.config/agent-serve/credentials.json"
+    },
     "muse": {
       "enabled": false,
       "executable": "D:/path/to/muse-mcp/.venv/Scripts/python.exe",
-      "args": ["-m", "muse_mcp"],
-      "env": {"HTTPS_PROXY": "http://127.0.0.1:PORT"}
+      "args": [
+        "-m",
+        "muse_mcp"
+      ],
+      "env": {
+        "HTTPS_PROXY": "http://127.0.0.1:PORT"
+      }
+    },
+    "antigravity": {
+      "enabled": false,
+      "executable": "agy",
+      "args": []
     }
   }
 }

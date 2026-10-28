@@ -14,7 +14,7 @@ from .models import HubError
 
 API_VERSION = 1
 ENTRY_POINT_GROUP = 'agent_hub.executors'
-BUILTIN_NAMES = frozenset({'codex', 'claude', 'muse', 'cursor', 'cursor_cli', 'grokbot'})
+BUILTIN_NAMES = frozenset({'codex', 'claude', 'muse', 'cursor', 'cursor_cli', 'grokbot', 'antigravity'})
 MODES = frozenset({'text_only', 'read_only', 'edit_worktree', 'delegate', 'continue'})
 _DEVICE_NAMES = {'con', 'prn', 'aux', 'nul'} | {f'{prefix}{i}' for prefix in ('com', 'lpt') for i in range(1, 10)}
 
