@@ -5,6 +5,7 @@ import {agentColors, relativeTime, stateOutcome} from './viz.mjs';
 import {failedRecord, renderChainStats, renderGantt} from './chainviz.mjs';
 import {createPalette} from './command.mjs';
 import {stagger, viewTransition} from './motion.mjs';
+import {THEMES, THEME_ICONS, THEME_LABELS, applyTheme, nextTheme, readTheme, saveTheme} from './theme.mjs';
 import {createGraph} from './graph.mjs';
 import {
   TimelineExpansion, timelineRecords, coverageNotes, kindLabel, provenanceLabel, statusLabel,
@@ -587,6 +588,17 @@ $('detail-toggle').addEventListener('click',()=>{
   else { const hidden = $('detail').classList.toggle('hidden'); $('shell').classList.toggle('no-detail',hidden); $('detail-toggle').setAttribute('aria-expanded',String(!hidden)); }
 });
 for (const id of ['overlay','close-sidebar','close-detail']) $(id).addEventListener('click',closeDrawers);
+// Appearance: the top-bar button cycles 跟随系统 → 浅色 → 深色; the palette can pick one directly.
+let theme = readTheme();
+function setTheme(next, remember = true) {
+  theme = next; applyTheme(theme); if (remember) saveTheme(theme);
+  const button = $('theme-toggle');
+  button.textContent = THEME_ICONS[theme];
+  button.setAttribute('aria-label', `外观：${THEME_LABELS[theme]}，点击切换`);
+  button.title = `外观：${THEME_LABELS[theme]}`;
+}
+setTheme(theme, false);
+$('theme-toggle').addEventListener('click', () => viewTransition(() => setTheme(nextTheme(theme))));
 const chainEntry = task => ({id: task.id, group: '任务链', title: task.title || task.id,
   hint: `${task.task_count} 次 · ${stateLabel(task)}`, run: () => selectChain(task.id)});
 const palette = createPalette({
@@ -597,6 +609,8 @@ const palette = createPalette({
       {id: 'cmd:gantt', group: '视图', title: '切换到时间轴', hint: '执行甘特图', run: () => setChainView('gantt')},
     ] : []),
     {id: 'cmd:refresh', group: '操作', title: '刷新数据', hint: '重新读取', run: () => $('refresh').click()},
+    ...THEMES.map(choice => ({id: `cmd:theme-${choice}`, group: '外观', title: `外观：${THEME_LABELS[choice]}`,
+      hint: choice === theme ? '当前' : '', run: () => viewTransition(() => setTheme(choice))})),
     ...state.items.map(chainEntry),
   ],
   // Chains beyond the loaded sidebar page come from the server's own search.

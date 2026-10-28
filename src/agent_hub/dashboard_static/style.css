@@ -68,7 +68,7 @@
 
 /* Dark mode: the same ink-and-paper tone inverted — warm ink canvas, paper accent, one orange spark. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     color-scheme:dark;
     --bg:#111214;
     --bg-glow:#11121400;
@@ -116,6 +116,55 @@
     --viz-agent-8:#e66767;
   }
 }
+/* The same dark tokens when the viewer picks dark explicitly (kept identical; a test checks). */
+:root[data-theme="dark"] {
+  color-scheme:dark;
+  --bg:#111214;
+  --bg-glow:#11121400;
+  --bg-grid:#f6f6f405;
+  --surface-1:#17181b;
+  --surface-2:#1c1d21;
+  --surface-3:#25262b;
+  --glass:#17181beb;
+  --glass-strong:#17181bf7;
+  --edge:#f6f6f41a;
+  --edge-strong:#f6f6f42b;
+  --highlight:#f6f6f408;
+  --scrim:#00000099;
+  --shadow:#00000066;
+  --text-1:#f6f6f4;
+  --text-2:#b6b9bf;
+  --text-3:#8f939a;
+  --text-inverse:#16171a;
+  --accent:#f6f6f4;
+  --accent-2:#f6f6f4;
+  --accent-text:#9aa5f5;
+  --accent-soft:#f6f6f412;
+  --accent-edge:#f6f6f433;
+  --accent-glow:#00000059;
+  --warn-bg:#fab2191a;
+  --warn-edge:#fab21959;
+  --warn-text:#f6c768;
+  --spark:#e07a3f;
+  --logo-ink:#f6f6f4;
+  --logo-paper:#16171a;
+  --title-end:#f6f6f4;
+  --viz-ok:#0ca30c;
+  --viz-fail:#d03b3b;
+  --viz-wait:#fab219;
+  --viz-active:#3987e5;
+  --viz-plain:#9085e9;
+  --viz-other:#6e6e78;
+  --viz-agent-1:#3987e5;
+  --viz-agent-2:#d95926;
+  --viz-agent-3:#199e70;
+  --viz-agent-4:#c98500;
+  --viz-agent-5:#d55181;
+  --viz-agent-6:#008300;
+  --viz-agent-7:#9085e9;
+  --viz-agent-8:#e66767;
+}
+
 
 /* ---- Base ---------------------------------------------------------------------------------- */
 * {
