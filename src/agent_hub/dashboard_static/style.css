@@ -1,35 +1,40 @@
 :root {
   color-scheme:light;
   /* Canvas and surfaces */
-  --bg:#f4f6fb;
-  --bg-glow:#2563eb1f;
-  --bg-grid:#0b12200a;
+  --bg:#f6f6f4;
+  --bg-glow:#f6f6f400;
+  --bg-grid:#16171a05;
   --surface-1:#ffffff;
-  --surface-2:#f7f9fc;
-  --surface-3:#eef2f8;
-  --glass:#ffffffcc;
-  --glass-strong:#ffffffeb;
-  --edge:#0b12201a;
-  --edge-strong:#0b12202e;
-  --highlight:#ffffffcc;
-  --scrim:#0b122047;
-  --shadow:#0b12201f;
+  --surface-2:#fafaf8;
+  --surface-3:#f0f0ec;
+  --glass:#ffffffeb;
+  --glass-strong:#fffffff7;
+  --edge:#e4e4e0;
+  --edge-strong:#d6d6d1;
+  --highlight:#ffffff00;
+  --scrim:#16171a40;
+  --shadow:#16171a0f;
   /* Text */
-  --text-1:#0b1220;
-  --text-2:#475266;
-  --text-3:#6a7488;
-  --text-inverse:#ffffff;
+  --text-1:#16171a;
+  --text-2:#45484e;
+  --text-3:#5c6068;
+  --text-inverse:#f6f6f4;
   /* Accent */
-  --accent:#2563eb;
-  --accent-2:#0891b2;
-  --accent-text:#1d4ed8;
-  --accent-soft:#2563eb14;
-  --accent-edge:#2563eb4d;
-  --accent-glow:#2563eb40;
+  --accent:#16171a;
+  --accent-2:#16171a;
+  --accent-text:#3346c8;
+  --accent-soft:#16171a0a;
+  --accent-edge:#16171a2e;
+  --accent-glow:#16171a1f;
   /* Feedback */
   --warn-bg:#fab21924;
   --warn-edge:#fab21966;
   --warn-text:#7a4f00;
+  /* Brand mark (灵码 seal) and its spark */
+  --spark:#e07a3f;
+  --logo-ink:#16171a;
+  --logo-paper:#f6f6f4;
+  --title-end:#16171a;
   /* Chart palette (validated with the dataviz checker): status hues carry an icon and a label too. */
   --viz-ok:#0ca30c;
   --viz-fail:#d03b3b;
@@ -61,36 +66,40 @@
   --i:0;
 }
 
-/* Dark mode: the default identity — a deep navy canvas, glass panels and a glowing accent. */
+/* Dark mode: the same ink-and-paper tone inverted — warm ink canvas, paper accent, one orange spark. */
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme:dark;
-    --bg:#070b14;
-    --bg-glow:#3b82f62e;
-    --bg-grid:#ffffff09;
-    --surface-1:#0d1424;
-    --surface-2:#111a2d;
-    --surface-3:#18233a;
-    --glass:#0e1628b8;
-    --glass-strong:#0e1628f0;
-    --edge:#ffffff14;
-    --edge-strong:#ffffff26;
-    --highlight:#ffffff12;
-    --scrim:#02050c99;
-    --shadow:#00000080;
-    --text-1:#e8eefb;
-    --text-2:#a3afc4;
-    --text-3:#7d8aa2;
-    --text-inverse:#070b14;
-    --accent:#4f8cff;
-    --accent-2:#22d3ee;
-    --accent-text:#8fb4ff;
-    --accent-soft:#4f8cff1f;
-    --accent-edge:#4f8cff59;
-    --accent-glow:#4f8cff73;
+    --bg:#111214;
+    --bg-glow:#11121400;
+    --bg-grid:#f6f6f405;
+    --surface-1:#17181b;
+    --surface-2:#1c1d21;
+    --surface-3:#25262b;
+    --glass:#17181beb;
+    --glass-strong:#17181bf7;
+    --edge:#f6f6f41a;
+    --edge-strong:#f6f6f42b;
+    --highlight:#f6f6f408;
+    --scrim:#00000099;
+    --shadow:#00000066;
+    --text-1:#f6f6f4;
+    --text-2:#b6b9bf;
+    --text-3:#8f939a;
+    --text-inverse:#16171a;
+    --accent:#f6f6f4;
+    --accent-2:#f6f6f4;
+    --accent-text:#9aa5f5;
+    --accent-soft:#f6f6f412;
+    --accent-edge:#f6f6f433;
+    --accent-glow:#00000059;
     --warn-bg:#fab2191a;
     --warn-edge:#fab21959;
     --warn-text:#f6c768;
+    --spark:#e07a3f;
+    --logo-ink:#f6f6f4;
+    --logo-paper:#16171a;
+    --title-end:#f6f6f4;
     --viz-ok:#0ca30c;
     --viz-fail:#d03b3b;
     --viz-wait:#fab219;
@@ -202,16 +211,28 @@ button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visi
   letter-spacing:-.3px;
 }
 .logo-mark {
-  display:grid;
-  place-items:center;
-  width:28px;
-  height:28px;
-  border-radius:9px;
-  background:linear-gradient(135deg, var(--accent), var(--accent-2));
-  color:var(--text-inverse);
-  font-size:17px;
-  line-height:1;
-  box-shadow:0 0 0 1px var(--highlight) inset, 0 6px 18px var(--accent-glow);
+  display:block;
+  flex-shrink:0;
+  width:30px;
+  height:30px;
+}
+.logo-mark svg {
+  display:block;
+  width:100%;
+  height:100%;
+}
+.seal {
+  fill:var(--logo-ink);
+}
+.seal-stroke {
+  fill:none;
+  stroke:var(--logo-paper);
+  stroke-width:8;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+}
+.seal-dot {
+  fill:var(--spark);
 }
 .brand-caption {
   padding-left:12px;
@@ -511,7 +532,7 @@ h1 {
   font-weight:650;
   letter-spacing:-.9px;
   overflow-wrap:anywhere;
-  background:linear-gradient(100deg, var(--text-1) 40%, var(--accent-text));
+  background:linear-gradient(100deg, var(--text-1) 40%, var(--title-end));
   -webkit-background-clip:text;
   background-clip:text;
   color:transparent;
