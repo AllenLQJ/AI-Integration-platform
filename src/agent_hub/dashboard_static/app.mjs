@@ -5,7 +5,7 @@ import {agentColors, relativeTime, stateOutcome} from './viz.mjs';
 import {failedRecord, renderChainStats, renderGantt} from './chainviz.mjs';
 import {createPalette} from './command.mjs';
 import {stagger, viewTransition} from './motion.mjs';
-import {THEMES, THEME_ICONS, THEME_LABELS, applyTheme, nextTheme, readFlag, readTheme, saveFlag, saveTheme} from './theme.mjs';
+import {THEMES, THEME_GLYPHS, THEME_LABELS, applyTheme, nextTheme, readFlag, readTheme, saveFlag, saveTheme} from './theme.mjs';
 import {createGraph} from './graph.mjs';
 import {
   TimelineExpansion, timelineRecords, coverageNotes, kindLabel, provenanceLabel, statusLabel,
@@ -618,7 +618,14 @@ let theme = readTheme();
 function setTheme(next, remember = true) {
   theme = next; applyTheme(theme); if (remember) saveTheme(theme);
   const button = $('theme-toggle');
-  button.textContent = THEME_ICONS[theme];
+  const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  icon.setAttribute('viewBox', '0 0 20 20'); icon.setAttribute('aria-hidden', 'true'); icon.setAttribute('focusable', 'false');
+  for (const [tag, attributes] of THEME_GLYPHS[theme]) {
+    const shape = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [key, value] of Object.entries(attributes)) shape.setAttribute(key, String(value));
+    icon.append(shape);
+  }
+  button.replaceChildren(icon);
   button.setAttribute('aria-label', `外观：${THEME_LABELS[theme]}，点击切换`);
   button.title = `外观：${THEME_LABELS[theme]}`;
 }
