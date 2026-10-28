@@ -80,11 +80,22 @@ export function card(title, note) {
 }
 /** One tooltip per card; marks call show() on hover and focus. It is fixed to the viewport, so
  * panels that hide their overflow cannot clip it; it flips and clamps to stay on screen. */
+// One tooltip element shared by every chart, living directly under <body>: glass panels use
+// backdrop-filter, which would otherwise turn a fixed tooltip inside them into a clipped one.
+let sharedTip = null;
 export function tooltip(box) {
-  const tip = el('div', 'viz-tip');
+  const body = globalThis.document?.body;
+  let tip;
+  if (body) {
+    if (!sharedTip) { sharedTip = el('div', 'viz-tip'); sharedTip.setAttribute('aria-hidden', 'true'); body.append(sharedTip); }
+    tip = sharedTip;
+  } else {
+    tip = el('div', 'viz-tip');
+    tip.setAttribute('aria-hidden', 'true');
+    box.append(tip);
+  }
+  // A chart being (re)drawn replaces the marks a visible tooltip pointed at.
   tip.hidden = true;
-  tip.setAttribute('aria-hidden', 'true');
-  box.append(tip);
   return {
     show(lines, event) {
       tip.replaceChildren(...lines.map((line, i) => el(i ? 'div' : 'strong', '', line)));
