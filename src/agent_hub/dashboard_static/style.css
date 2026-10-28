@@ -62,13 +62,16 @@
   --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Segoe UI Variable","Segoe UI","Microsoft YaHei",sans-serif;
   --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
   --header-height:60px;
+  /* Side panel widths; collapsing a panel animates its width to zero. */
+  --side-w:264px;
+  --detail-w:300px;
   /* Entrance order, set per element by motion.mjs. */
   --i:0;
 }
 
 /* Dark mode: the same ink-and-paper tone inverted — warm ink canvas, paper accent, one orange spark. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     color-scheme:dark;
     --bg:#111214;
     --bg-glow:#11121400;
@@ -116,6 +119,55 @@
     --viz-agent-8:#e66767;
   }
 }
+/* The same dark tokens when the viewer picks dark explicitly (kept identical; a test checks). */
+:root[data-theme="dark"] {
+  color-scheme:dark;
+  --bg:#111214;
+  --bg-glow:#11121400;
+  --bg-grid:#f6f6f405;
+  --surface-1:#17181b;
+  --surface-2:#1c1d21;
+  --surface-3:#25262b;
+  --glass:#17181beb;
+  --glass-strong:#17181bf7;
+  --edge:#f6f6f41a;
+  --edge-strong:#f6f6f42b;
+  --highlight:#f6f6f408;
+  --scrim:#00000099;
+  --shadow:#00000066;
+  --text-1:#f6f6f4;
+  --text-2:#b6b9bf;
+  --text-3:#8f939a;
+  --text-inverse:#16171a;
+  --accent:#f6f6f4;
+  --accent-2:#f6f6f4;
+  --accent-text:#9aa5f5;
+  --accent-soft:#f6f6f412;
+  --accent-edge:#f6f6f433;
+  --accent-glow:#00000059;
+  --warn-bg:#fab2191a;
+  --warn-edge:#fab21959;
+  --warn-text:#f6c768;
+  --spark:#e07a3f;
+  --logo-ink:#f6f6f4;
+  --logo-paper:#16171a;
+  --title-end:#f6f6f4;
+  --viz-ok:#0ca30c;
+  --viz-fail:#d03b3b;
+  --viz-wait:#fab219;
+  --viz-active:#3987e5;
+  --viz-plain:#9085e9;
+  --viz-other:#6e6e78;
+  --viz-agent-1:#3987e5;
+  --viz-agent-2:#d95926;
+  --viz-agent-3:#199e70;
+  --viz-agent-4:#c98500;
+  --viz-agent-5:#d55181;
+  --viz-agent-6:#008300;
+  --viz-agent-7:#9085e9;
+  --viz-agent-8:#e66767;
+}
+
 
 /* ---- Base ---------------------------------------------------------------------------------- */
 * {
@@ -314,11 +366,74 @@ button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visi
 }
 .shell {
   display:grid;
-  grid-template-columns:264px minmax(300px,1fr) 300px;
+  grid-template-columns:var(--side-w) minmax(300px,1fr) var(--detail-w);
   min-height:calc(100dvh - var(--header-height));
+  transition:grid-template-columns var(--dur) var(--ease-out);
 }
-.shell.no-detail {
-  grid-template-columns:264px minmax(0,1fr);
+/* Collapsing a side panel animates its grid track to zero while its content fades out. */
+.sidebar,
+.detail {
+  transition:opacity var(--dur) var(--ease-out), visibility 0s, border-color var(--dur);
+}
+@media(min-width:651px) {
+  .shell.side-collapsed {
+    --side-w:0px;
+  }
+  .shell.side-collapsed .sidebar {
+    padding-left:0;
+    padding-right:0;
+    overflow:hidden;
+    opacity:0;
+    visibility:hidden;
+    border-color:transparent;
+    transition:opacity var(--dur-fast), visibility 0s var(--dur), border-color var(--dur), padding 0s var(--dur);
+  }
+}
+@media(min-width:1081px) {
+  .shell.detail-collapsed {
+    --detail-w:0px;
+  }
+  .shell.detail-collapsed .detail {
+    padding-left:0;
+    padding-right:0;
+    overflow:hidden;
+    opacity:0;
+    visibility:hidden;
+    border-color:transparent;
+    transition:opacity var(--dur-fast), visibility 0s var(--dur), border-color var(--dur), padding 0s var(--dur);
+  }
+}
+/* Panel toggles: one outline icon; the filled strip shows which side is open. */
+.panel-btn svg {
+  width:18px;
+  height:18px;
+}
+.panel-frame {
+  fill:none;
+  stroke:currentColor;
+  stroke-width:1.5;
+  stroke-linejoin:round;
+}
+.panel-fill {
+  fill:currentColor;
+  opacity:0;
+  transition:opacity var(--dur) var(--ease-out);
+}
+.panel-btn[aria-expanded="true"] .panel-fill {
+  opacity:.35;
+}
+.icon-line {
+  fill:none;
+  stroke:currentColor;
+  stroke-width:1.5;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+}
+.icon-fill {
+  fill:currentColor;
+}
+.logo .panel-btn {
+  margin-right:4px;
 }
 .sidebar {
   display:flex;
@@ -681,12 +796,8 @@ h1 {
   overflow-wrap:anywhere;
   white-space:pre-wrap;
 }
-.mobile-menu,
 .close-detail,
 .close-sidebar {
-  display:none;
-}
-.detail.hidden {
   display:none;
 }
 
@@ -1044,6 +1155,7 @@ h1 {
 .graph-layer {
   position:relative;
   transform-origin:top left;
+  transition:transform var(--dur) var(--ease-out);
 }
 .graph-layer svg {
   position:absolute;
@@ -1911,6 +2023,33 @@ h1 {
   font-size:10.5px;
 }
 
+/* Drawers slide in; disclosure content opens and closes smoothly where the browser can
+   animate to height:auto (elsewhere it simply toggles). */
+.sidebar.show {
+  animation:slide-left var(--dur) var(--ease-out);
+}
+.detail.show {
+  animation:slide-right var(--dur) var(--ease-out);
+}
+.overlay:not([hidden]) {
+  animation:fade var(--dur) var(--ease-out);
+}
+:root {
+  interpolate-size:allow-keywords;
+}
+.timeline-card::details-content,
+.event::details-content,
+.viz-data::details-content {
+  height:0;
+  overflow:clip;
+  transition:height var(--dur) var(--ease-out), content-visibility var(--dur) allow-discrete;
+}
+.timeline-card[open]::details-content,
+.event[open]::details-content,
+.viz-data[open]::details-content {
+  height:auto;
+}
+
 /* ---- Loading skeletons --------------------------------------------------------------------- */
 .skeleton {
   display:block;
@@ -2003,6 +2142,18 @@ h1 {
     opacity:.35;
   }
 }
+@keyframes slide-left {
+  from {
+    transform:translateX(-24px);
+    opacity:0;
+  }
+}
+@keyframes slide-right {
+  from {
+    transform:translateX(24px);
+    opacity:0;
+  }
+}
 @keyframes fade {
   from {
     opacity:0;
@@ -2087,16 +2238,14 @@ h1 {
     padding:36px 52px;
   }
   .shell {
-    grid-template-columns:284px minmax(320px,1fr) 320px;
-  }
-  .shell.no-detail {
-    grid-template-columns:284px minmax(0,1fr);
+    --side-w:284px;
+    --detail-w:320px;
   }
 }
 @media(max-width:1080px) {
-  .shell,
-  .shell.no-detail {
-    grid-template-columns:240px minmax(0,1fr);
+  .shell {
+    --side-w:240px;
+    grid-template-columns:var(--side-w) minmax(0,1fr);
   }
   .detail {
     display:none;
@@ -2170,8 +2319,7 @@ h1 {
     height:25px;
     font-size:15px;
   }
-  .shell,
-  .shell.no-detail {
+  .shell {
     display:block;
     min-height:calc(100dvh - var(--header-height));
   }
@@ -2203,14 +2351,8 @@ h1 {
   .sidebar.show .side-bottom {
     margin-top:0;
   }
-  .mobile-menu,
   .close-sidebar {
     display:grid;
-  }
-  .mobile-menu {
-    width:26px;
-    height:28px;
-    font-size:16px;
   }
   .close-sidebar {
     width:26px;

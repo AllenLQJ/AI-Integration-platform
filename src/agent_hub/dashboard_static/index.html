@@ -10,8 +10,8 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="logo"><button class="icon-btn mobile-menu" id="menu-toggle" aria-label="打开任务列表" aria-controls="sidebar" aria-expanded="false">☰</button><span class="logo-mark" aria-hidden="true"><svg viewBox="0 0 120 120" focusable="false"><rect class="seal" x="6" y="6" width="108" height="108" rx="26"/><g transform="translate(12 10) scale(0.8)"><path class="seal-stroke" d="M34 24H82M42 39H82M30 54H82M82 24V54M38 68L45 80M60 60C60 80 52 94 32 104M62 80C70 92 78 99 90 104"/><circle class="seal-dot" cx="79" cy="72" r="6"/></g></svg></span>Agent Hub <span class="brand-caption">工作空间</span></div>
-    <div class="top-meta"><button class="cmd-btn" id="command-btn" aria-label="打开命令面板"><span>搜索</span><kbd id="command-key">⌘K</kbd></button><button class="plain-btn overview-btn" id="overview-btn" aria-controls="overview" aria-pressed="true">总览</button><span id="connection" role="status" data-state="connecting">正在连接</span><span class="read-only">只读看板</span><button class="plain-btn" id="refresh">刷新</button></div>
+    <div class="logo"><button class="icon-btn panel-btn" id="side-toggle" aria-label="收起任务链侧栏" aria-controls="sidebar" aria-expanded="true"><svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><rect class="panel-frame" x="2.5" y="3.5" width="15" height="13" rx="3"/><rect class="panel-fill" x="3.5" y="4.5" width="4" height="11" rx="1.5"/><path class="panel-frame" d="M8 3.5v13"/></svg></button><span class="logo-mark" aria-hidden="true"><svg viewBox="0 0 120 120" focusable="false"><rect class="seal" x="6" y="6" width="108" height="108" rx="26"/><g transform="translate(12 10) scale(0.8)"><path class="seal-stroke" d="M34 24H82M42 39H82M30 54H82M82 24V54M38 68L45 80M60 60C60 80 52 94 32 104M62 80C70 92 78 99 90 104"/><circle class="seal-dot" cx="79" cy="72" r="6"/></g></svg></span>Agent Hub <span class="brand-caption">工作空间</span></div>
+    <div class="top-meta"><button class="icon-btn panel-btn theme-btn" id="theme-toggle" aria-label="外观：跟随系统，点击切换"></button><button class="cmd-btn" id="command-btn" aria-label="打开命令面板"><span>搜索</span><kbd id="command-key">⌘K</kbd></button><button class="plain-btn overview-btn" id="overview-btn" aria-controls="overview" aria-pressed="true">总览</button><span id="connection" role="status" data-state="connecting">正在连接</span><span class="read-only">只读看板</span><button class="plain-btn" id="refresh">刷新</button><button class="icon-btn panel-btn" id="detail-toggle" aria-label="收起详情栏" aria-controls="detail" aria-expanded="true"><svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><rect class="panel-frame" x="2.5" y="3.5" width="15" height="13" rx="3"/><rect class="panel-fill" x="12.5" y="4.5" width="4" height="11" rx="1.5"/><path class="panel-frame" d="M12 3.5v13"/></svg></button></div>
   </header>
   <div class="notice" id="notice" role="alert" hidden></div>
   <div class="overlay" id="overlay" hidden></div>
@@ -26,7 +26,7 @@
     </aside>
     <main class="main overview-mode" id="main">
       <div class="eyebrow" id="workspace">工作空间</div>
-      <div class="title-row"><h1 id="task-title">任务与协作，一目了然。</h1><button class="icon-btn" id="detail-toggle" aria-label="切换任务详情" aria-controls="detail" aria-expanded="true">▤</button></div>
+      <div class="title-row"><h1 id="task-title">任务与协作，一目了然。</h1></div>
       <p class="subtitle" id="subtitle">近 14 天全局概况 · 选择左侧任务链查看执行关系与完整协作过程。</p>
       <div class="status-line" id="status-line"></div>
       <section id="overview" class="overview-host" aria-label="全局总览" aria-busy="true"><div class="skeleton-grid" aria-hidden="true"><span class="skeleton skeleton-card"></span><span class="skeleton skeleton-card"></span><span class="skeleton skeleton-card"></span><span class="skeleton skeleton-card"></span></div><span class="skeleton skeleton-wide" aria-hidden="true"></span><span class="sr-only">正在读取全局概况</span></section>

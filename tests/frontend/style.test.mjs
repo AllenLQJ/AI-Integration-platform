@@ -11,7 +11,14 @@ test('dashboard colours come from semantic tokens that dark mode redefines', () 
   assert.ok(darkStart > rootEnd, 'dark palette follows :root');
   const darkEnd = css.indexOf('\n}', darkStart);
   const dark = css.slice(darkStart, darkEnd);
-  const rules = css.slice(darkEnd);
+  // An explicit dark choice reuses the system-dark tokens verbatim, so the two cannot drift apart.
+  const forcedStart = css.indexOf(':root[data-theme="dark"] {', darkEnd);
+  assert.ok(forcedStart > darkEnd, 'a forced dark theme follows the system one');
+  const forcedEnd = css.indexOf('\n}', forcedStart);
+  const declarations = block => [...block.matchAll(/([\w-]+):([^;]+);/g)].map(m => m[1] + ':' + m[2].trim());
+  assert.deepEqual(declarations(css.slice(forcedStart, forcedEnd)), declarations(dark.slice(dark.indexOf('{', dark.indexOf(':root')))));
+  assert.match(dark, /:root:not\(\[data-theme="light"\]\)/, 'an explicit light choice overrides a dark system');
+  const rules = css.slice(forcedEnd);
   const tokens = new Map([...root.matchAll(/(--[\w-]+):([^;]+);/g)].map(m => [m[1], m[2].trim()]));
   const redefined = new Set([...dark.matchAll(/(--[\w-]+):/g)].map(m => m[1]));
   // Every colour token has its own dark value (no automatic flip), and every token used is defined.
