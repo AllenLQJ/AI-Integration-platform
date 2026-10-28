@@ -494,8 +494,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visi
   color:var(--text-3);
   font-size:10.5px;
   font-weight:600;
-  letter-spacing:1.6px;
-  text-transform:uppercase;
+  letter-spacing:1.2px;
   overflow-wrap:anywhere;
 }
 .title-row {
@@ -1555,10 +1554,14 @@ h1 {
 }
 .task-strip {
   display:flex;
+  flex-wrap:wrap;
   align-items:center;
   justify-content:space-between;
-  gap:8px;
+  gap:4px 8px;
   margin-top:7px;
+}
+.task-time {
+  margin-left:auto;
 }
 .state-strip {
   display:flex;
