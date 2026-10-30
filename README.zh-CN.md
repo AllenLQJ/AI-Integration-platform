@@ -135,6 +135,21 @@ Windows 专用实进程测试使用与 sshd 匹配的外层 `cmd.exe /c`、`powe
 
 ## 总控接入
 
+### 总控 Skill 自动发现与维护
+
+只编辑主文件 [`skills/agent-hub-orchestrator/SKILL.md`](skills/agent-hub-orchestrator/SKILL.md)，然后在仓库根目录执行：
+
+```sh
+python scripts/sync_skills.py
+python scripts/sync_skills.py --check
+```
+
+脚本将完整内容同步到 `.agents/skills/agent-hub-orchestrator/SKILL.md`（Codex、Cursor）、`.claude/skills/agent-hub-orchestrator/SKILL.md`（Claude Code）以及 `src/agent_hub/skills/agent-hub-orchestrator/SKILL.md`（Python 安装包）。不要直接编辑这些副本。`--check` 不写文件，发现缺失或内容过期时返回失败；Windows、macOS、Linux CI 均执行此检查，忽略 LF/CRLF 换行差异。
+
+这些项目目录用于支持相应技能机制、启用了自定义技能且在本仓库中工作的本地总控。自动发现不保证自动调用，需要时明确要求使用 `agent-hub-orchestrator`，并核对真实工具调用。Hub MCP 仍需单独接入。本步骤不安装用户级技能，不配置其他项目，也不向远程或网页总控传输文件；仅安装 Python 包不会自动向客户端注册 Skill。
+
+### 连接 Hub MCP
+
 Mac 三方入口的最新路由与验证见 [Claude/Codex/Cursor 双向接入](docs/2026-10-11-local-three-agents.md)：本机 `cursor` 默认原生 IDE 界面桥，`cursor_cli` 显式选择 CLI；项目示例里 Cursor IDE 默认 `enabled: false`（见 `config.example.json`），`cursor_cli` 单独配置。Claude、Codex 的真实总控与被调用双向复验通过。开通 Pro 后，Cursor IDE 总控调度 Claude、Hub 委托 IDE 纯文本任务和同会话续接均实测通过，Cursor CLI 读取随机文件复验通过。IDE 桥需要具备电脑控制能力的外部 worker 在线，尚无常驻无人值守驱动；IDE 编辑、取消及重开后会话定位尚未验收。
 
 在 Codex 的 MCP 设置中登记 `agent_hub`，command 使用本机项目虚拟环境 Python 的绝对路径，args 为 `["-m", "agent_hub", "mcp"]`。重新加载 MCP 或打开新聊天后应看到 20 个工具（含 `create_work_item`、要求 `work_item_id` 的 `submit_task`、`link_task`、`reconcile_task`、`record_activity`）。移动源码或环境后需同步修改 MCP 注册路径；Windows 测试环境的 D 盘迁移见 `docs/2026-10-10-d-drive-migration.md`，Mac 使用自己的项目路径。

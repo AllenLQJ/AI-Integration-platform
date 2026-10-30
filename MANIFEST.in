@@ -11,3 +11,5 @@ exclude config.json connection.json
 global-exclude *.pyc *.log *.db *.db-wal *.db-shm *.sqlite *.sqlite3 *.har cookies* credentials.json
 graft skills
 graft .claude/skills
+graft .agents/skills
+include scripts/sync_skills.py
