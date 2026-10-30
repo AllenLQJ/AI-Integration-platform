@@ -25,7 +25,7 @@ class Nodes:
         for key, value in artifact_transfer_options(service.root).items():
             setattr(self, key, value)
         self.local_id = 'local-' + service.gateway.host_id
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS nodes (node_id TEXT PRIMARY KEY, platform TEXT NOT NULL,
                     host_id TEXT NOT NULL, capabilities TEXT NOT NULL, transport TEXT NOT NULL);
@@ -85,7 +85,7 @@ class Nodes:
             raise HubError('INVALID_CONFIG', '节点声明不正确')
         if transport != 'local' and host_id == self.service.gateway.host_id:
             raise HubError('INVALID_CONFIG', '非 local 节点不能声明本机 host_id')
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             old = db.execute('SELECT * FROM nodes WHERE node_id=?', (node_id,)).fetchone()
             if old:
                 if (old['platform'], old['host_id'], old['transport']) != (os_platform, host_id, transport):
@@ -167,7 +167,7 @@ class Nodes:
                 if hashlib.sha256(actual).hexdigest() != digest or len(actual) != len(content):
                     raise HubError('ARTIFACT_HASH_MISMATCH', '已接收文件哈希不一致')
                 if not blob:
-                    with self.store.connection() as db:
+                    with self.store.connection(write=True) as db:
                         db.execute('INSERT INTO received_blobs VALUES (?,?,?)', (digest, name, len(content)))
             else:
                 size, count = 0, 0
@@ -194,13 +194,13 @@ class Nodes:
                     temporary.replace(root / name)
                 finally:
                     temporary.unlink(missing_ok=True)
-                with self.store.connection() as db:
+                with self.store.connection(write=True) as db:
                     db.execute('INSERT INTO received_blobs VALUES (?,?,?)', (digest, name, len(content)))
             checkpoint()
             receipt = dict(artifact_id=artifact_id, target_node_id=node_id, sha256=digest,
                            sender_host_id=sender_host_id, size_bytes=len(content),
                            received_at=time.time(), superseded=superseded)
-            with self.store.connection() as db:
+            with self.store.connection(write=True) as db:
                 db.execute('INSERT INTO artifact_receipts VALUES (?,?,?)', (sender_host_id, request_id, json.dumps(receipt)))
                 checkpoint()
             return receipt
@@ -222,7 +222,7 @@ class Nodes:
                 raise HubError('NODE_UNVERIFIED', 'SSH 节点连接与产物传输尚未验证')
             if receiver is None:
                 raise HubError('NODE_UNAVAILABLE', '没有受控接收端')
-            with self.store.connection() as db:
+            with self.store.connection(write=True) as db:
                 db.execute("INSERT INTO artifact_transfers VALUES (?,?,?,'transferring',NULL) ON CONFLICT(request_id) DO UPDATE SET state='transferring'",
                            (request_id, artifact_id, target_node_id))
             end = time.monotonic() + self.timeout_seconds
@@ -243,16 +243,16 @@ class Nodes:
                         raise HubError('TRANSFER_TIMED_OUT', '接收确认超时，可按原请求键核对重试')
                     receipt = dict(receipt, superseded=superseded)
                     response = dict(state='superseded' if superseded else 'delivered', receipt=receipt)
-                    with self.store.connection() as db:
+                    with self.store.connection(write=True) as db:
                         db.execute('UPDATE artifact_transfers SET state=?, response=? WHERE request_id=?',
                                    (response['state'], json.dumps(response), request_id))
                     return response
             except FileNotFoundError:
-                with self.store.connection() as db:
+                with self.store.connection(write=True) as db:
                     db.execute("UPDATE artifact_transfers SET state='retryable' WHERE request_id=?", (request_id,))
                 raise HubError('ARTIFACT_NOT_FOUND', '登记产物文件缺失') from None
             except Exception:
-                with self.store.connection() as db:
+                with self.store.connection(write=True) as db:
                     db.execute("UPDATE artifact_transfers SET state='retryable' WHERE request_id=? AND response IS NULL", (request_id,))
                 raise
 

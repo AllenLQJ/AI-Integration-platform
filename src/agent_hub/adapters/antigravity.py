@@ -1,6 +1,5 @@
 """Antigravity CLI (agy) adapter — mode routing mirrors Codex/Cursor."""
 import os
-import pwd
 import shutil
 import subprocess
 import tempfile
@@ -57,17 +56,18 @@ class Antigravity(CLI):
             merged.setdefault(key, value)
         path = merged.get('PATH') or os.environ.get('PATH', '/usr/bin:/bin')
         local_bin = str(Path.home() / '.local' / 'bin')
-        if local_bin not in path.split(':'):
-            merged['PATH'] = local_bin + ':' + path
+        if local_bin not in path.split(os.pathsep):
+            merged['PATH'] = local_bin + os.pathsep + path
         try:
+            import pwd
             login = pwd.getpwuid(os.getuid()).pw_name
-        except KeyError:
-            login = os.environ.get('USER') or os.environ.get('LOGNAME') or 'box'
+        except (ImportError, AttributeError, KeyError):
+            login = os.environ.get('USER') or os.environ.get('LOGNAME') or os.environ.get('USERNAME') or 'box'
         merged.setdefault('USER', os.environ.get('USER') or login)
         merged.setdefault('LOGNAME', os.environ.get('LOGNAME') or login)
         merged.setdefault('TERM', os.environ.get('TERM') or 'dumb')
         runtime = os.environ.get('XDG_RUNTIME_DIR')
-        if not runtime:
+        if not runtime and hasattr(os, 'getuid'):
             cand = f'/run/user/{os.getuid()}'
             if Path(cand).is_dir():
                 runtime = cand

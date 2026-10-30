@@ -14,11 +14,35 @@ from .config import adapters, private_dir, scheduler_options
 from .models import HubError
 from .service import Service
 
+MAX_HTTP_THREADS = int(os.environ.get('AGENT_HUB_MAX_HTTP_THREADS', '64'))
+
 
 class HubHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
     def __init__(self, address, handler, dashboard):
         self.dashboard = dashboard
+        self._thread_limiter = threading.BoundedSemaphore(max(8, MAX_HTTP_THREADS))
         super().__init__(address, handler)
+
+    def process_request(self, request, client_address):
+        # Do not block the accept loop behind long polls at capacity.
+        if not self._thread_limiter.acquire(blocking=False):
+            self.close_request(request)
+            return
+        try:
+            thread = threading.Thread(target=self._process_request_bounded,
+                                      args=(request, client_address), daemon=True)
+            thread.start()
+        except BaseException:
+            self._thread_limiter.release()
+            raise
+
+    def _process_request_bounded(self, request, client_address):
+        try:
+            self.process_request_thread(request, client_address)
+        finally:
+            self._thread_limiter.release()
 
     def server_bind(self):
         # HTTPServer.server_bind resolves the host's FQDN with a reverse DNS lookup,
@@ -52,8 +76,8 @@ class InstanceLock:
         self.file.close()
 
 
-WORK_SESSION_LIMIT = 1024
-WORKBENCH_PAGE = 200
+WORK_SESSION_LIMIT = max(1, int(os.environ.get('AGENT_HUB_SESSION_LIMIT', '1024')))
+WORKBENCH_PAGE = max(1, min(200, int(os.environ.get('AGENT_HUB_WORKBENCH_PAGE', '200'))))
 LATEST_SEQ = 9223372036854775807
 
 
@@ -132,10 +156,11 @@ def make_server(service, token):
                             raise ValueError()
                         deadline = time.monotonic() + 10
                         while True:
-                            result = service.call('get_events', dict(task_id=attempt_id, after_seq=after, limit=200))
+                            token = service.store.change_token()
+                            result = service.call('get_events', dict(task_id=attempt_id, after_seq=after, limit=WORKBENCH_PAGE))
                             if result['events'] or time.monotonic() >= deadline or service.stopping.is_set():
                                 return self.respond(200, result)
-                            service.stopping.wait(.1)
+                            service.store.wait_for_change(token, max(0, min(1.0, deadline - time.monotonic())))
                     if len(parts) == 3 and parts[2] == 'snapshot':
                         item = service.call('get_work_item', dict(task_id=task_id))
                         item['view_task_id'] = task_id

@@ -1,20 +1,26 @@
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from .models import HubError, TERMINAL, redact
+
+DEFAULT_BUSY_TIMEOUT_MS = max(0, int(os.environ.get('AGENT_HUB_SQLITE_BUSY_TIMEOUT_MS', '5000')))
 
 
 class Store:
     def __init__(self, path):
         self.path = str(path)
+        self._write_lock = threading.RLock()
+        self.event_condition = threading.Condition()
+        self._change_generation = 0
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        with self.connection() as db:
+        with self.connection(write=True) as db:
             db.executescript('''
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS tasks (
@@ -78,7 +84,30 @@ class Store:
                 pass
 
     @contextmanager
-    def connection(self):
+    def connection(self, write: bool = False):
+        # Readers retain WAL concurrency. All internal mutation callers opt in.
+        with self._write_lock if write else nullcontext():
+            with self._connection() as db:
+                yield db
+
+    def change_token(self):
+        with self.event_condition:
+            return self._change_generation
+
+    def notify_change(self):
+        with self.event_condition:
+            self._change_generation += 1
+            self.event_condition.notify_all()
+
+    def wait_for_change(self, token, timeout):
+        # Taking the token before a snapshot avoids losing a commit between
+        # the query and this wait. Never hold the condition during SQL reads.
+        with self.event_condition:
+            return self.event_condition.wait_for(
+                lambda: self._change_generation != token, timeout=timeout)
+
+    @contextmanager
+    def _connection(self):
         local = getattr(self, '_local', None)
         cached = local is not None and not getattr(local, 'busy', False)
         db = getattr(local, 'holder', None) if cached else None
@@ -86,7 +115,14 @@ class Store:
             # Cached connections are only used by their owning thread; close()
             # may run elsewhere, hence check_same_thread=False.
             db = sqlite3.connect(self.path, timeout=30, check_same_thread=not cached)
-            db.row_factory = sqlite3.Row
+            try:
+                db.row_factory = sqlite3.Row
+                db.execute(f'PRAGMA busy_timeout = {DEFAULT_BUSY_TIMEOUT_MS}')
+                db.execute('PRAGMA synchronous = NORMAL')
+                db.execute('PRAGMA foreign_keys = ON')
+            except BaseException:
+                db.close()
+                raise
             if cached:
                 local.holder = db
                 with self._pooled_lock:
@@ -94,9 +130,12 @@ class Store:
         if cached:
             local.busy = True
         broken = False
+        before = db.total_changes
         try:
             with db:
                 yield db
+            if db.total_changes != before:
+                self.notify_change()
         except sqlite3.Error:
             broken = True
             raise
@@ -154,7 +193,7 @@ class Store:
     def create(self, request_id, spec):
         serialized = json.dumps(spec, sort_keys=True, ensure_ascii=False)
         digest = hashlib.sha256(serialized.encode()).hexdigest()
-        with self.connection() as db:
+        with self.connection(write=True) as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT * FROM tasks WHERE request_id=?', (request_id,)).fetchone()
             if row:
@@ -224,7 +263,7 @@ class Store:
             return [self.decode(r) for r in rows]
 
     def update(self, task_id, **fields):
-        with self.connection() as db:
+        with self.connection(write=True) as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
             if not row:
@@ -243,7 +282,7 @@ class Store:
     def finish(self, task_id, state, result):
         if state not in TERMINAL:
             raise ValueError('not terminal')
-        with self.connection() as db:
+        with self.connection(write=True) as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
             if not row:
@@ -276,7 +315,7 @@ class Store:
                     'has_more': len(rows) > 200}
 
     def event(self, task_id, kind, data):
-        with self.connection() as db:
+        with self.connection(write=True) as db:
             db.execute('INSERT INTO events(task_id,kind,data,timestamp) VALUES (?,?,?,?)',
                        (task_id, kind, json.dumps(self.safe(data), ensure_ascii=False), time.time()))
 
@@ -293,7 +332,7 @@ class Store:
         if not isinstance(activity, dict):
             raise HubError('INVALID_ARGUMENT', 'activity 需要对象')
         digest = activity_digest(event_id, activity)
-        with self.connection() as db:
+        with self.connection(write=True) as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
             if not row:
@@ -404,7 +443,7 @@ class Store:
         digest = hashlib.sha256(json.dumps(
             dict(tool='reconcile_task', task_id=task_id),
             sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-        with self.connection() as db:
+        with self.connection(write=True) as db:
             db.execute('BEGIN IMMEDIATE')
             receipt = db.execute('SELECT * FROM reconcile_requests WHERE request_id=?',
                                  (request_id,)).fetchone()

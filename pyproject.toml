@@ -4,10 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-agent-hub"
-version = "0.3.0"
+version = "0.3.1"
 description = "Local persistent task hub with portable executor plugins and command bridges"
 requires-python = ">=3.10"
-dependencies = ["mcp==1.30.0", "httpx==0.28.1", "Pillow>=11,<13", "pywin32>=312; platform_system=='Windows'"]
+dependencies = [
+    "mcp>=1.30.0,<2.0.0",
+    "httpx>=0.28.1,<1.0.0",
+    "Pillow>=11,<13",
+    "pywin32>=312; platform_system=='Windows'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
 
 [project.scripts]
 agent-hub = "agent_hub.__main__:main"
@@ -16,4 +27,9 @@ agent-hub = "agent_hub.__main__:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-agent_hub = ["dashboard_static/*.html", "dashboard_static/*.css", "dashboard_static/*.mjs"]
+agent_hub = [
+    "dashboard_static/*.html",
+    "dashboard_static/*.css",
+    "dashboard_static/*.mjs",
+    "skills/*/SKILL.md",
+]

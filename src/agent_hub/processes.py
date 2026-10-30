@@ -64,7 +64,7 @@ def stop_descendants(tracked, root_group=None):
     if rows is None:
         # 无法确认启动时间时不按 PID 发信号，避免误杀复用了 PID 的无关进程；
         # 根进程组仍有成员时其 ID 不会被复用，可安全回收留在组内的子进程。
-        if root_group is not None:
+        if root_group is not None and root_group != os.getpgrp():
             try:
                 os.killpg(root_group, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
@@ -104,13 +104,29 @@ def terminate_tree(process):
         subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
     else:
+        daemon_pgid = os.getpgrp()
         try:
-            os.killpg(process.pid, signal.SIGTERM)
+            pgid = os.getpgid(process.pid)
+        except ProcessLookupError:
+            return
+        # Only signal a private group led by this child. A caller can also
+        # supply a plain Popen that still shares the Hub's group.
+        private_group = pgid == process.pid and pgid != daemon_pgid
+        def send(sig):
+            try:
+                if private_group:
+                    os.killpg(pgid, sig)
+                else:
+                    os.kill(process.pid, sig)
+            except ProcessLookupError:
+                pass
+        try:
+            send(signal.SIGTERM)
             process.wait(2)
         except ProcessLookupError:
             pass
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
+            send(signal.SIGKILL)
     process.wait(15)
 
 

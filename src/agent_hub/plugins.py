@@ -8,6 +8,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import Callable
 import json
+import os
 import re
 
 from .models import HubError
@@ -62,7 +63,11 @@ def validate_instance_name(name):
 
 def plugin_context(name, root):
     validate_instance_name(name)
-    return PluginContext(name, Path(root).resolve() / 'plugins' / name)
+    root = Path(root).resolve()
+    target = (root / 'plugins' / name).resolve()
+    if root not in target.parents:
+        raise HubError('INVALID_CONFIG', 'Plugin data directory escaped hub root')
+    return PluginContext(name, target)
 
 
 def _contract(message):
@@ -169,12 +174,22 @@ class ValidatedExecutor:
         return validate_result(result)
 
 
-def load_plugin(name, item, root):
+def load_plugin(name, item, root, allowed_plugins=None):
     context = plugin_context(name, root)
     plugin = item.get('plugin')
     options = item.get('options', {})
     if not isinstance(plugin, str) or not plugin.strip() or not isinstance(options, dict):
         raise HubError('INVALID_CONFIG', 'Plugin requires a nonempty plugin name and object options')
+    if allowed_plugins is None:
+        raw = os.environ.get('AGENT_HUB_ALLOWED_PLUGINS', '').strip()
+        allowed_plugins = None if not raw else '*' if raw == '*' else {
+            name.strip() for name in raw.split(',') if name.strip()}
+    if allowed_plugins is not None and allowed_plugins != '*':
+        if (not isinstance(allowed_plugins, (list, tuple, set, frozenset))
+                or any(not isinstance(name, str) for name in allowed_plugins)):
+            raise HubError('INVALID_CONFIG', 'allowed_plugins must be a collection of plugin names or *')
+        if plugin not in allowed_plugins:
+            raise HubError('PLUGIN_NOT_ALLOWED', 'Plugin is not in AGENT_HUB_ALLOWED_PLUGINS allowlist: ' + plugin)
     matches = [entry for entry in metadata.entry_points(group=ENTRY_POINT_GROUP) if entry.name == plugin]
     if not matches:
         raise HubError('PLUGIN_NOT_FOUND', 'Install the executor plugin in the Hub Python environment: ' + plugin)
