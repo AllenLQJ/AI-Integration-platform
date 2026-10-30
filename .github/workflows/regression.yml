@@ -45,13 +45,15 @@ jobs:
           "TMP=$hubTestTemp" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Install Hub and test/build requirements
         run: python -m pip install ".[dev]" setuptools wheel
+      - name: Check orchestrator skill mirrors
+        run: python scripts/sync_skills.py --check
       - name: Full Python regression
         run: python -m pytest tests -v
       - name: Dashboard frontend regression
         run: node --test tests/frontend/*.mjs
       - name: Build wheel
         run: python -m pip wheel . --no-deps --no-build-isolation --wheel-dir dist
-      - name: Verify wheel dashboard resources
+      - name: Verify wheel dashboard and skill resources
         shell: python
         run: |
           import zipfile
@@ -60,6 +62,9 @@ jobs:
           assert len(wheels) == 1, wheels
           with zipfile.ZipFile(wheels[0]) as wheel:
               packaged = set(wheel.namelist())
+              skill = 'agent_hub/skills/agent-hub-orchestrator/SKILL.md'
+              expected = Path('skills/agent-hub-orchestrator/SKILL.md').read_text(encoding='utf-8')
+              assert wheel.read(skill).decode('utf-8').replace('\r\n', '\n') == expected
           required = {'agent_hub/dashboard.py', 'agent_hub/dashboard_chains.py',
                       'agent_hub/dashboard_timeline.py', 'agent_hub/dashboard_http.py'}
           required.update('agent_hub/dashboard_static/' + source.name

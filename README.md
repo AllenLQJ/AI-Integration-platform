@@ -134,6 +134,21 @@ Windows process tests use outer `cmd.exe /c` and `powershell.exe -c`, covering l
 
 ## Connect an orchestrator
 
+### Orchestrator skill discovery and maintenance
+
+Edit only [`skills/agent-hub-orchestrator/SKILL.md`](skills/agent-hub-orchestrator/SKILL.md), then run from the repository root:
+
+```sh
+python scripts/sync_skills.py
+python scripts/sync_skills.py --check
+```
+
+The script synchronizes complete copies into `.agents/skills/agent-hub-orchestrator/SKILL.md` (Codex and Cursor), `.claude/skills/agent-hub-orchestrator/SKILL.md` (Claude Code), and `src/agent_hub/skills/agent-hub-orchestrator/SKILL.md` (Python package). Do not edit those copies directly. `--check` writes nothing and fails if a copy is missing or stale; CI runs it on Windows, macOS, and Linux. LF/CRLF differences are ignored.
+
+These project directories allow discovery in supported local clients working in this repository, with custom skills enabled. Discovery does not guarantee invocation: explicitly request `agent-hub-orchestrator` when needed and verify actual tool calls. Hub MCP must be connected separately. This does not install user-level skills, configure other repositories, or transfer files to remote/web orchestrators. Installing the Python package alone does not register the skill with a client.
+
+### Connect Hub MCP
+
 Codex, Claude Code, and Cursor can connect to the same Hub as orchestrators. See the [three-agent setup record](docs/2026-10-11-local-three-agents.md). `cursor` with `kind=ide` selects the native IDE bridge; `cursor_cli` selects CLI execution. Example configuration disables Cursor IDE by default. Recorded IDE validation covers plain-text delegation and same-session continuation after Pro activation. An external UI-capable worker is required; no unattended resident driver is provided. IDE editing, cancellation, and session recovery after reopening remain unverified.
 
 Register `agent_hub` in MCP settings with the absolute environment Python path and `["-m", "agent_hub", "mcp"]`. Reload MCP or open a new chat to discover the current 20 tools (`create_work_item`, `submit_task` requiring `work_item_id`, `link_task`, `reconcile_task`, `record_activity`, …). Update registered paths when moving source or environments. The [Windows migration record](docs/2026-10-10-d-drive-migration.md) is historical; each device uses its own paths.

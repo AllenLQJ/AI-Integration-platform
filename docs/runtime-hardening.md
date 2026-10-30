@@ -39,8 +39,10 @@ executors start a new session and avoid signaling the daemon's own process group
 
 Install developer dependencies with `python -m pip install -e ".[dev]"` and run
 `python -m pytest tests`. The orchestrator skill is included in source at
-`skills/agent-hub-orchestrator/SKILL.md`, mirrored for Claude under `.claude`, and
+`skills/agent-hub-orchestrator/SKILL.md`, mirrored under `.agents` and `.claude`, and
 packaged at `agent_hub/skills/agent-hub-orchestrator/SKILL.md` inside the wheel.
+Edit only the source skill and run `python scripts/sync_skills.py`; CI runs
+`python scripts/sync_skills.py --check` and checks the skill content in the wheel.
 
 ## Verification on Windows (2026-10-30)
 

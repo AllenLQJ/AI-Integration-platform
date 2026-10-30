@@ -1,6 +1,10 @@
 # scripts/
 
-手动运行的验收与探针脚本，**不属于自动测试**，CI 不会执行它们。大多数脚本使用真实执行器账号，会消耗额度，并且各自在独立的私有数据目录里运行；运行前先读脚本开头的说明。
+除下述维护脚本外，本目录主要是手动运行的验收与探针脚本，**不属于自动测试**，CI 不会执行这些探针。大多数探针使用真实执行器账号，会消耗额度，并且各自在独立的私有数据目录里运行；运行前先读脚本开头的说明。
+
+## Skill 维护（无需账号）
+
+只修改 `skills/agent-hub-orchestrator/SKILL.md`，然后运行 `python scripts/sync_skills.py` 同步项目技能入口和包内副本。`python scripts/sync_skills.py --check` 只检查一致性，不写文件；退出码 0 表示一致，1 表示缺失或过期，2 表示文件读取或写入错误。CI 会执行此检查。脚本按自身位置定位仓库，可通过绝对路径从其他目录调用，仅依赖 Python 标准库。
 
 自动测试在 `tests/`：`PYTHONPATH=src python -m unittest discover -s tests`。
 
