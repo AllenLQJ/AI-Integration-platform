@@ -30,7 +30,7 @@ class StoreTests(unittest.TestCase):
         try:
             with self.store.connection() as first:
                 pass
-            with self.store.connection() as again:
+            with self.store.connection(write=True) as again:
                 self.assertIs(again, first)
                 # Nested use gets its own connection: committing it cannot commit the outer write.
                 again.execute('BEGIN IMMEDIATE')
@@ -52,7 +52,7 @@ class StoreTests(unittest.TestCase):
             self.assertIsNot(seen[0], first)
             # A failed transaction drops the pooled connection instead of reusing it.
             with self.assertRaises(sqlite3.IntegrityError):
-                with self.store.connection() as db:
+                with self.store.connection(write=True) as db:
                     db.execute("INSERT INTO reconcile_requests VALUES ('outer','d','t','{}')")
             with self.store.connection() as fresh:
                 self.assertIsNot(fresh, first)

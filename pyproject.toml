@@ -31,5 +31,4 @@ agent_hub = [
     "dashboard_static/*.html",
     "dashboard_static/*.css",
     "dashboard_static/*.mjs",
-    "skills/*/SKILL.md",
 ]
