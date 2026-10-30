@@ -27,7 +27,7 @@ class PruneTests(unittest.TestCase):
         ident = self.store.create(name, spec)['id']
         if state != 'queued':
             self.store.finish(ident, state, {})
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             db.execute('UPDATE tasks SET updated=? WHERE id=?', (time.time() - age_days * DAY, ident))
         return ident
 
@@ -122,7 +122,7 @@ class PruneTests(unittest.TestCase):
         path = self.root / 'worktrees' / ident
         path.parent.mkdir(exist_ok=True)
         git(repo, 'worktree', 'add', '-q', '-b', 'hub/' + ident, str(path))
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             db.execute("UPDATE tasks SET data=json_set(data,'$.workspace',?) WHERE id=?", (str(path), ident))
         if dirty:
             (path / 'edited.txt').write_text('uncommitted work')

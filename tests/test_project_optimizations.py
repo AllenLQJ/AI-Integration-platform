@@ -128,7 +128,7 @@ class DashboardReadBudgetTests(unittest.TestCase):
 
     def seed(self, count, title='Visible container', agent='coder'):
         item = self.items.create('item-' + str(count) + title, title=title)
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             for i in range(count):
                 ident = item['work_item_id'] + str(i)
                 data = json.dumps(dict(agent=agent, prompt='ordinary prompt', mode='read_only', result={'answer': 'done'}))
@@ -158,7 +158,7 @@ class DashboardReadBudgetTests(unittest.TestCase):
     def test_chain_projection_releases_history_before_global_trimming(self):
         wid = self.seed(10)
         payload = json.dumps({'message': 'x' * 10000, 'role': 'assistant'})
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             ids = [row['id'] for row in db.execute('SELECT id FROM tasks')]
             db.executemany('INSERT INTO events(task_id,kind,data,timestamp) VALUES (?,?,?,?)',
                            [(ident, 'message', payload, i) for ident in ids for i in range(50)])

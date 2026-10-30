@@ -601,7 +601,7 @@ class VerificationTests(unittest.TestCase):
         root = self.service.gateway.artifact_root; root.mkdir(exist_ok=True)
         path = root / 'archived.png'; Image.new('RGB', (2, 2), 'red').save(path)
         self.service.gateway.register('archived', [{'path': str(path), 'mime_type': 'image/png'}])
-        with self.service.store.connection() as db:
+        with self.service.store.connection(write=True) as db:
             data = db.execute('SELECT data FROM media_artifacts').fetchone()['data']
             db.executemany('INSERT INTO media_artifacts VALUES (?,?,?)',
                            [(f'archived-{i}', f'owner-{i}', data) for i in range(1001)])
@@ -687,7 +687,7 @@ class VerificationTests(unittest.TestCase):
                     break
                 time.sleep(.01)
             self.assertEqual(self.service.store.get(ident)['state'], 'succeeded')
-            with self.service.store.connection() as db:
+            with self.service.store.connection(write=True) as db:
                 db.execute("UPDATE verifications SET state='not_requested',data='{}' WHERE task_id=?", (ident,))
             result = self.service.verification.run(ident, automatic=True)
         self.assertEqual(result['work_status'], 'completed')
@@ -797,7 +797,7 @@ class VerificationTests(unittest.TestCase):
     def test_existing_not_requested_recovers_after_ensure_failure(self):
         with patch.object(self.service.verification, 'ensure', side_effect=RuntimeError('落盘失败')):
             ident = self.submit([{'id': 'review', 'kind': 'content_review', 'description': '审核'}])
-            with self.service.store.connection() as db:
+            with self.service.store.connection(write=True) as db:
                 db.execute("INSERT OR REPLACE INTO verifications VALUES (?,'not_requested','{}')", (ident,))
             for _ in range(100):
                 if self.service.store.get(ident)['state'] == 'succeeded':
@@ -893,7 +893,7 @@ class VerificationTests(unittest.TestCase):
     def test_root_id_rejects_cyclic_ancestry(self):
         first = self.submit(request_id='cycle-a'); self.wait(first)
         second = self.submit(request_id='cycle-b'); self.wait(second)
-        with self.service.store.connection() as db:
+        with self.service.store.connection(write=True) as db:
             for ident, parent in ((first, second), (second, first)):
                 db.execute("UPDATE tasks SET data=json_set(data,'$.parent_id',?) WHERE id=?", (parent, ident))
         result = []
@@ -1067,7 +1067,7 @@ class VerificationTests(unittest.TestCase):
         self.assertEqual(count, len(self.service.verification.history(ident)))
         artifacts = self.service.verification.artifacts(ident)
         self.service.close()
-        with self.service.store.connection() as db:
+        with self.service.store.connection(write=True) as db:
             db.execute("UPDATE verifications SET state='verifying' WHERE task_id=?", (ident,))
         self.service = Service(self.root / 'data', {'fake': Fake()})
         self.assertEqual(self.wait(ident)['work_status'], 'completed')
@@ -1330,7 +1330,7 @@ class VerificationTests(unittest.TestCase):
             try:
                 ident = self.submit([{'id': 'p', 'kind': 'sha256', 'path': 'output.txt'}], prompt='write')
                 self.assertTrue(entered.wait(3))
-                with self.service.store.connection() as db:
+                with self.service.store.connection(write=True) as db:
                     db.execute("UPDATE verifications SET state='needs_review',data=? WHERE task_id=?", ('{"verification_run_id":"new-run"}', ident))
             finally:
                 release.set()
@@ -1464,7 +1464,7 @@ class NodeTransferTests(unittest.TestCase):
         args = with_work_item(self.sender, dict(request_id='node-replay', agent='fake', mode='read_only', prompt='done',
                     cwd=str(self.workspace), node_id=self.sender.nodes.local_id))
         first = self.sender.call('submit_task', args)
-        with self.sender.store.connection() as db:
+        with self.sender.store.connection(write=True) as db:
             db.execute('DELETE FROM nodes WHERE node_id=?', (self.sender.nodes.local_id,))
         self.assertEqual(first['id'], self.sender.call('submit_task', args)['id'])
         with self.assertRaises(HubError) as error:
@@ -1476,7 +1476,7 @@ class NodeTransferTests(unittest.TestCase):
             self.sender.nodes.register('forged-ssh', 'windows', self.sender.gateway.host_id, {'fake': ['delegate']}, 'ssh')
         self.assertEqual(error.exception.code, 'INVALID_CONFIG')
         # Defense in depth against an invalid persisted declaration from an older version.
-        with self.sender.store.connection() as db:
+        with self.sender.store.connection(write=True) as db:
             db.execute('INSERT INTO nodes VALUES (?,?,?,?,?)', ('legacy-forged', 'windows', self.sender.gateway.host_id, '{}', 'ssh'))
         result = self.sender.call('get_artifact', dict(artifact_id=self.artifact, target_node_id='legacy-forged'))
         self.assertEqual(result['transfer']['kind'], 'transfer_required')
@@ -1533,7 +1533,7 @@ class NodeTransferTests(unittest.TestCase):
         from agent_hub.nodes import Nodes
         import json
         self.receiver.close()
-        with self.receiver.store.connection() as db:
+        with self.receiver.store.connection(write=True) as db:
             db.execute('DROP TABLE artifact_receipts')
             db.execute('CREATE TABLE artifact_receipts (request_id TEXT PRIMARY KEY, data TEXT NOT NULL)')
             db.execute('INSERT INTO artifact_receipts VALUES (?,?)', ('legacy-key', json.dumps({'artifact_id': 'old-artifact', 'sha256': hashlib.sha256(b'hello').hexdigest(), 'size_bytes': 5})))
@@ -1597,7 +1597,7 @@ class NodeTransferTests(unittest.TestCase):
         with self.receiver.store.connection() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM artifact_receipts').fetchone()[0], 0)
     def test_restart_preserves_retryable(self):
-        with self.sender.store.connection() as db:
+        with self.sender.store.connection(write=True) as db:
             db.execute("INSERT INTO artifact_transfers VALUES (?,?,?,'transferring',NULL)", tuple(self.args.values()))
         self.sender.close()
         self.sender = Service(self.root / 'sender', {'fake': Fake()})

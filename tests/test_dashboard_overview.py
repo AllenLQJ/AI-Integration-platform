@@ -36,7 +36,7 @@ class OverviewTests(unittest.TestCase):
             else:
                 self.store.finish(ident, state, {})
         created = noon(days_ago)
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             db.execute('UPDATE tasks SET created=?, updated=? WHERE id=?', (created, created + seconds, ident))
         return ident
 
@@ -76,7 +76,7 @@ class OverviewTests(unittest.TestCase):
         self.task('codex', 'succeeded', days_ago=0)
         review = self.task('codex', 'succeeded', days_ago=0, seconds=30,
                            acceptance={'criteria': [{'id': 'r', 'kind': 'content_review', 'description': '核对'}]})
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             db.execute("INSERT INTO verifications VALUES (?, 'needs_review', '{}')", (review,))
         failed = [self.task('codex', 'failed', days_ago=2, seconds=index) for index in range(OVERVIEW_ATTENTION_LIMIT + 1)]
         waiting = self.task('muse', 'waiting_for_user', days_ago=0, seconds=5)

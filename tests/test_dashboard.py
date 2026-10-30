@@ -197,7 +197,7 @@ class DashboardTests(unittest.TestCase):
         raw = {'api_key': 'secret-key', 'nested': {'client_secret': 'client-value'},
                'text': 'Bearer abc123 secret=hidden https://host/path?signature=private C:\\Users\\private-user\\file.txt',
                'payload': 'x' * 100000, 'custom': {'step': 3}}
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             db.execute('INSERT INTO events(task_id,kind,data,timestamp) VALUES (?,?,?,?)',
                        (task['id'], 'plugin.custom', json.dumps(raw), 1))
         self.assertEqual(self.store.get(task['id'])['updated'], before)

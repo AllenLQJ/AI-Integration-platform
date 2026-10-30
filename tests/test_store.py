@@ -36,7 +36,7 @@ class StoreTests(unittest.TestCase):
                 again.execute('BEGIN IMMEDIATE')
                 again.execute("INSERT INTO reconcile_requests VALUES ('outer','d','t','{}')")
                 with self.assertRaises(sqlite3.OperationalError):
-                    with self.store.connection() as nested:
+                    with self.store.connection(write=True) as nested:
                         self.assertIsNot(nested, again)
                         nested.execute('PRAGMA busy_timeout=0')
                         nested.execute("INSERT INTO reconcile_requests VALUES ('inner','d','t','{}')")
