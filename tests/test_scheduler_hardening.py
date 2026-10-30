@@ -33,9 +33,9 @@ class VerificationBatchTests(unittest.TestCase):
     def connections(self, counts):
         original = self.store.connection
         @contextmanager
-        def counted():
+        def counted(write=False):
             counts.append(1)
-            with original() as db:
+            with original(write=write) as db:
                 yield db
         with patch.object(self.store, 'connection', counted):
             yield

@@ -16,7 +16,7 @@ DEFAULT_TITLE = '工作项'
 class WorkItems:
     def __init__(self, store):
         self.store = store
-        with store.connection() as db:
+        with store.connection(write=True) as db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS work_items (
                     id TEXT PRIMARY KEY, title TEXT NOT NULL,
@@ -35,7 +35,7 @@ class WorkItems:
         if not isinstance(request_id, str) or not 0 < len(request_id) <= 200:
             raise HubError('INVALID_ARGUMENT', 'request_id 需要非空字符串，最多 200 字符')
         digest = hashlib.sha256(json.dumps(content, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT * FROM work_item_requests WHERE request_id=?', (request_id,)).fetchone()
             if row:
@@ -187,7 +187,7 @@ class WorkItems:
                     related_task_id=related_task_id, already_linked=False)
 
     def attach(self, work_item_id, task_id, relation, related_task_id=None, request_id=None):
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             db.execute('BEGIN IMMEDIATE')
             return self._attach_db(db, work_item_id, task_id, relation, related_task_id, request_id)
 
@@ -200,7 +200,7 @@ class WorkItems:
         content = dict(tool='link_task', work_item_id=work_item_id, task_id=task_id,
                        relation=relation, related_task_id=related_task_id)
         digest = hashlib.sha256(json.dumps(content, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT * FROM work_item_requests WHERE request_id=?', (request_id,)).fetchone()
             if row:
@@ -251,7 +251,7 @@ class WorkItems:
         content = dict(tool='project_declared_review_pair', developer_task_id=developer_task_id,
                        review_task_id=review_task_id, title=title)
         digest = hashlib.sha256(json.dumps(content, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT * FROM work_item_requests WHERE request_id=?', (request_id,)).fetchone()
             if row:

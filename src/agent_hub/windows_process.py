@@ -4,14 +4,46 @@ import subprocess
 import time
 
 
+def _create_kill_on_close_job():
+    import win32job
+    job = win32job.CreateJobObject(None, '')
+    try:
+        info = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
+        info['BasicLimitInformation']['LimitFlags'] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, info)
+        return job
+    except BaseException:
+        job.Close()
+        raise
+
+
+def bind_process_to_job(pid):
+    """Best-effort binding for an existing child; caller must retain/close the job.
+
+    Hub-owned executors still use suspended creation below so children cannot
+    escape before assignment. Failure here leaves the original process running.
+    """
+    job = None
+    try:
+        import win32api, win32con, win32job
+        job = _create_kill_on_close_job()
+        process = win32api.OpenProcess(win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE, False, pid)
+        try:
+            win32job.AssignProcessToJobObject(job, process)
+        finally:
+            process.Close()
+        return job
+    except Exception:
+        if job is not None:
+            job.Close()
+        return None
+
+
 class WindowsProcess:
     def __init__(self, argv, cwd, env):
         import msvcrt
         import win32api, win32con, win32job, win32process
-        self.job = win32job.CreateJobObject(None, '')
-        info = win32job.QueryInformationJobObject(self.job, win32job.JobObjectExtendedLimitInformation)
-        info['BasicLimitInformation']['LimitFlags'] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        win32job.SetInformationJobObject(self.job, win32job.JobObjectExtendedLimitInformation, info)
+        self.job = _create_kill_on_close_job()
         out_r, out_w = os.pipe()
         err_r, err_w = os.pipe()
         null = open(os.devnull, 'rb')
@@ -25,17 +57,19 @@ class WindowsProcess:
         try:
             handle, thread, self.pid, _ = win32process.CreateProcess(
                 str(argv[0]), subprocess.list2cmdline(argv), None, None, True,
-                win32con.CREATE_SUSPENDED | win32con.CREATE_NO_WINDOW, env, str(cwd), startup)
+                win32con.CREATE_SUSPENDED | win32con.CREATE_NO_WINDOW | win32con.CREATE_NEW_PROCESS_GROUP,
+                env, str(cwd), startup)
             self.handle = handle
             try:
                 win32job.AssignProcessToJobObject(self.job, handle)
                 win32process.ResumeThread(thread)
             except BaseException:
                 win32api.TerminateProcess(handle, 1)
-                handle.Close(); self.job.Close()
+                handle.Close()
                 raise
             finally: thread.Close()
         except BaseException:
+            self.job.Close()
             os.close(out_r); os.close(err_r)
             raise
         finally:

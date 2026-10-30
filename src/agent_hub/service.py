@@ -20,6 +20,7 @@ class Service:
         from .config import verification_options
         verification_config = verification_options(self.root)
         self.store = Store(self.root / 'tasks.db')
+        self.event_condition = self.store.event_condition
         self.store.reuse_connections()
         self.store.recover()
         self.gateway = Gateway(self.root, self.store)
@@ -409,6 +410,7 @@ class Service:
             raise HubError('INVALID_ARGUMENT', '单次等待须在 0–10 秒内')
         deadline = time.monotonic() + timeout_seconds
         while True:
+            token = self.store.change_token()
             if self.stopping.is_set():
                 raise HubError('SERVICE_STOPPING', '服务正在停止，请稍后按原游标续接')
             snapshot = self.store.wait_snapshot(task_id, after_seq)
@@ -418,7 +420,7 @@ class Service:
             if terminal or needs_user or remaining <= 0:
                 return dict(snapshot, timed_out=not terminal and not needs_user, needs_user=needs_user, contract_version='1.0')
             # Neither the global service lock nor a DB transaction is held here.
-            self.stopping.wait(min(.1, remaining))
+            self.store.wait_for_change(token, min(1.0, remaining))
 
     def permissions(self, task):
         if 'permissions' in task:
@@ -664,7 +666,7 @@ class Service:
             if count >= self.max_auto_rework:
                 if summary.get('auto_rework_reason') != '自动返工已达到配置上限':
                     summary['auto_rework_reason'] = '自动返工已达到配置上限'
-                    with self.store.connection() as db:
+                    with self.store.connection(write=True) as db:
                         data = dict(summary); data.pop('state', None)
                         db.execute('UPDATE verifications SET data=? WHERE task_id=?', (json.dumps(data), task_id))
                     self.store.event(task_id, 'verification', dict(state='rework_required', reason=summary['auto_rework_reason'], max_auto_rework=self.max_auto_rework))
@@ -1115,6 +1117,7 @@ class Service:
     def close(self):
         with self.verification.lock:
             self.stopping.set()
+            self.store.notify_change()
             self.scheduler_wakeup.set()
         self.thread.join(5)
         with self.lock:

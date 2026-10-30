@@ -203,7 +203,7 @@ def apply(store, root, report):
             if message:
                 warnings.append(message)
         ids = group['task_ids']
-        with store.connection() as db:
+        with store.connection(write=True) as db:
             db.execute('BEGIN IMMEDIATE')
             marks = ','.join('?' * len(ids))
             db.execute(f'DELETE FROM events WHERE task_id IN ({marks}) AND kind != ?', (*ids, KEEP_EVENT_KIND))

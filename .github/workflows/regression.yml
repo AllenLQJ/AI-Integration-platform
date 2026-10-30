@@ -44,9 +44,9 @@ jobs:
           "TEMP=$hubTestTemp" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "TMP=$hubTestTemp" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Install Hub and test/build requirements
-        run: python -m pip install . setuptools wheel
+        run: python -m pip install ".[dev]" setuptools wheel
       - name: Full Python regression
-        run: python -m unittest discover -s tests -v
+        run: python -m pytest tests -v
       - name: Dashboard frontend regression
         run: node --test tests/frontend/*.mjs
       - name: Build wheel

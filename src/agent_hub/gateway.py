@@ -24,7 +24,7 @@ class Gateway:
         self.config = json.loads(config.read_text(encoding='utf-8')) if config.exists() else {}
         # 同主机各数据目录使用同一标识；不将机器名称直接暴露给客户端。
         self.host_id = 'host-' + hashlib.sha256((platform.node() + ':' + str(uuid.getnode())).encode()).hexdigest()[:32]
-        with store.connection() as db:
+        with store.connection(write=True) as db:
             db.execute('CREATE TABLE IF NOT EXISTS media_artifacts '
                        '(id TEXT PRIMARY KEY, task_id TEXT NOT NULL, data TEXT NOT NULL)')
 
@@ -126,7 +126,7 @@ class Gateway:
             ident = 'artifact-' + uuid.uuid5(uuid.NAMESPACE_URL, task_id + ':' + str(path)).hex
             metadata = dict(artifact_id=ident, task_id=task_id, filename=path.name,
                             mime_type=mime, size_bytes=len(content), sha256=digest)
-            with self.store.connection() as db:
+            with self.store.connection(write=True) as db:
                 existing = db.execute('SELECT data FROM media_artifacts WHERE id=?', (ident,)).fetchone()
                 if existing and json.loads(existing['data']) != dict(metadata, path=str(path)):
                     raise HubError('ARTIFACT_EXPIRED', '已登记附件内容已变化')

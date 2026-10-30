@@ -113,7 +113,7 @@ class Verification:
         self.max_file_bytes = 64 * 1024 * 1024
         self.max_retries = 3
         self.use_dir_fd = os.name == 'posix'
-        with store.connection() as db:
+        with store.connection(write=True) as db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS controllers (root_task_id TEXT PRIMARY KEY, controller_id TEXT NOT NULL, epoch INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS verifications (
@@ -133,7 +133,7 @@ class Verification:
             ''')
         # 补齐历史任务及 finish 后尚未入队就退出的窗口。
         initial = []
-        with store.connection() as db:
+        with store.connection(write=True) as db:
             for row in db.execute("SELECT id,state,json_extract(data,'$.acceptance') AS acceptance FROM tasks"):
                 task = dict(id=row['id'], state=row['state'],
                             acceptance=json.loads(row['acceptance']) if row['acceptance'] else None)
@@ -176,7 +176,7 @@ class Verification:
     def ensure(self, task):
         state = ('awaiting_verification' if task['state'] == 'succeeded' and has_verifiable_acceptance(task)
                  else 'not_requested')
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             db.execute('INSERT OR IGNORE INTO verifications VALUES (?,?,?)', (task['id'], state, '{}'))
             if state == 'awaiting_verification':
                 db.execute("UPDATE verifications SET state=? WHERE task_id=? AND state='not_requested'", (state, task['id']))
@@ -225,7 +225,7 @@ class Verification:
         ident = uuid.uuid5(uuid.NAMESPACE_URL, task['id'] + ':' + source + ':' + key + ':' + data['sha256']).hex
         item = dict(data, artifact_id=ident, logical_id='artifact://' + ident, source=source)
         item.setdefault('change', 'reused')
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             old = db.execute('SELECT data FROM artifact_index WHERE id=?', (ident,)).fetchone()
             if old:
                 item = dict(json.loads(old['data']), **item)
@@ -413,7 +413,7 @@ class Verification:
             self.local.budget = None
             self.local.cancel = None
         self.checkpoint()
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             db.execute('INSERT OR IGNORE INTO verification_inputs VALUES (?,?)', (task['id'], json.dumps(data)))
 
     @staticmethod
@@ -588,7 +588,7 @@ class Verification:
         data = dict(checks=checks, verification_run_id=run_id, checked_at=time.time(), **(data_extra or {}))
         response = dict(verification=dict(safe(self.store.safe(data)), state=state),
                         work_status='completed' if state == 'passed' else state, **(extra or {}))
-        with self.lock, self.store.connection() as db:
+        with self.lock, self.store.connection(write=True) as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT * FROM verifications WHERE task_id=?', (task_id,)).fetchone()
             if expected_run and (not row or row['state'] != 'verifying' or
@@ -620,7 +620,7 @@ class Verification:
                     with self.lock:
                         self.pending_ids.discard(task_id)
                     return self.fields(task)
-                with self.lock, self.store.connection() as db:
+                with self.lock, self.store.connection(write=True) as db:
                     data = dict(current, verification_run_id=run_id)
                     data.pop('state', None)
                     db.execute("UPDATE verifications SET state='verifying',data=? WHERE task_id=?", (json.dumps(data), task_id))
@@ -645,7 +645,7 @@ class Verification:
                     return self.save(task_id, state, checks, run_id,
                                      request_id, expected_run=run_id, data_extra=data_extra)
             except VerificationStopped:
-                with self.lock, self.store.connection() as db:
+                with self.lock, self.store.connection(write=True) as db:
                     row = db.execute('SELECT * FROM verifications WHERE task_id=?', (task_id,)).fetchone()
                     if row and row['state'] == 'verifying' and json.loads(row['data']).get('verification_run_id') == run_id:
                         db.execute("UPDATE verifications SET state='awaiting_verification',data='{}' WHERE task_id=?", (task_id,))
@@ -659,7 +659,7 @@ class Verification:
     def retry(self, task, run_id, error, previous):
         self.track(task)
         # 独立落盘，不依赖可能失败的 save；超限绝不接受已有 pass 结果。
-        with self.lock, self.store.connection() as db:
+        with self.lock, self.store.connection(write=True) as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT * FROM verifications WHERE task_id=?', (task['id'],)).fetchone()
             data = json.loads(row['data']) if row else {}
@@ -729,7 +729,7 @@ class Verification:
         with self.lock:
             request_lock = self.request_locks.setdefault(request_id, threading.RLock())
         with request_lock:
-            with self.store.connection() as db:
+            with self.store.connection(write=True) as db:
                 row = db.execute('SELECT * FROM verification_requests WHERE request_id=?', (request_id,)).fetchone()
                 if row and row['digest'] != digest:
                     raise HubError('IDEMPOTENCY_CONFLICT', '验收请求内容发生变化')
@@ -739,10 +739,10 @@ class Verification:
             try:
                 response = operation()
             except Exception:
-                with self.store.connection() as db:
+                with self.store.connection(write=True) as db:
                     db.execute('DELETE FROM verification_requests WHERE request_id=? AND response IS NULL', (request_id,))
                 raise
-            with self.store.connection() as db:
+            with self.store.connection(write=True) as db:
                 db.execute('UPDATE verification_requests SET response=? WHERE request_id=?', (json.dumps(response), request_id))
             return response
 
@@ -846,7 +846,7 @@ class Verification:
             raise HubError('INVALID_ARGUMENT', 'controller_id 需要非空字符串，最多 200 字符')
         root = self.root_id(task_id)
         def apply():
-            with self.store.connection() as db:
+            with self.store.connection(write=True) as db:
                 db.execute('BEGIN IMMEDIATE')
                 row = db.execute('SELECT epoch FROM controllers WHERE root_task_id=?', (root,)).fetchone()
                 epoch = row['epoch'] + 1 if row else 1
@@ -882,7 +882,7 @@ class Verification:
                              verification_run_id=run_id, superseded=superseded) for c in checks]
             if superseded:
                 response = dict(task_id=task_id, superseded=True, **self.fields(task))
-                with self.store.connection() as db:
+                with self.store.connection(write=True) as db:
                     db.execute('BEGIN IMMEDIATE')
                     for c in incoming:
                         db.execute('INSERT INTO verification_checks(task_id,data) VALUES (?,?)', (task_id, json.dumps(safe(self.store.safe(c)))))
@@ -929,7 +929,7 @@ class Verification:
                          verification_run_id=run_id, superseded=superseded)
             if superseded:
                 response = dict(task_id=task_id, superseded=True, **self.fields(task))
-                with self.store.connection() as db:
+                with self.store.connection(write=True) as db:
                     db.execute('INSERT INTO verification_checks(task_id,data) VALUES (?,?)', (task_id, json.dumps(safe(self.store.safe(check)))))
                     db.execute('UPDATE verification_requests SET response=? WHERE request_id=?', (json.dumps(response), request_id))
             else:

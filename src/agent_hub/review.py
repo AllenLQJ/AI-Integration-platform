@@ -343,7 +343,7 @@ class Reviewer:
 
     def update(self, attempt_id, run, **fields):
         """fields 写入 data['review']，其中 task_id 指审核任务 ID。"""
-        with self.verification.lock, self.store.connection() as db:
+        with self.verification.lock, self.store.connection(write=True) as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT * FROM verifications WHERE task_id=?', (attempt_id,)).fetchone()
             data = json.loads(row['data']) if row else {}
@@ -377,7 +377,7 @@ class Reviewer:
         root = self.verification.root_id(task_id)
         current = self.verification.work_item(task_id)['current_task_id'] == task_id
         receipt = 'auto-review-result:' + run
-        with self.verification.lock, self.store.connection() as db:
+        with self.verification.lock, self.store.connection(write=True) as db:
             db.execute('BEGIN IMMEDIATE')
             if db.execute('SELECT 1 FROM verification_requests WHERE request_id=?', (receipt,)).fetchone():
                 return None
