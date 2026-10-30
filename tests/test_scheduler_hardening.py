@@ -23,7 +23,7 @@ class VerificationBatchTests(unittest.TestCase):
 
     def seed(self, count):
         acceptance = {'criteria': [{'id': 'f', 'kind': 'file_exists', 'path': 'x'}]}
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             for i in range(count):
                 data = json.dumps({'agent': 'fake', 'prompt': 'history', 'acceptance': acceptance})
                 db.execute('INSERT INTO tasks(id,request_id,digest,state,data,created,updated) VALUES(?,?,?,?,?,?,?)',
@@ -43,7 +43,7 @@ class VerificationBatchTests(unittest.TestCase):
     def test_startup_batches_history_and_preserves_existing_verdicts(self):
         verification = Verification(self.store, None)
         self.seed(100)
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             db.execute('INSERT INTO verifications VALUES(?,?,?)', ('0', 'passed', '{"evidence":"kept"}'))
             db.execute('INSERT INTO verifications VALUES(?,?,?)', ('1', 'verifying', '{"retry_count":2}'))
         counts = []
@@ -65,7 +65,7 @@ class VerificationBatchTests(unittest.TestCase):
     def test_pending_batches_candidates_and_respects_retry_deadlines(self):
         self.seed(100)
         verification = Verification(self.store, None)
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             db.execute("UPDATE verifications SET state='passed' WHERE task_id='0'")
             db.execute("UPDATE verifications SET data=? WHERE task_id='1'", (json.dumps({'next_retry_at': time.time()+3600}),))
         counts = []

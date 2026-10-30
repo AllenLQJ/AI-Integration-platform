@@ -86,8 +86,9 @@ class Store:
     @contextmanager
     def connection(self, write: bool = False):
         # Readers retain WAL concurrency. All internal mutation callers opt in.
+        # write=False never commits; write=True commits then notifies.
         with self._write_lock if write else nullcontext():
-            with self._connection() as db:
+            with self._connection(write=write) as db:
                 yield db
 
     def change_token(self):
@@ -107,14 +108,15 @@ class Store:
                 lambda: self._change_generation != token, timeout=timeout)
 
     @contextmanager
-    def _connection(self):
+    def _connection(self, write: bool = False):
         local = getattr(self, '_local', None)
         cached = local is not None and not getattr(local, 'busy', False)
         db = getattr(local, 'holder', None) if cached else None
         if db is None:
             # Cached connections are only used by their owning thread; close()
             # may run elsewhere, hence check_same_thread=False.
-            db = sqlite3.connect(self.path, timeout=30, check_same_thread=not cached)
+            timeout_sec = max(30.0, DEFAULT_BUSY_TIMEOUT_MS / 1000.0)
+            db = sqlite3.connect(self.path, timeout=timeout_sec, check_same_thread=not cached)
             try:
                 db.row_factory = sqlite3.Row
                 db.execute(f'PRAGMA busy_timeout = {DEFAULT_BUSY_TIMEOUT_MS}')
@@ -131,11 +133,33 @@ class Store:
             local.busy = True
         broken = False
         before = db.total_changes
+        committed = False
+        changed = False
         try:
-            with db:
-                yield db
-            if db.total_changes != before:
-                self.notify_change()
+            if write:
+                try:
+                    yield db
+                    if db.in_transaction:
+                        db.commit()
+                    committed = True
+                    changed = db.total_changes != before
+                except BaseException:
+                    if db.in_transaction:
+                        try:
+                            db.rollback()
+                        except sqlite3.Error:
+                            pass
+                    raise
+            else:
+                try:
+                    yield db
+                finally:
+                    # Read connections must not commit; drop any snapshot txn.
+                    if db.in_transaction:
+                        try:
+                            db.rollback()
+                        except sqlite3.Error:
+                            pass
         except sqlite3.Error:
             broken = True
             raise
@@ -156,6 +180,9 @@ class Store:
                         db.close()
                     except sqlite3.Error:
                         pass
+        # Notify only after a successful write commit (and after pool bookkeeping).
+        if write and committed and changed:
+            self.notify_change()
 
     @staticmethod
     def decode(row):

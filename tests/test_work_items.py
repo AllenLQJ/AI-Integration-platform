@@ -286,7 +286,7 @@ class WorkItemProtocolTests(unittest.TestCase):
             relation='linked', related_task_id=x['id'],
             controller_id=lease_y['controller_id'], controller_epoch=lease_y['controller_epoch']))
         # Seed an existing a↔b loop in membership edges; new attach into that loop must fail.
-        with self.service.store.connection() as db:
+        with self.service.store.connection(write=True) as db:
             db.execute('UPDATE work_item_members SET related_task_id=? WHERE task_id=?',
                        (y['id'], x['id']))
         lease_z = self.service.call('claim_controller', dict(
@@ -537,7 +537,7 @@ class ReconcileTaskTests(unittest.TestCase):
                  text='x\n' + marker),
         ])] + [self._page('250')] * 6
         bot = self._install_history_bot(pages)
-        with self.service.store.connection() as db:
+        with self.service.store.connection(write=True) as db:
             db.execute("UPDATE tasks SET state='cancelled' WHERE id=?", (task['id'],))
         lease = self.service.call('claim_controller', dict(
             request_id='c-claim', task_id=task['id'], controller_id='ops'))
@@ -697,7 +697,7 @@ class ReconcileTaskTests(unittest.TestCase):
         # Foreign/mismatched progress must not forge completion on another task.
         other = self._interrupted_grok_like('prog-other', prompt='other')
         stolen = dict(progress, session_id='other-session', marker='[HUB-END:' + other['id'] + ']')
-        with self.service.store.connection() as db:
+        with self.service.store.connection(write=True) as db:
             row = db.execute('SELECT data FROM tasks WHERE id=?', (other['id'],)).fetchone()
             data = json.loads(row['data'])
             data['reconcile_progress'] = stolen

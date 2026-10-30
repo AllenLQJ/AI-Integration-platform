@@ -141,7 +141,7 @@ class WaitTests(unittest.TestCase):
     def test_terminal_state_and_event_rollback_together(self):
         self.pause_scheduler()
         task = self.task()
-        with self.service.store.connection() as db:
+        with self.service.store.connection(write=True) as db:
             db.execute("CREATE TRIGGER reject_finish BEFORE INSERT ON events "
                        "WHEN NEW.data LIKE '%succeeded%' BEGIN SELECT RAISE(ABORT, 'fixture'); END")
         with self.assertRaises(sqlite3.IntegrityError):

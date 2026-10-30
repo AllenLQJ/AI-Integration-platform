@@ -117,7 +117,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertNotIn('Content-Length', headers)
         self.assertEqual(self.request(path, headers={'If-None-Match': etag})[0], 401)
         before = self.service.store.get(task['id'])['updated']
-        with self.service.store.connection() as db:
+        with self.service.store.connection(write=True) as db:
             db.execute("UPDATE verifications SET state='passed' WHERE task_id=?", (task['id'],))
         status, headers, body = self.request(path, headers=conditional)
         self.assertEqual(status, 200, body)

@@ -31,7 +31,7 @@ class DashboardChainsTests(unittest.TestCase):
         return self.store.create(str(self.counter), dict({'prompt': prompt, 'agent': 'coder', 'mode': 'read_only'}, **fields))
 
     def dates(self, task, created, updated=None):
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             db.execute('UPDATE tasks SET created=?,updated=? WHERE id=?', (created, created if updated is None else updated, task['id']))
 
     def test_member_states_list_recent_executions_oldest_first(self):
@@ -189,7 +189,7 @@ class DashboardChainsTests(unittest.TestCase):
         self.dates(dev, 1)
         self.store.finish(dev['id'], 'succeeded', {'answer': 'v1'})
         work_items.attach(wid, dev['id'], 'development', None, 'link-dev')
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             db.execute('INSERT INTO verifications VALUES (?,?,?)',
                        (dev['id'], 'rework_required',
                         json.dumps({'checks': [
@@ -206,7 +206,7 @@ class DashboardChainsTests(unittest.TestCase):
         self.dates(rework, 3)
         self.store.finish(rework['id'], 'succeeded', {'answer': 'v2 fixed'})
         work_items.attach(wid, rework['id'], 'rework', dev['id'], 'link-rework')
-        with self.store.connection() as db:
+        with self.store.connection(write=True) as db:
             db.execute('INSERT INTO verifications VALUES (?,?,?)',
                        (rework['id'], 'passed',
                         json.dumps({'checks': [
