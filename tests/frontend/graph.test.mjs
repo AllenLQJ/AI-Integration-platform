@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {layoutGraph} from '../../src/agent_hub/dashboard_static/graph.mjs';
+import {edgeLabel, layoutGraph} from '../../src/agent_hub/dashboard_static/graph.mjs';
 
 test('branch layout preserves explicit edges and terminates for cycles and dangling edges', () => {
   const nodes = ['a','b','c','d'].map(id=>({id}));
@@ -15,4 +15,13 @@ test('branch layout preserves explicit edges and terminates for cycles and dangl
   assert.equal(cyclic.nodes.length,4); assert.equal(cyclic.edges.length,4);
   assert.ok(cyclic.nodes.every(n=>Number.isFinite(n.x)&&Number.isFinite(n.y)));
   assert.equal(new Set(cyclic.nodes.map(n=>`${n.x},${n.y}`)).size,4);
+});
+
+test('every edge kind the chain projection emits has a Chinese caption', () => {
+  // dashboard_chains.py: parent/review links plus the work-item relation kinds.
+  for (const kind of ['continuation','switch_executor','review','rework','development','linked']) {
+    assert.match(edgeLabel(kind),/^[\u4e00-\u9fff]+$/,kind);
+  }
+  assert.equal(edgeLabel('rework'),'返修');
+  assert.equal(edgeLabel('future_kind'),'future_kind');
 });

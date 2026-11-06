@@ -24,7 +24,8 @@ export function layoutGraph(nodes, edges) {
   });
   return {nodes:positioned,edges:links,width:Math.max(280,...positioned.map(n=>n.x+232)),height:Math.max(180,...positioned.map(n=>n.y+148))};
 }
-const edgeNames = {continuation:'续接',switch_executor:'切换执行',review:'审查'};
+const edgeNames = {continuation:'续接',switch_executor:'切换执行',review:'审查',rework:'返修',development:'开发',linked:'关联'};
+export const edgeLabel = kind => edgeNames[kind] || kind;
 export function createGraph(viewport, stage, onSelect, label) {
   let key='', selected=null, buttons=new Map(), scale=1, layout={width:280,height:180};
   const el = (tag,cls,value)=>{const n=document.createElement(tag); n.className=cls; if(value!=null)n.textContent=value; return n;};
@@ -48,7 +49,7 @@ export function createGraph(viewport, stage, onSelect, label) {
       path.setAttribute('d',`M ${x1} ${y1} C ${x1+bend} ${y1}, ${x2-bend} ${y2}, ${x2} ${y2}`);
       path.setAttribute('class',`graph-edge ${edge.kind==='review'?'review':''}`);svg.append(path);
       const arrow=document.createElementNS('http://www.w3.org/2000/svg','path');arrow.setAttribute('d',`M ${x2-5} ${y2-3} L ${x2} ${y2} L ${x2-5} ${y2+3}`);arrow.setAttribute('class','graph-edge');svg.append(arrow);
-      const caption=document.createElementNS('http://www.w3.org/2000/svg','text');caption.setAttribute('x',(x1+x2)/2);caption.setAttribute('y',(y1+y2)/2-8);caption.setAttribute('text-anchor','middle');caption.textContent=edgeNames[edge.kind]||edge.kind;svg.append(caption);
+      const caption=document.createElementNS('http://www.w3.org/2000/svg','text');caption.setAttribute('x',(x1+x2)/2);caption.setAttribute('y',(y1+y2)/2-8);caption.setAttribute('text-anchor','middle');caption.textContent=edgeLabel(edge.kind);svg.append(caption);
     }
     layer.append(svg);
     for(const task of layout.nodes){

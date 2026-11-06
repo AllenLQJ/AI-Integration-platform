@@ -224,7 +224,7 @@ class WorkItems:
 
     def acceptance_for_dispatch(self, work_item_id, relation):
         """Development/rework/continuation inherit work-item acceptance; review tasks do not."""
-        if relation in REVIEW_LIKE:
+        if relation == 'review':
             return None
         item = self.get(work_item_id)
         return item.get('acceptance')

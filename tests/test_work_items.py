@@ -371,6 +371,34 @@ class WorkItemProtocolTests(unittest.TestCase):
                          conversation_acceptance())
         self.assertEqual(self.service.store.get(cont_parent['id']).get('acceptance'), soft)
 
+    def test_rework_inherits_work_item_acceptance(self):
+        soft = software_dashboard_acceptance()
+        wid = ensure_work_item(self.service, 'wi-rework-acc', title='返修验收', acceptance=soft)
+        dev = self.service.call('submit_task', dict(
+            request_id='rw-dev', agent='fake', prompt='ship', cwd=str(self.root),
+            mode='read_only', work_item_id=wid))
+        self.service.store.finish(dev['id'], 'succeeded', {'answer': 'done'})
+        review = self.service.call('submit_task', dict(
+            request_id='rw-rev', agent='fake', prompt='review', cwd=str(self.root),
+            mode='read_only', work_item_id=wid, relation='review', related_task_id=dev['id']))
+        self.service.store.finish(review['id'], 'succeeded', {'answer': 'needs rework'})
+        rework = self.service.call('submit_task', dict(
+            request_id='rw-fix', agent='fake', prompt='fix', cwd=str(self.root),
+            mode='read_only', work_item_id=wid, relation='rework', related_task_id=review['id']))
+        self.assertEqual(self.service.store.get(rework['id']).get('acceptance'), soft)
+        self.assertIsNone(self.service.store.get(review['id']).get('acceptance'))
+        # The finished rework waits for fresh checks instead of reading as unconfigured.
+        self.service.store.finish(rework['id'], 'succeeded', {'answer': 'fixed'})
+        fields = self.service.verification.fields(self.service.store.get(rework['id']))
+        self.assertEqual(fields['verification']['state'], 'awaiting_verification')
+        # Explicit acceptance on a rework still overrides the work item's.
+        custom = self.service.call('submit_task', dict(
+            request_id='rw-custom', agent='fake', prompt='fix again', cwd=str(self.root),
+            mode='read_only', work_item_id=wid, relation='rework', related_task_id=review['id'],
+            acceptance=conversation_acceptance()))
+        self.assertEqual(self.service.store.get(custom['id']).get('acceptance'),
+                         conversation_acceptance())
+
 
 class ReconcileTaskTests(unittest.TestCase):
     def setUp(self):
