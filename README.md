@@ -4,6 +4,8 @@
 
 A local Agent Hub for coordinating Codex, Claude Code, Muse, Cursor CLI, Grok Bot, and Antigravity CLI through one MCP interface. An independent daemon runs tasks, while SQLite stores their state, events, and results. Coding tasks can use isolated Git worktrees and return diffs for review. Collected edit_worktree diffs and untracked text excerpts share a 1 MiB UTF-8 budget (Workspaces.MAX_ARTIFACT_BYTES); over-budget payloads set artifact_truncated with artifact_omitted file reasons instead of returning a partial diff as complete. Path lists such as artifact_omitted and changed_files are metadata outside that byte budget; the whole result JSON is not capped.
 
+Agent Hub development began with the [initial design on October 9, 2026](https://github.com/AllenLQJ/AI-Integration-platform/commit/9fdd68f31001c246d061a869e1042facfbfb8db6). The first Windows version was [validated on October 10, 2026](https://github.com/AllenLQJ/AI-Integration-platform/commit/6eb54bc2d2700bda6aa2f86e9589c2c9d22b591d).
+
 **Python 3.10+ · Windows / macOS · Service version 0.3.0 · 20 MCP tools**
 
 **Portable extensions:** [Executor plugins and command bridges](docs/executor-plugins.md) connect new AI tools without editing Hub core. Install plugins into the Hub environment; keep credentials, machine configuration and task state in each device's private data directory. Includes an independently installable example and Windows/macOS/Linux contract CI; platform CI configuration is not a claim of completed multi-platform validation.

@@ -6,6 +6,8 @@
 
 本地 Agent Hub：通过统一 MCP 接口协调 Codex、Claude Code、Muse、Cursor CLI 和 Grok Bot。独立后台执行任务，SQLite 保存状态、事件和结果。代码编辑任务可使用隔离的 Git worktree，并返回差异供审阅。edit_worktree 收集的 diff 与未跟踪文本摘录合计默认最多 1 MiB（UTF-8，`Workspaces.MAX_ARTIFACT_BYTES`）；超限时设置 `artifact_truncated` 与 `artifact_omitted`，不会把不完整 diff 当作完整变更。省略路径列表（如 artifact_omitted、changed_files）属于预算外元数据，整个结果 JSON 不设上限。
 
+Agent Hub 于 [2026 年 10 月 9 日开始设计和开发](https://github.com/AllenLQJ/AI-Integration-platform/commit/9fdd68f31001c246d061a869e1042facfbfb8db6)，并于 [10 月 10 日完成 Windows 第一版验收](https://github.com/AllenLQJ/AI-Integration-platform/commit/6eb54bc2d2700bda6aa2f86e9589c2c9d22b591d)。
+
 **Python 3.10+ · Windows / macOS · 服务版本 0.3.0 · 20 个 MCP 工具**
 
 **通用接入：**[执行器插件与命令桥接](docs/executor-plugins.md) 支持不修改 Hub 核心接入新 AI 工具。插件安装在 Hub 环境中；账号、机器配置、任务和日志保存在各设备独立的数据目录。提供可独立安装的示例包及 Windows/macOS/Linux 契约测试 CI；配置了 CI 不等于已完成跨平台实测。
